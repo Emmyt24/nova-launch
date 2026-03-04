@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ef35f709e7dfc81e41fa2f6dd88ad2593979980c7d25e49e679d3e2b56181264 # shrinks to base_fee = 7023800, metadata_fee = 172520130
+cc 4b470a8de3e23c7a7f4a29f9e0788e81b13004edf352f408e9770904ca010702 # shrinks to base_fee = 115609607623902936230987458658908925184, metadata_fee = 107656274599739358179442811808732211632
+cc 70137bb20dedb648b5ecd406fc95afe9370bddd56a9f77dcdfca951d3947e779 # shrinks to base_fee = -1588433007255140388690172323983708015, metadata_fee = -168243136444980654135400767837813034965
+cc 32aae2bda6473adcbc5f7d060b3c063a51469d3fedd1fb90b90479d8b99ceb4d # shrinks to fee_value = 948653982, iterations = 18
+cc 9f8fe1b674dd09a441a41b87aa405f82e635be498a0c650f813e214707c331c8 # shrinks to base_fee = 163269793, metadata_fee = 68949522
+cc 975c10e5bd16c3f2cd4ba229e8a29b4a6ea83182f068637800c7c308fb15e0fc # shrinks to fee1 = 8830502, fee2 = 285171481, fee3 = 754390616
+cc e2df4b016103d052771a6b29ec23507eec9887b555e9ff0d3791fdf5b7279a64 # shrinks to base_fee_opt = None, metadata_fee_opt = None
+cc bba8a337aa67d8814f9757536b22c783877951fe0a8521ac6c45685b4c1c29c3 # shrinks to base_fee = 49555619087217592449870474955213635056
+cc 5476943d5f893df9346e510829c6aef29698b414cc6fd97b29b713e5047a92f8 # shrinks to invalid_fee = -2401421589807225732455789731951946452, valid_fee = 57132084

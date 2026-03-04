@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, String, Vec, BytesN};
+use soroban_sdk::{Address, Env, String, Vec};
 use crate::types::{Error, TokenCreationParams, TokenInfo};
 use crate::storage;
 
@@ -90,8 +90,6 @@ pub fn create_token_internal(
         env,
         &token_address,
         creator,
-        &params.name,
-        &params.symbol,
     );
 
     Ok(token_address)

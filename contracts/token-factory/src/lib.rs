@@ -32,8 +32,6 @@ const CONTRACT_AUTHOR: &str = "Nova Launch Team";
 const CONTRACT_LICENSE: &str = "MIT";
 const CONTRACT_VERSION: &str = "1.0.0";
 
-mod token_creation;
-
 #[contract]
 pub struct TokenFactory;
 

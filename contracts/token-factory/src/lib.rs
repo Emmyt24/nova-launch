@@ -9,9 +9,27 @@ mod burn;
 mod types;
 mod token_creation;
 mod streaming;
+mod validation;
+mod timelock;
+mod pagination;
+mod mint;
+mod treasury;
+mod vesting;
+mod differential_engine;
+#[cfg(test)]
+mod comprehensive_differential_tests;
+#[cfg(test)]
+mod differential_proptest;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec, Vec as SorobanVec};
-use types::{Error, FactoryState, TokenInfo, TokenCreationParams, StreamInfo, StreamParams, TokenStats, TimelockConfig};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Vec, Vec as SorobanVec};
+use types::{ContractMetadata, Error, FactoryState, TokenInfo, TokenCreationParams, StreamInfo, StreamParams, TokenStats, TimelockConfig};
+
+// Contract metadata constants
+const CONTRACT_NAME: &str = "Nova Launch Token Factory";
+const CONTRACT_DESCRIPTION: &str = "No-code token deployment on Stellar";
+const CONTRACT_AUTHOR: &str = "Nova Launch Team";
+const CONTRACT_LICENSE: &str = "MIT";
+const CONTRACT_VERSION: &str = "1.0.0";
 
 #[contract]
 pub struct TokenFactory;
@@ -1707,3 +1725,6 @@ mod batch_token_creation_test;
 
 #[cfg(test)]
 mod streaming_integration_test;
+
+#[cfg(test)]
+mod stateful_model_test;

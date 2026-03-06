@@ -1820,4 +1820,7 @@ mod timelock_proposal_test;
 mod timelock_voting_test;
 
 #[cfg(test)]
-mod governance_e2e_test;
+mod batch_claim_test;
+
+#[cfg(test)]
+mod governance_error_test;

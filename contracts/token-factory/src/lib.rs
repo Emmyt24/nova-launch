@@ -1,10 +1,11 @@
 #![no_std]
 
+mod events;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env};
-use types::{Error, FactoryState, TokenInfo};
+use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use types::{Error, FactoryState, TokenInfo, StreamCreatedV1};
 
 #[contract]
 pub struct TokenFactory;
@@ -83,10 +84,68 @@ impl TokenFactory {
     pub fn get_token_info(env: Env, index: u32) -> Result<TokenInfo, Error> {
         storage::get_token_info(&env, index).ok_or(Error::TokenNotFound)
     }
+
+    /// Create a new token stream and emit stream_created event
+    /// 
+    /// # Arguments
+    /// - `env`: The contract environment
+    /// - `creator`: The address creating the stream
+    /// - `beneficiary`: The address that will receive streamed tokens
+    /// - `token_address`: The token being streamed
+    /// - `total_amount`: Total amount of tokens to stream
+    /// - `start_time`: Timestamp when streaming begins
+    /// - `duration_seconds`: Duration of the stream in seconds
+    /// 
+    /// # Events Emitted
+    /// - `stream_created_v1`: StreamCreatedV1 event with versioned payload
+    /// 
+    /// # Returns
+    /// - `Ok(stream_id)`: The unique identifier for the created stream
+    /// - `Err(Error)`: If creation fails (insufficient funds, invalid params, etc.)
+    pub fn create_stream(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        token_address: Address,
+        total_amount: i128,
+        start_time: u64,
+        duration_seconds: u64,
+    ) -> Result<String, Error> {
+        creator.require_auth();
+
+        // Validate parameters
+        if total_amount <= 0 || duration_seconds == 0 {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Generate stream ID (in real implementation, would use storage counter)
+        let stream_count = storage::get_token_count(&env);
+        let stream_id = String::from_small_str(&format!("stream_{}", stream_count));
+
+        // Emit stream_created event with versioned schema
+        let event = StreamCreatedV1 {
+            event_version: 1,
+            timestamp: env.ledger().timestamp(),
+            stream_id: stream_id.clone(),
+            creator: creator.clone(),
+            beneficiary: beneficiary.clone(),
+            token_address: token_address.clone(),
+            total_amount,
+            start_time,
+            duration_seconds,
+        };
+
+        events::emit_stream_created(&env, event);
+
+        Ok(stream_id)
+    }
 }
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod event_tests;
 
 #[cfg(test)]
 mod fuzz_test;

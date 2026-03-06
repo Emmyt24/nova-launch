@@ -570,3 +570,14 @@ pub fn emit_proposal_voted(
         (voter, vote_choice),
     );
 }
+
+pub fn emit_proposal_executed(
+    env: &Env,
+    proposal_id: u64,
+    action_type: crate::types::ActionType,
+) {
+    env.events().publish(
+        (symbol_short!("prop_exe"), proposal_id),
+        action_type,
+    );
+}

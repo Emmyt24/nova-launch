@@ -257,6 +257,17 @@ pub enum Error {
     NothingToClaim = 31,
     CliffNotReached = 32,
     InvalidSchedule = 33,  // Invalid time schedule (cliff outside valid bounds)
+    InvalidTimeWindow = 34,
+    PayloadTooLarge = 35,
+    ProposalNotQueued = 36,
+    ProposalAlreadyExecuted = 37,
+    ProposalCancelled = 38,
+    VotingNotEnded = 39,
+    ProposalNotPassed = 40,
+    ProposalNotFound = 41,
+    VotingNotStarted = 42,
+    VotingEnded = 43,
+    AlreadyVoted = 44,
 }
 
 /// Type of pending change
@@ -324,6 +335,9 @@ pub struct Proposal {
     pub votes_for: u32,
     pub votes_against: u32,
     pub votes_abstain: u32,
+    pub queued: bool,
+    pub cancelled: bool,
+    pub executed: bool,
 }
 
 /// Pending change awaiting timelock expiry

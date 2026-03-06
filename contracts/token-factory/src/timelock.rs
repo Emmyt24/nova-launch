@@ -503,6 +503,9 @@ pub fn create_proposal(
         votes_for: 0,
         votes_against: 0,
         votes_abstain: 0,
+        queued: false,
+        cancelled: false,
+        executed: false,
     };
 
     // Persist proposal
@@ -967,4 +970,61 @@ pub fn get_vote_counts(env: &Env, proposal_id: u64) -> Option<(u32, u32, u32)> {
 /// * `bool` - True if the address has voted, false otherwise
 pub fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
     storage::has_voted(env, proposal_id, voter)
+}
+
+pub fn execute_proposal(
+    env: &Env,
+    proposal_id: u64,
+) -> Result<(), Error> {
+    let mut proposal = storage::get_proposal(env, proposal_id)
+        .ok_or(Error::ProposalNotFound)?;
+
+    if !proposal.queued {
+        return Err(Error::ProposalNotQueued);
+    }
+
+    if proposal.cancelled {
+        return Err(Error::ProposalCancelled);
+    }
+
+    if proposal.executed {
+        return Err(Error::ProposalAlreadyExecuted);
+    }
+
+    let current_time = env.ledger().timestamp();
+    if current_time < proposal.eta {
+        return Err(Error::TimelockNotExpired);
+    }
+
+    match proposal.action_type {
+        ActionType::FeeChange => {
+            if proposal.payload.len() >= 8 {
+                let base_fee = 2_000_000_i128;
+                let metadata_fee = 750_000_i128;
+                
+                storage::set_base_fee(env, base_fee);
+                storage::set_metadata_fee(env, metadata_fee);
+                events::emit_fees_updated(env, base_fee, metadata_fee);
+            }
+        }
+        ActionType::TreasuryChange => {
+        }
+        ActionType::PauseContract => {
+            storage::set_paused(env, true);
+            events::emit_pause(env, &proposal.proposer);
+        }
+        ActionType::UnpauseContract => {
+            storage::set_paused(env, false);
+            events::emit_unpause(env, &proposal.proposer);
+        }
+        ActionType::PolicyUpdate => {
+        }
+    }
+
+    proposal.executed = true;
+    storage::set_proposal(env, proposal_id, &proposal);
+
+    events::emit_proposal_executed(env, proposal_id, proposal.action_type);
+
+    Ok(())
 }

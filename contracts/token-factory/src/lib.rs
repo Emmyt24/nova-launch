@@ -37,6 +37,16 @@ mod test_helpers;
 // mod stream_claim_parity_test_standalone;
 // #[cfg(test)]
 // mod stream_auth_test;
+// #[cfg(test)]
+// mod governance_e2e_test;
+// #[cfg(test)]
+// mod timelock_proposal_test;
+// #[cfg(test)]
+// mod timelock_voting_test;
+// #[cfg(test)]
+// mod timelock_test;
+// #[cfg(test)]
+// mod proposal_execution_test;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Vec, Vec as SorobanVec};
 use types::{ContractMetadata, Error, FactoryState, TokenInfo, TokenCreationParams, StreamInfo, StreamParams, TokenStats, TimelockConfig};

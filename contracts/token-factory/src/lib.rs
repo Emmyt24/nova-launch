@@ -34,6 +34,8 @@ mod stream_metadata_update_test;
 mod stream_claim_parity_test_standalone;
 #[cfg(test)]
 mod stream_auth_test;
+#[cfg(test)]
+mod stream_lifecycle_integration_test;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Vec, Vec as SorobanVec};
 use types::{ContractMetadata, Error, FactoryState, TokenInfo, TokenCreationParams, StreamInfo, StreamParams, TokenStats, TimelockConfig};

@@ -916,3 +916,25 @@ pub fn set_proposal(env: &Env, proposal_id: u64, proposal: &crate::types::Propos
         .persistent()
         .set(&DataKey::Proposal(proposal_id), proposal);
 }
+
+
+/// Check if an address has voted on a proposal
+pub fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::ProposalVote(proposal_id, voter.clone()))
+}
+
+/// Record a vote for a proposal
+pub fn set_vote(env: &Env, proposal_id: u64, voter: &Address, vote: crate::types::VoteChoice) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProposalVote(proposal_id, voter.clone()), &vote);
+}
+
+/// Get a vote for a proposal (if exists)
+pub fn get_vote(env: &Env, proposal_id: u64, voter: &Address) -> Option<crate::types::VoteChoice> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProposalVote(proposal_id, voter.clone()))
+}

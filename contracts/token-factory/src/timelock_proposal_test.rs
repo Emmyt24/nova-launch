@@ -54,6 +54,9 @@ fn test_create_proposal_valid() {
     assert_eq!(proposal.end_time, end_time);
     assert_eq!(proposal.eta, eta);
     assert_eq!(proposal.created_at, current_time);
+    assert_eq!(proposal.votes_for, 0);
+    assert_eq!(proposal.votes_against, 0);
+    assert_eq!(proposal.votes_abstain, 0);
 }
 
 #[test]

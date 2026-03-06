@@ -178,6 +178,7 @@ pub enum DataKey {
     ProposalCount,                  // Total number of proposals created
     Proposal(u64),                  // Proposal by ID
     NextProposalId,                 // Next available proposal ID
+    ProposalVote(u64, Address),     // Vote by proposal ID and voter address
 }
 
 /// Contract error codes
@@ -250,6 +251,9 @@ pub enum Error {
     InvalidTimeWindow = 32,
     PayloadTooLarge = 33,
     ProposalNotFound = 34,
+    VotingNotStarted = 35,
+    VotingEnded = 36,
+    AlreadyVoted = 37,
 }
 
 /// Type of pending change
@@ -276,6 +280,17 @@ pub enum ActionType {
     PolicyUpdate,
 }
 
+/// Vote choice for a proposal
+///
+/// Represents the voter's position on a proposal.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VoteChoice {
+    For,
+    Against,
+    Abstain,
+}
+
 /// Governance proposal
 ///
 /// Represents a proposal for a governance action with voting period.
@@ -289,6 +304,9 @@ pub enum ActionType {
 /// * `end_time` - Voting end timestamp
 /// * `eta` - Estimated time of execution after approval
 /// * `created_at` - Timestamp when proposal was created
+/// * `votes_for` - Number of votes in favor
+/// * `votes_against` - Number of votes against
+/// * `votes_abstain` - Number of abstain votes
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
@@ -300,6 +318,9 @@ pub struct Proposal {
     pub end_time: u64,
     pub eta: u64,
     pub created_at: u64,
+    pub votes_for: u32,
+    pub votes_against: u32,
+    pub votes_abstain: u32,
 }
 
 /// Pending change awaiting timelock expiry

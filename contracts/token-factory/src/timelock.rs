@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, Vec};
 #[cfg(test)]
 use soroban_sdk::testutils::Ledger;
-use crate::types::{Error, TimelockConfig, PendingChange, ChangeType, Proposal, ActionType};
+use crate::types::{Error, TimelockConfig, PendingChange, ChangeType, Proposal, ActionType, VoteChoice};
 use crate::storage;
 use crate::events;
 
@@ -500,6 +500,9 @@ pub fn create_proposal(
         end_time,
         eta,
         created_at: current_time,
+        votes_for: 0,
+        votes_against: 0,
+        votes_abstain: 0,
     };
 
     // Persist proposal
@@ -854,4 +857,114 @@ mod proposal_tests {
         let proposal = get_proposal(&env, proposal_id).unwrap();
         assert_eq!(proposal.payload.len(), 0);
     }
+}
+
+
+/// Vote on a governance proposal
+///
+/// Allows addresses to vote on proposals during the voting window.
+/// Enforces one vote per address and validates voting window.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `voter` - Address casting the vote
+/// * `proposal_id` - The proposal ID to vote on
+/// * `support` - Vote choice (For, Against, Abstain)
+///
+/// # Returns
+/// * `Ok(())` - Vote successfully recorded
+/// * `Err(Error)` - If validation fails
+///
+/// # Errors
+/// * `Error::ProposalNotFound` - If proposal doesn't exist
+/// * `Error::VotingNotStarted` - If voting hasn't started yet
+/// * `Error::VotingEnded` - If voting period has ended
+/// * `Error::AlreadyVoted` - If voter has already voted
+///
+/// # Events
+/// Emits `proposal_voted` event on success
+pub fn vote_proposal(
+    env: &Env,
+    voter: &Address,
+    proposal_id: u64,
+    support: VoteChoice,
+) -> Result<(), Error> {
+    // Verify voter authentication
+    voter.require_auth();
+
+    // Get proposal
+    let mut proposal = storage::get_proposal(env, proposal_id)
+        .ok_or(Error::ProposalNotFound)?;
+
+    // Validate voting window
+    let current_time = env.ledger().timestamp();
+    
+    if current_time < proposal.start_time {
+        return Err(Error::VotingNotStarted);
+    }
+    
+    if current_time >= proposal.end_time {
+        return Err(Error::VotingEnded);
+    }
+
+    // Check for duplicate vote
+    if storage::has_voted(env, proposal_id, voter) {
+        return Err(Error::AlreadyVoted);
+    }
+
+    // Record vote
+    storage::set_vote(env, proposal_id, voter, support.clone());
+
+    // Update vote counts
+    match support {
+        VoteChoice::For => {
+            proposal.votes_for = proposal.votes_for.checked_add(1)
+                .expect("Vote count overflow");
+        }
+        VoteChoice::Against => {
+            proposal.votes_against = proposal.votes_against.checked_add(1)
+                .expect("Vote count overflow");
+        }
+        VoteChoice::Abstain => {
+            proposal.votes_abstain = proposal.votes_abstain.checked_add(1)
+                .expect("Vote count overflow");
+        }
+    }
+
+    // Update proposal in storage
+    storage::set_proposal(env, proposal_id, &proposal);
+
+    // Emit event
+    events::emit_proposal_voted(env, proposal_id, voter, support);
+
+    Ok(())
+}
+
+/// Get vote counts for a proposal
+///
+/// Returns the current vote tallies for a proposal.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `proposal_id` - The proposal ID to query
+///
+/// # Returns
+/// * `Some((u32, u32, u32))` - (votes_for, votes_against, votes_abstain)
+/// * `None` - If proposal doesn't exist
+pub fn get_vote_counts(env: &Env, proposal_id: u64) -> Option<(u32, u32, u32)> {
+    storage::get_proposal(env, proposal_id)
+        .map(|p| (p.votes_for, p.votes_against, p.votes_abstain))
+}
+
+/// Check if an address has voted on a proposal
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `proposal_id` - The proposal ID to check
+/// * `voter` - The address to check
+///
+/// # Returns
+/// * `bool` - True if the address has voted, false otherwise
+pub fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
+    storage::has_voted(env, proposal_id, voter)
 }

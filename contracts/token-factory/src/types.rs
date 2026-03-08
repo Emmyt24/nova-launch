@@ -269,74 +269,27 @@ pub enum Error {
     InvalidBurnAmount = 12,
     BurnAmountExceedsBalance = 13,
     ContractPaused = 14,
-    TimelockNotExpired = 15,
-    ChangeAlreadyExecuted = 16,
-    MaxSupplyExceeded = 17,
-    InvalidMaxSupply = 18,
-    WithdrawalCapExceeded = 19,
-    RecipientNotAllowed = 20,
-    MissingAdmin = 21,
-    MissingTreasury = 22,
-    InvalidBaseFee = 23,
-    InvalidMetadataFee = 24,
-    InconsistentTokenCount = 25,
-    TokenPaused = 26,
-    StreamNotFound = 27,
-    CliffNotReached = 28,
-    StreamCancelled = 29,
-    InvalidSchedule = 30,
-    StreamPaused = 31,
-    VotingNotStarted = 32,
-    VotingEnded = 33,
-    ProposalExecuted = 34,
-    ProposalCancelled = 35,
-    InvalidVote = 36,
-    ProposalInTerminalState = 37,
-    InvalidStateTransition = 38,
-    QuorumNotMet = 39,
-    ProposalNotFound = 40,
-    ProposalNotQueued = 41,
-    InvalidTimeWindow = 44,
-    PayloadTooLarge = 45,
-    AlreadyVoted = 46,
-    VotingClosed = 47,
-    AddressFrozen = 48,
-    FreezeNotEnabled = 49,
-    AddressNotFrozen = 50,
-    VaultNotFound = 60,
-    VaultLocked = 61,
-    VaultAlreadyClaimed = 62,
-    VaultCancelled = 63,
-    InvalidVaultConfig = 64,
-    NothingToClaim = 65,
-}
-
-/// Governance configuration
-///
-/// Defines quorum and approval thresholds for governance operations.
-///
-/// # Fields
-/// * `quorum_percent` - Minimum participation percentage (0-100)
-/// * `approval_percent` - Minimum approval percentage (0-100)
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GovernanceConfig {
-    pub quorum_percent: u32,
-    pub approval_percent: u32,
-}
-
-/// Timelock configuration
-///
-/// Defines the delay period for sensitive operations.
-///
-/// # Fields
-/// * `delay_seconds` - Time delay in seconds before changes can be executed
-/// * `enabled` - Whether timelock is currently active
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimelockConfig {
-    pub delay_seconds: u64,
-    pub enabled: bool,
+    InvalidTokenParams = 15,
+    BatchCreationFailed = 16,
+    StreamNotFound = 17,
+    InvalidSchedule = 18,
+    StreamCancelled = 19,
+    CliffNotReached = 20,
+    NothingToClaim = 21,
+    MissingAdmin = 22,
+    MissingTreasury = 23,
+    InvalidBaseFee = 24,
+    InvalidMetadataFee = 25,
+    InconsistentTokenCount = 26,
+    WithdrawalCapExceeded = 27,
+    RecipientNotAllowed = 28,
+    TimelockNotExpired = 29,
+    ChangeAlreadyExecuted = 30,
+    ChangeNotFound = 31,
+    MaxSupplyExceeded = 32,
+    InvalidMaxSupply = 33,
+    MintingDisabled = 34,
+    TokenPaused = 35,
 }
 
 /// Type of pending change

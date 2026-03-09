@@ -716,7 +716,24 @@ xlmToStroops(xlm: number | string): number
 
 ## 🧪 Testing
 
-### Running Tests
+### Quick Start
+
+Use the unified test runner for all test categories:
+
+```bash
+# Fast mode (2-5 min) - Local development
+./scripts/run-tests.sh -m fast
+
+# Full mode (10-15 min) - PR validation
+./scripts/run-tests.sh -m full
+
+# Nightly mode (30-60 min) - Comprehensive
+./scripts/run-tests.sh -m nightly
+```
+
+See [Test Runner Documentation](docs/TEST_RUNNER.md) for detailed usage.
+
+### Running Tests Manually
 
 ```bash
 # Frontend tests
@@ -731,30 +748,55 @@ cargo test              # Run all tests
 cargo test -- --nocapture  # Run with output
 ```
 
-### Test Structure
+### Test Categories
 
 #### Unit Tests
+Tests individual functions and modules in isolation.
 
-Located in `__tests__` directories:
-- Validation utilities
-- Formatting utilities
-- Component rendering
-- Hook behavior
-
-#### Property-Based Tests
-
-Using `fast-check` for frontend and `proptest` for contracts:
-- Fee calculation consistency
-- Token creation atomicity
-- Supply conservation
-- Admin-only operations
+```bash
+cargo test --lib --tests
+```
 
 #### Integration Tests
+Tests interactions between components.
 
-- Full deployment flow
-- Wallet connection
-- IPFS upload
-- Transaction monitoring
+```bash
+cargo test --test '*'
+```
+
+#### Property-Based Tests
+Randomized testing for governance invariants:
+- Monotonic vote totals
+- Single-vote-per-address
+- Execution preconditions
+- Terminal state permanence
+- Vote distribution consistency
+
+```bash
+cargo test --lib --profile ci
+```
+
+#### Benchmarks
+Performance testing (nightly mode only).
+
+```bash
+cargo bench --no-run
+```
+
+### Test Modes
+
+| Mode | Duration | Tests | Use Case |
+|------|----------|-------|----------|
+| **Fast** | 2-5 min | Unit + Integration | Local dev, pre-commit |
+| **Full** | 10-15 min | + Property tests | PR validation, CI |
+| **Nightly** | 30-60 min | + Benchmarks + WASM | Release validation |
+
+### CI Integration
+
+Tests run automatically on:
+- **Push**: Fast mode
+- **Pull Request**: Full mode
+- **Schedule**: Nightly mode (2 AM UTC)
 
 ### Test Coverage
 

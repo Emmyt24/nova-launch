@@ -10,6 +10,7 @@ import { PWAUpdateNotification } from "./components/PWA";
 const LandingPage = lazy(() => import("./pages/LandingPage"));
 const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
+const CampaignDashboard = lazy(() => import("./app/dashboard/CampaignDashboard"));
 
 // Loading fallback
 function PageLoader() {
@@ -80,6 +81,20 @@ function App() {
   }, [pathname]);
 
   const page = useMemo(() => {
+    if (pathname === "/campaign-dashboard") {
+      return (
+        <DashboardLayout
+          wallet={wallet}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          isConnecting={isConnecting}
+          currentPath={pathname}
+        >
+          <CampaignDashboard />
+        </DashboardLayout>
+      );
+    }
+
     if (pathname === "/recurring-payments") {
       return (
         <DashboardLayout

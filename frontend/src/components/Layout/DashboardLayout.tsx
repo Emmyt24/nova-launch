@@ -20,6 +20,15 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    label: 'Campaign Dashboard',
+    href: '/campaign-dashboard',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-6m3 6V7m3 10v-4m3 8H6a2 2 0 01-2-2V5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2z" />
+      </svg>
+    ),
+  },
+  {
     label: 'Recurring Payments',
     href: '/recurring-payments',
     icon: (

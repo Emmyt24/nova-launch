@@ -522,6 +522,29 @@ pub fn emit_vault_created(
     );
 }
 
+/// Emit vault claimed event
+///
+/// Published when a vault owner claims unlocked tokens.
+pub fn emit_vault_claimed(env: &Env, vault_id: u64, owner: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("vlt_clm"), vault_id), (owner.clone(), amount));
+}
+
+/// Emit vault cancelled event
+///
+/// Published when a vault is cancelled by an authorized actor.
+pub fn emit_vault_cancelled(
+    env: &Env,
+    vault_id: u64,
+    actor: &Address,
+    remaining_amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("vlt_cnl"), vault_id),
+        (actor.clone(), remaining_amount),
+    );
+}
+
 /// Emit metadata set event
 /// 
 /// Published when metadata is set for a token

@@ -627,3 +627,142 @@ mod tests {
         });
     }
 }
+
+    #[test]
+    fn test_campaign_status_serialization_round_trip() {
+        let (env, contract_id) = setup();
+        let variants = [
+            super::CampaignStatus::Active,
+            super::CampaignStatus::Paused,
+            super::CampaignStatus::Completed,
+            super::CampaignStatus::Cancelled,
+        ];
+
+        env.as_contract(&contract_id, || {
+            for (i, status) in variants.iter().enumerate() {
+                let key = DataKey::Campaign(i as u64);
+                env.storage().instance().set(&key, status);
+                let decoded: super::CampaignStatus = env.storage().instance().get(&key).unwrap();
+                assert_eq!(decoded, *status);
+            }
+        });
+    }
+
+    #[test]
+    fn test_campaign_serialization_round_trip() {
+        let (env, contract_id) = setup();
+        let campaign = super::BuybackCampaign {
+            id: 1,
+            token_index: 0,
+            owner: Address::generate(&env),
+            budget_allocated: 10_000_0000000,
+            budget_spent: 2_500_0000000,
+            tokens_burned: 50_000_0000000,
+            burn_count: 10,
+            start_time: 1700000000,
+            end_time: 1702592000,
+            status: super::CampaignStatus::Active,
+            created_at: 1700000000,
+        };
+
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Campaign(campaign.id);
+            env.storage().instance().set(&key, &campaign);
+            let decoded: super::BuybackCampaign = env.storage().instance().get(&key).unwrap();
+            assert_eq!(decoded, campaign);
+        });
+    }
+
+    #[test]
+    fn test_campaign_deterministic_encoding() {
+        let (env, contract_id) = setup();
+        let owner = Address::generate(&env);
+        
+        let campaign1 = super::BuybackCampaign {
+            id: 42,
+            token_index: 5,
+            owner: owner.clone(),
+            budget_allocated: 1_000_000,
+            budget_spent: 250_000,
+            tokens_burned: 10_000,
+            burn_count: 5,
+            start_time: 1700000000,
+            end_time: 1702592000,
+            status: super::CampaignStatus::Active,
+            created_at: 1700000000,
+        };
+
+        let campaign2 = super::BuybackCampaign {
+            id: 42,
+            token_index: 5,
+            owner: owner.clone(),
+            budget_allocated: 1_000_000,
+            budget_spent: 250_000,
+            tokens_burned: 10_000,
+            burn_count: 5,
+            start_time: 1700000000,
+            end_time: 1702592000,
+            status: super::CampaignStatus::Active,
+            created_at: 1700000000,
+        };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Campaign(1), &campaign1);
+            env.storage().instance().set(&DataKey::Campaign(2), &campaign2);
+
+            let decoded1: super::BuybackCampaign = env.storage().instance().get(&DataKey::Campaign(1)).unwrap();
+            let decoded2: super::BuybackCampaign = env.storage().instance().get(&DataKey::Campaign(2)).unwrap();
+
+            assert_eq!(decoded1, decoded2);
+            assert_eq!(decoded1, campaign1);
+            assert_eq!(decoded2, campaign2);
+        });
+    }
+
+    #[test]
+    fn test_campaign_datakey_serialization_round_trip() {
+        let (env, contract_id) = setup();
+        let owner = Address::generate(&env);
+        let keys = [
+            DataKey::Campaign(1),
+            DataKey::Campaign(999),
+            DataKey::CampaignCount,
+            DataKey::CampaignByOwner(owner.clone(), 0),
+            DataKey::OwnerCampaignCount(owner.clone()),
+            DataKey::ActiveCampaigns,
+            DataKey::ActiveCampaignCount,
+        ];
+
+        env.as_contract(&contract_id, || {
+            for (i, key) in keys.iter().enumerate() {
+                env.storage().instance().set(key, &(i as u32));
+                let value: u32 = env.storage().instance().get(key).unwrap();
+                assert_eq!(value, i as u32);
+            }
+        });
+    }
+
+    #[test]
+    fn test_campaign_boundary_values() {
+        let (env, contract_id) = setup();
+        
+        let campaign = super::BuybackCampaign {
+            id: u64::MAX,
+            token_index: u32::MAX,
+            owner: Address::generate(&env),
+            budget_allocated: i128::MAX,
+            budget_spent: 0,
+            tokens_burned: i128::MAX,
+            burn_count: u32::MAX,
+            start_time: u64::MAX,
+            end_time: u64::MAX,
+            status: super::CampaignStatus::Completed,
+            created_at: u64::MAX,
+        };
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Campaign(u64::MAX), &campaign);
+            let decoded: super::BuybackCampaign = env.storage().instance().get(&DataKey::Campaign(u64::MAX)).unwrap();
+            assert_eq!(decoded, campaign);
+        });
+    }

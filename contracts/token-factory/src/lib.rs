@@ -29,6 +29,9 @@ mod vesting;
 mod validation;
 
 #[cfg(test)]
+mod campaign_state_test;
+
+#[cfg(test)]
 mod governance_property_test;
 
 #[cfg(test)]

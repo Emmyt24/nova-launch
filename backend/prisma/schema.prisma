@@ -48,6 +48,52 @@ model BurnRecord {
   token Token @relation(fields: [tokenId], references: [id])
 
   @@index([tokenId])
+}
+
+model BuybackCampaign {
+  id              Int      @id @default(autoincrement())
+  tokenAddress    String
+  totalAmount     String
+  executedAmount  String   @default("0")
+  currentStep     Int      @default(0)
+  totalSteps      Int
+  status          CampaignStatus @default(ACTIVE)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  steps           BuybackStep[]
+
+  @@index([status])
+  @@index([tokenAddress])
+  @@index([createdAt])
+}
+
+model BuybackStep {
+  id              Int      @id @default(autoincrement())
+  campaignId      Int
+  stepNumber      Int
+  amount          String
+  status          StepStatus @default(PENDING)
+  executedAt      DateTime?
+  txHash          String?
+  
+  campaign        BuybackCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, stepNumber])
+  @@index([status])
+}
+
+enum CampaignStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum StepStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
   @@index([from])
   @@index([txHash])
   @@index([timestamp])
@@ -185,4 +231,62 @@ enum ProposalStatus {
   EXECUTED
   CANCELLED
   EXPIRED
+}
+
+model Campaign {
+  id            String         @id @default(uuid())
+  campaignId    Int            @unique
+  tokenId       String
+  creator       String
+  type          CampaignType
+  status        CampaignStatus @default(ACTIVE)
+  targetAmount  BigInt
+  currentAmount BigInt         @default(0)
+  executionCount Int           @default(0)
+  startTime     DateTime
+  endTime       DateTime?
+  metadata      String?
+  txHash        String         @unique
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  completedAt   DateTime?
+  cancelledAt   DateTime?
+
+  executions CampaignExecution[]
+
+  @@index([tokenId])
+  @@index([creator])
+  @@index([status])
+  @@index([type])
+  @@index([startTime])
+  @@index([createdAt])
+}
+
+model CampaignExecution {
+  id         String   @id @default(uuid())
+  campaignId String
+  executor   String
+  amount     BigInt
+  recipient  String?
+  txHash     String   @unique
+  executedAt DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+
+  @@index([campaignId])
+  @@index([executor])
+  @@index([executedAt])
+}
+
+enum CampaignType {
+  BUYBACK
+  AIRDROP
+  LIQUIDITY
+}
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
 }

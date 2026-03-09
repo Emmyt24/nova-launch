@@ -1,0 +1,246 @@
+# Buyback Campaign Feature - Issue #559
+
+## Overview
+
+This implementation provides a complete buyback campaign system with step-by-step execution, transaction feedback, and comprehensive state management.
+
+## Architecture
+
+### Smart Contract Layer
+- **Location**: `contracts/token-factory/src/buyback.rs`
+- **Functions**:
+  - `create_buyback_campaign`: Create a new campaign with multiple steps
+  - `execute_buyback_step`: Execute the current step (burns tokens)
+  - `get_campaign`: Retrieve campaign details
+  - `get_campaign_step`: Get specific step information
+  - `cancel_campaign`: Cancel an active campaign
+
+### Backend API Layer
+- **Location**: `backend/src/routes/buyback.ts`
+- **Endpoints**:
+  - `POST /api/buyback/campaigns` - Create campaign
+  - `GET /api/buyback/campaigns` - List campaigns (with filtering/pagination)
+  - `GET /api/buyback/campaigns/:id` - Get campaign details
+  - `POST /api/buyback/campaigns/:id/execute-step` - Execute step
+  - `POST /api/buyback/campaigns/:id/cancel` - Cancel campaign
+
+### Frontend Components
+- **Location**: `frontend/src/components/BuybackCampaign/`
+- **Components**:
+  - `ExecuteStepButton`: Button with transaction state management
+  - `CampaignDashboard`: Full campaign view with progress tracking
+
+## Features Implemented
+
+### ✅ Execute Button Integration
+- Wired to `execute_buyback_step` contract function
+- Proper wallet authentication
+- Transaction signing via Freighter
+
+### ✅ State Management
+- **Idle**: Ready to execute
+- **Pending**: Transaction in progress
+- **Success**: Transaction confirmed
+- **Failure**: Transaction failed with retry option
+
+### ✅ Permission Control
+- Disabled when wallet not connected
+- Disabled when campaign is not ACTIVE
+- Disabled when all steps completed
+- Only campaign creator can execute
+
+### ✅ Transaction Feedback
+- Real-time status updates
+- Transaction hash display
+- Link to Stellar Expert
+- Error messages with details
+- Loading indicators
+
+### ✅ Comprehensive Testing
+- Unit tests for all components
+- Integration tests for API routes
+- State transition tests
+- Wallet failure handling
+- Edge case coverage
+
+## Usage
+
+### Creating a Campaign
+
+```typescript
+const response = await fetch('/api/buyback/campaigns', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    tokenAddress: 'GTEST...',
+    totalAmount: '10000',
+    steps: ['2000', '3000', '5000']
+  })
+});
+```
+
+### Executing a Step
+
+```tsx
+import { ExecuteStepButton } from './components/BuybackCampaign';
+
+<ExecuteStepButton
+  campaignId={1}
+  currentStep={0}
+  stepAmount="2000"
+  status="ACTIVE"
+  onSuccess={(txHash) => console.log('Success:', txHash)}
+  onError={(error) => console.error('Failed:', error)}
+/>
+```
+
+### Viewing Campaign Dashboard
+
+```tsx
+import { CampaignDashboard } from './components/BuybackCampaign';
+
+<CampaignDashboard campaignId={1} />
+```
+
+## Database Schema
+
+```prisma
+model BuybackCampaign {
+  id              Int      @id @default(autoincrement())
+  tokenAddress    String
+  totalAmount     String
+  executedAmount  String   @default("0")
+  currentStep     Int      @default(0)
+  totalSteps      Int
+  status          CampaignStatus @default(ACTIVE)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  steps           BuybackStep[]
+}
+
+model BuybackStep {
+  id              Int      @id @default(autoincrement())
+  campaignId      Int
+  stepNumber      Int
+  amount          String
+  status          StepStatus @default(PENDING)
+  executedAt      DateTime?
+  txHash          String?
+  campaign        BuybackCampaign @relation(...)
+}
+```
+
+## Error Handling
+
+### Contract Errors (Reused from existing codes)
+- `TokenNotFound` (4): Campaign or step doesn't exist
+- `ContractPaused` (14): Campaign is not active (completed/cancelled)
+- `InvalidParameters` (3): All steps completed
+- `ChangeAlreadyExecuted` (30): Step already executed
+- `Unauthorized` (2): Not campaign creator
+
+Note: To stay within Soroban's error enum limit (50 variants), buyback errors reuse existing error codes with appropriate semantic meaning.
+
+### Frontend Error Handling
+- Wallet connection failures
+- Transaction signing failures
+- Network errors
+- Contract execution failures
+- All errors display user-friendly messages
+
+## Testing
+
+### Run All Tests
+
+```bash
+# Frontend tests
+cd frontend
+npm test
+
+# Backend tests
+cd backend
+npm test
+
+# Contract tests
+cd contracts/token-factory
+cargo test buyback
+```
+
+### Test Coverage
+- ✅ Button state transitions
+- ✅ Transaction execution flow
+- ✅ Success/failure scenarios
+- ✅ Wallet disconnection handling
+- ✅ Permission validation
+- ✅ API endpoint validation
+- ✅ Database operations
+- ✅ Edge cases
+
+## Security Considerations
+
+1. **Authorization**: Only campaign creator can execute steps
+2. **State Validation**: Campaign must be ACTIVE
+3. **Step Ordering**: Steps execute sequentially
+4. **Idempotency**: Prevents double execution
+5. **Rate Limiting**: API endpoints are rate-limited
+6. **Input Validation**: All inputs validated on backend
+
+## Performance
+
+- **Gas Optimization**: Minimal contract calls
+- **Caching**: Campaign data cached on frontend
+- **Pagination**: Large campaign lists paginated
+- **Lazy Loading**: Steps loaded on demand
+
+## Deployment
+
+### 1. Deploy Contract
+
+```bash
+cd contracts/token-factory
+cargo build --target wasm32-unknown-unknown --release
+soroban contract deploy --wasm target/wasm32-unknown-unknown/release/token_factory.wasm
+```
+
+### 2. Run Database Migration
+
+```bash
+cd backend
+npx prisma migrate dev --name add_buyback_campaigns
+```
+
+### 3. Update Environment Variables
+
+```env
+VITE_FACTORY_CONTRACT_ID=<contract_id>
+```
+
+### 4. Deploy Frontend
+
+```bash
+cd frontend
+npm run build
+npm run deploy
+```
+
+## Monitoring
+
+- Transaction success/failure rates
+- Average execution time
+- Campaign completion rates
+- Error frequency by type
+
+## Future Enhancements
+
+- [ ] Batch step execution
+- [ ] Scheduled execution
+- [ ] Multi-token campaigns
+- [ ] Campaign templates
+- [ ] Analytics dashboard
+- [ ] Email notifications
+
+## Support
+
+For issues or questions:
+- GitHub Issues: [Nova-launch/issues](https://github.com/Emmyt24/Nova-launch/issues)
+- Documentation: [docs/buyback-campaigns.md](docs/buyback-campaigns.md)

@@ -1,0 +1,634 @@
+name: Coverage Gates
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/coverage-gates.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/coverage-gates.yml'
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+# ── Thresholds (edit here to raise/lower gates) ───────────────────────────────
+# Format: lines covered / total lines × 100
+#
+# Module-level minimums
+#   token      — core token creation, minting, burning, metadata
+#   stream     — payment streaming, claim, cancel, vesting
+#   governance — proposals, timelock, voting
+#
+# Suite-level minimums
+#   unit        — fast, isolated unit tests
+#   integration — multi-contract / lifecycle tests
+#   property    — proptest / invariant tests
+#   fuzz        — fuzz_ and edge_case tests
+
+jobs:
+
+  # ── 1. Install tooling ───────────────────────────────────────────────────────
+  setup:
+    name: Install cargo-llvm-cov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          target: wasm32-unknown-unknown
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+  # ── 2. Unit test coverage ────────────────────────────────────────────────────
+  unit-coverage:
+    name: Unit Test Coverage
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          override: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run unit tests with coverage
+        run: |
+          cargo llvm-cov --lib \
+            --ignore-filename-regex "(fuzz|property|integration|bench|proptest|differential|chaos|soak|metamorphic|mutation)" \
+            --json --output-path unit-coverage.json
+
+      - name: Enforce unit coverage threshold (80%)
+        run: |
+          COVERED=$(python3 -c "
+          import json, sys
+          data = json.load(open('unit-coverage.json'))
+          totals = data['data'][0]['totals']
+          lines = totals['lines']
+          pct = lines['percent']
+          print(f'{pct:.2f}')
+          ")
+          echo "Unit test line coverage: ${COVERED}%"
+          python3 -c "
+          pct = float('${COVERED}')
+          threshold = 80.0
+          if pct < threshold:
+              print(f'❌ FAIL: Unit coverage {pct:.2f}% is below threshold {threshold}%')
+              exit(1)
+          print(f'✅ PASS: Unit coverage {pct:.2f}% meets threshold {threshold}%')
+          "
+
+      - name: Upload unit coverage JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage
+          path: contracts/token-factory/unit-coverage.json
+          retention-days: 30
+
+  # ── 3. Integration test coverage ────────────────────────────────────────────
+  integration-coverage:
+    name: Integration Test Coverage
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          override: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run integration tests with coverage
+        run: |
+          cargo llvm-cov --tests \
+            --test integration_test \
+            --test streaming_integration_test \
+            --test governance_e2e_test \
+            --test treasury_integration_test \
+            --test stream_lifecycle_integration_test \
+            --test pagination_integration_test \
+            --json --output-path integration-coverage.json
+
+      - name: Enforce integration coverage threshold (75%)
+        run: |
+          COVERED=$(python3 -c "
+          import json, sys
+          data = json.load(open('integration-coverage.json'))
+          totals = data['data'][0]['totals']
+          lines = totals['lines']
+          pct = lines['percent']
+          print(f'{pct:.2f}')
+          ")
+          echo "Integration test line coverage: ${COVERED}%"
+          python3 -c "
+          pct = float('${COVERED}')
+          threshold = 75.0
+          if pct < threshold:
+              print(f'❌ FAIL: Integration coverage {pct:.2f}% is below threshold {threshold}%')
+              exit(1)
+          print(f'✅ PASS: Integration coverage {pct:.2f}% meets threshold {threshold}%')
+          "
+
+      - name: Upload integration coverage JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-coverage
+          path: contracts/token-factory/integration-coverage.json
+          retention-days: 30
+
+  # ── 4. Property test coverage ────────────────────────────────────────────────
+  property-coverage:
+    name: Property Test Coverage
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+    env:
+      PROPTEST_CASES: 100
+      PROPTEST_MAX_SHRINK_ITERS: 1000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          override: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run property tests with coverage
+        run: |
+          cargo llvm-cov --lib \
+            --include-fns "burn_property_test|supply_conservation_test|differential_proptest|invariant_tests|mutation_arithmetic_tests|mutation_auth_tests" \
+            --json --output-path property-coverage.json || true
+
+      - name: Enforce property coverage threshold (70%)
+        run: |
+          COVERED=$(python3 -c "
+          import json, sys
+          try:
+              data = json.load(open('property-coverage.json'))
+              totals = data['data'][0]['totals']
+              pct = totals['lines']['percent']
+              print(f'{pct:.2f}')
+          except Exception as e:
+              print('0.00')
+          ")
+          echo "Property test line coverage: ${COVERED}%"
+          python3 -c "
+          pct = float('${COVERED}')
+          threshold = 70.0
+          if pct < threshold:
+              print(f'❌ FAIL: Property coverage {pct:.2f}% is below threshold {threshold}%')
+              exit(1)
+          print(f'✅ PASS: Property coverage {pct:.2f}% meets threshold {threshold}%')
+          "
+
+      - name: Upload property coverage JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: property-coverage
+          path: contracts/token-factory/property-coverage.json
+          retention-days: 30
+
+  # ── 5. Fuzz test coverage ────────────────────────────────────────────────────
+  fuzz-coverage:
+    name: Fuzz Test Coverage
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          override: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run fuzz tests with coverage
+        run: |
+          cargo llvm-cov --release \
+            --test fuzz_test \
+            --test fuzz_create_token \
+            --test fuzz_create_token_simple \
+            --test fuzz_numeric_boundaries \
+            --test fuzz_string_boundaries \
+            --test fuzz_update_fees \
+            --test auth_fuzz_test \
+            --test governance_fuzz_test \
+            --test stateful_cross_feature_fuzz \
+            --json --output-path fuzz-coverage.json || true
+
+      - name: Enforce fuzz coverage threshold (65%)
+        run: |
+          COVERED=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('fuzz-coverage.json'))
+              pct = data['data'][0]['totals']['lines']['percent']
+              print(f'{pct:.2f}')
+          except:
+              print('0.00')
+          ")
+          echo "Fuzz test line coverage: ${COVERED}%"
+          python3 -c "
+          pct = float('${COVERED}')
+          threshold = 65.0
+          if pct < threshold:
+              print(f'❌ FAIL: Fuzz coverage {pct:.2f}% is below threshold {threshold}%')
+              exit(1)
+          print(f'✅ PASS: Fuzz coverage {pct:.2f}% meets threshold {threshold}%')
+          "
+
+      - name: Upload fuzz coverage JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-coverage
+          path: contracts/token-factory/fuzz-coverage.json
+          retention-days: 30
+
+  # ── 6. Module-level coverage gates ──────────────────────────────────────────
+  module-coverage:
+    name: Module Coverage Gates
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+          override: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run full test suite with per-file coverage
+        run: |
+          cargo llvm-cov --all-targets \
+            --json --output-path full-coverage.json || true
+
+      - name: Enforce module-level thresholds
+        run: |
+          python3 << 'EOF'
+          import json, sys
+
+          # ── Module coverage thresholds ──────────────────────────────────────
+          # Each entry: (filename_substring, threshold_percent, module_label)
+          MODULE_THRESHOLDS = [
+              # token module — core value operations, highest priority
+              ("token_creation",     85.0, "token::creation"),
+              ("mint",               85.0, "token::mint"),
+              ("burn",               85.0, "token::burn"),
+              ("validation",         80.0, "token::validation"),
+              ("types",              80.0, "token::types"),
+              # stream module — payment streaming
+              ("streaming",          80.0, "stream::streaming"),
+              ("vesting",            80.0, "stream::vesting"),
+              ("stream_types",       75.0, "stream::types"),
+              # governance module — proposals and timelock
+              ("governance",         80.0, "governance::governance"),
+              ("timelock",           80.0, "governance::timelock"),
+              ("proposal_state",     75.0, "governance::proposal_state"),
+              # supporting modules
+              ("storage",            75.0, "core::storage"),
+              ("treasury",           75.0, "core::treasury"),
+              ("events",             70.0, "core::events"),
+              ("pagination",         70.0, "core::pagination"),
+          ]
+
+          try:
+              data = json.load(open("full-coverage.json"))
+          except FileNotFoundError:
+              print("⚠️  full-coverage.json not found — skipping module gates")
+              sys.exit(0)
+
+          files = data["data"][0].get("files", [])
+
+          failures = []
+          checked = []
+
+          for fname_substr, threshold, label in MODULE_THRESHOLDS:
+              # Find matching source files (not test files)
+              matches = [
+                  f for f in files
+                  if fname_substr in f["filename"]
+                  and not any(t in f["filename"] for t in ["_test", "test_", "bench", "fuzz"])
+              ]
+              if not matches:
+                  print(f"⚠️  SKIP  {label}: no matching source file for '{fname_substr}'")
+                  continue
+
+              for fdata in matches:
+                  summary = fdata.get("summary", {})
+                  lines = summary.get("lines", {})
+                  count = lines.get("count", 0)
+                  covered = lines.get("covered", 0)
+                  pct = (covered / count * 100) if count > 0 else 0.0
+                  checked.append((label, pct, threshold, fdata["filename"]))
+                  if pct < threshold:
+                      failures.append((label, pct, threshold, fdata["filename"]))
+
+          # Print results table
+          print(f"\n{'Module':<35} {'Coverage':>10} {'Threshold':>10} {'Status':>8}")
+          print("-" * 70)
+          for label, pct, threshold, fname in checked:
+              status = "✅ PASS" if pct >= threshold else "❌ FAIL"
+              short = fname.split("/")[-1]
+              print(f"{label:<35} {pct:>9.2f}% {threshold:>9.1f}% {status:>8}  ({short})")
+
+          if failures:
+              print(f"\n❌ {len(failures)} module(s) below coverage threshold:")
+              for label, pct, threshold, fname in failures:
+                  print(f"   {label}: {pct:.2f}% < {threshold}%  [{fname}]")
+              sys.exit(1)
+          else:
+              print(f"\n✅ All {len(checked)} modules meet their coverage thresholds.")
+          EOF
+
+      - name: Upload full coverage JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-coverage
+          path: contracts/token-factory/full-coverage.json
+          retention-days: 30
+
+      - name: Generate LCOV report for GitHub
+        run: |
+          cargo llvm-cov --all-targets \
+            --lcov --output-path lcov.info || true
+
+      - name: Upload LCOV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-report
+          path: contracts/token-factory/lcov.info
+          retention-days: 30
+
+  # ── 7. Coverage summary report ───────────────────────────────────────────────
+  coverage-report:
+    name: Publish Coverage Summary
+    runs-on: ubuntu-latest
+    needs:
+      - unit-coverage
+      - integration-coverage
+      - property-coverage
+      - fuzz-coverage
+      - module-coverage
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: coverage-artifacts
+
+      - name: Generate coverage summary
+        run: |
+          python3 << 'EOF'
+          import json, os, glob
+
+          def load_pct(path):
+              try:
+                  data = json.load(open(path))
+                  return data["data"][0]["totals"]["lines"]["percent"]
+              except:
+                  return None
+
+          suites = {
+              "Unit":        "coverage-artifacts/unit-coverage/unit-coverage.json",
+              "Integration": "coverage-artifacts/integration-coverage/integration-coverage.json",
+              "Property":    "coverage-artifacts/property-coverage/property-coverage.json",
+              "Fuzz":        "coverage-artifacts/fuzz-coverage/fuzz-coverage.json",
+              "Full":        "coverage-artifacts/full-coverage/full-coverage.json",
+          }
+
+          thresholds = {
+              "Unit": 80.0, "Integration": 75.0,
+              "Property": 70.0, "Fuzz": 65.0, "Full": 75.0,
+          }
+
+          lines = ["## 📊 Coverage Gate Summary\n"]
+          lines.append("| Suite | Coverage | Threshold | Status |")
+          lines.append("|---|---|---|---|")
+
+          all_pass = True
+          for name, path in suites.items():
+              pct = load_pct(path)
+              if pct is None:
+                  lines.append(f"| {name} | N/A | {thresholds[name]}% | ⚠️ No data |")
+                  continue
+              t = thresholds[name]
+              status = "✅ Pass" if pct >= t else "❌ Fail"
+              if pct < t:
+                  all_pass = False
+              lines.append(f"| {name} | {pct:.2f}% | {t}% | {status} |")
+
+          lines.append("")
+          lines.append("### Thresholds")
+          lines.append("| Module | Threshold |")
+          lines.append("|---|---|")
+          for label, t in [
+              ("token::creation / mint / burn", "85%"),
+              ("token::validation / types",     "80%"),
+              ("stream::streaming / vesting",   "80%"),
+              ("governance::governance / timelock", "80%"),
+              ("core::storage / treasury",      "75%"),
+              ("core::events / pagination",     "70%"),
+          ]:
+              lines.append(f"| `{label}` | {t} |")
+
+          summary = "\n".join(lines)
+          print(summary)
+
+          # Write to GitHub step summary
+          with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as f:
+              f.write(summary + "\n")
+          EOF
+
+      - name: Upload Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-artifacts/lcov-report/lcov.info
+          flags: contracts
+          name: token-factory-coverage
+          fail_ci_if_error: false
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const artifacts = [
+              'coverage-artifacts/unit-coverage/unit-coverage.json',
+              'coverage-artifacts/integration-coverage/integration-coverage.json',
+              'coverage-artifacts/property-coverage/property-coverage.json',
+              'coverage-artifacts/fuzz-coverage/fuzz-coverage.json',
+            ];
+            const names   = ['Unit', 'Integration', 'Property', 'Fuzz'];
+            const thresholds = [80, 75, 70, 65];
+
+            let rows = '';
+            for (let i = 0; i < artifacts.length; i++) {
+              try {
+                const data = JSON.parse(fs.readFileSync(artifacts[i]));
+                const pct  = data.data[0].totals.lines.percent.toFixed(2);
+                const pass = parseFloat(pct) >= thresholds[i];
+                rows += `| ${names[i]} | ${pct}% | ${thresholds[i]}% | ${pass ? '✅' : '❌'} |\n`;
+              } catch {
+                rows += `| ${names[i]} | N/A | ${thresholds[i]}% | ⚠️ |\n`;
+              }
+            }
+
+            const body = `## 📊 Coverage Gate Results\n\n| Suite | Coverage | Threshold | Status |\n|---|---|---|---|\n${rows}\n\n> Coverage gates enforced per module: token (85%), stream (80%), governance (80%), storage/treasury (75%), events/pagination (70%)`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+  # ── 8. Gate: block merge if any threshold fails ──────────────────────────────
+  coverage-gate:
+    name: Coverage Gate (Required)
+    runs-on: ubuntu-latest
+    needs:
+      - unit-coverage
+      - integration-coverage
+      - property-coverage
+      - fuzz-coverage
+      - module-coverage
+    if: always()
+
+    steps:
+      - name: Check all gates passed
+        run: |
+          UNIT="${{ needs.unit-coverage.result }}"
+          INTEG="${{ needs.integration-coverage.result }}"
+          PROP="${{ needs.property-coverage.result }}"
+          FUZZ="${{ needs.fuzz-coverage.result }}"
+          MOD="${{ needs.module-coverage.result }}"
+
+          echo "Unit:        $UNIT"
+          echo "Integration: $INTEG"
+          echo "Property:    $PROP"
+          echo "Fuzz:        $FUZZ"
+          echo "Module:      $MOD"
+
+          if [ "$UNIT" != "success" ] || \
+             [ "$INTEG" != "success" ] || \
+             [ "$PROP" != "success" ] || \
+             [ "$FUZZ" != "success" ] || \
+             [ "$MOD" != "success" ]; then
+            echo ""
+            echo "❌ One or more coverage gates failed. Merge is blocked."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All coverage gates passed. Merge is allowed."

@@ -16,7 +16,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 100_000, 50_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                100_000,
+                50_000,
+                500,
             )
             .unwrap();
 
@@ -40,7 +46,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 100_000, 50_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                100_000,
+                50_000,
+                500,
             )
             .unwrap();
 
@@ -68,16 +80,22 @@ mod buyback_integration_tests {
 
         env.as_contract(&contract_id, || {
             // 0% slippage
-            BuybackContract::create_campaign_simple(env.clone(), 1, token.clone(), 1_000_000, 100_000, 0)
+            BuybackContract::create_campaign(env.clone(), 1, token.clone(), 1_000_000, 100_000, 0)
                 .unwrap();
 
             // 100% slippage (10000 bps)
-            BuybackContract::create_campaign_simple(env.clone(), 2, token.clone(), 1_000_000, 100_000, 10000,
+            BuybackContract::create_campaign(
+                env.clone(),
+                2,
+                token.clone(),
+                1_000_000,
+                100_000,
+                10000,
             )
             .unwrap();
 
             // 50% slippage (5000 bps)
-            BuybackContract::create_campaign_simple(env.clone(), 3, token, 1_000_000, 100_000, 5000)
+            BuybackContract::create_campaign(env.clone(), 3, token, 1_000_000, 100_000, 5000)
                 .unwrap();
 
             // All should be created successfully
@@ -93,7 +111,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -115,11 +139,23 @@ mod buyback_integration_tests {
 
         env.as_contract(&contract_id, || {
             // Create two campaigns
-            BuybackContract::create_campaign_simple(env.clone(), 1, token1, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token1,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
-            BuybackContract::create_campaign_simple(env.clone(), 2, token2, 2_000_000, 200_000, 300,
+            BuybackContract::create_campaign(
+                env.clone(),
+                2,
+                token2,
+                2_000_000,
+                200_000,
+                300,
             )
             .unwrap();
 
@@ -146,7 +182,13 @@ mod buyback_integration_tests {
         env.as_contract(&contract_id, || {
             // Create campaign with max i128 budget
             let max_budget = i128::MAX;
-            let result = BuybackContract::create_campaign_simple(env.clone(), 1, token, max_budget, 1_000_000, 500,
+            let result = BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                max_budget,
+                1_000_000,
+                500,
             );
             assert!(result.is_ok());
 
@@ -163,7 +205,7 @@ mod buyback_integration_tests {
 
         env.as_contract(&contract_id, || {
             // 0% slippage means exact match required
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 0)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 0)
                 .unwrap();
 
             // Exact match should succeed
@@ -182,7 +224,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -206,7 +254,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -231,7 +285,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -252,7 +312,13 @@ mod buyback_integration_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 

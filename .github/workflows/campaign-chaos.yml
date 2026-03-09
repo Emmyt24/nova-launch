@@ -1,0 +1,47 @@
+name: Campaign Chaos Testing
+
+on:
+  push:
+    branches: [main, develop, feature/**]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 2 * * *' # Daily at 2 AM UTC
+
+jobs:
+  chaos-testing:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: backend
+
+    strategy:
+      matrix:
+        seed: [12345, 54321, 11111, 22222, 33333, 44444, 99999]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Run Chaos Tests (Seed ${{ matrix.seed }})
+        run: npm test -- campaignChaos.test.ts --run
+        env:
+          CHAOS_SEED: ${{ matrix.seed }}
+
+      - name: Verify Resilience
+        run: |
+          echo "✅ Chaos test passed with seed ${{ matrix.seed }}"
+          echo "✅ System remained consistent under fault injection"

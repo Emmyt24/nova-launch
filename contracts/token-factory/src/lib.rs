@@ -1,5 +1,7 @@
 #![no_std]
 
+mod buyback;
+mod campaign_validation;
 mod freeze_functions;
 mod governance;
 
@@ -28,7 +30,13 @@ mod vesting;
 mod validation;
 
 #[cfg(test)]
+mod campaign_state_test;
+
+#[cfg(test)]
 mod governance_property_test;
+
+#[cfg(test)]
+mod buyback_integration_test;
 
 #[cfg(all(test, feature = "legacy-tests"))]
 mod stream_claim_differential_test;
@@ -45,8 +53,9 @@ mod stream_claim_differential_test;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Vec};
 use types::{
-    ContractMetadata, Error, FactoryState, PaginationCursor, StreamInfo, StreamPage, StreamParams,
-    TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    BuybackCampaign, CampaignStatus, ContractMetadata, Error, FactoryState, PaginationCursor,
+    StreamInfo, StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault,
+    VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -1899,6 +1908,102 @@ impl TokenFactory {
     ) -> bool {
         governance::is_approval_met(yes_votes, total_votes, approval_percent)
     }
+
+    /// Create a new buyback campaign
+    ///
+    /// Enables authorized governance actors to create buyback campaigns
+    /// with auditable event output and strict validation.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `creator` - Address creating the campaign (must be admin or token creator)
+    /// * `token_index` - Index of the token to buy back
+    /// * `budget` - Total budget allocated for the campaign
+    /// * `start_time` - When campaign becomes active
+    /// * `end_time` - When campaign expires
+    /// * `min_interval` - Minimum seconds between executions
+    /// * `max_slippage_bps` - Maximum slippage in basis points (0-10000)
+    /// * `source_token` - Token being spent (treasury token)
+    /// * `target_token` - Token being bought back
+    ///
+    /// # Returns
+    /// * `Ok(u64)` - The campaign ID if successful
+    /// * `Err(Error)` - Error if validation fails or unauthorized
+    ///
+    /// # Authorization
+    /// Requires the creator to be either:
+    /// - The factory admin
+    /// - The token creator
+    ///
+    /// # Validation
+    /// Performs comprehensive validation including:
+    /// - Budget bounds (min: 1 XLM, max: 1B XLM)
+    /// - Time window (start in future, duration 1h-365d)
+    /// - Minimum interval (5min-7days)
+    /// - Slippage caps (max 5%)
+    /// - Token pair validation (different addresses)
+    ///
+    /// # Events
+    /// Emits a versioned `cmp_cr_v1` event with campaign details
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - Caller is not admin or token creator
+    /// * `Error::InvalidBudget` - Budget is zero or negative
+    /// * `Error::BudgetBelowMinimum` - Budget < 1 XLM
+    /// * `Error::BudgetAboveMaximum` - Budget > 1B XLM
+    /// * `Error::StartTimeInPast` - Start time not in future
+    /// * `Error::EndTimeBeforeStart` - End time <= start time
+    /// * `Error::CampaignDurationTooShort` - Duration < 1 hour
+    /// * `Error::CampaignDurationTooLong` - Duration > 365 days
+    /// * `Error::InvalidMinInterval` - Interval is zero
+    /// * `Error::MinIntervalTooShort` - Interval < 5 minutes
+    /// * `Error::MinIntervalTooLong` - Interval > 7 days
+    /// * `Error::InvalidSlippage` - Slippage is zero or > 100%
+    /// * `Error::SlippageTooHigh` - Slippage > 5%
+    /// * `Error::SameSourceAndTarget` - Source and target are same
+    /// * `Error::InvalidTokenPair` - Target doesn't match token index
+    /// * `Error::TokenNotFound` - Token index does not exist
+    pub fn create_buyback_campaign(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        budget: i128,
+        start_time: u64,
+        end_time: u64,
+        min_interval: u64,
+        max_slippage_bps: u32,
+        source_token: Address,
+        target_token: Address,
+    ) -> Result<u64, Error> {
+        buyback::create_buyback_campaign(
+            &env,
+            &creator,
+            token_index,
+            budget,
+            start_time,
+            end_time,
+            min_interval,
+            max_slippage_bps,
+            &source_token,
+            &target_token,
+        )
+    }
+
+    /// Get a buyback campaign by ID
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `campaign_id` - The campaign ID to retrieve
+    ///
+    /// # Returns
+    /// * `Ok(BuybackCampaign)` - The campaign if found
+    /// * `Err(Error::CampaignNotFound)` - If campaign doesn't exist
+    pub fn get_buyback_campaign(
+        env: Env,
+        campaign_id: u64,
+    ) -> Result<types::BuybackCampaign, Error> {
+        buyback::get_campaign(&env, campaign_id)
+    }
 }
 
 // Temporarily disabled - requires create_token implementation
@@ -1983,6 +2088,8 @@ impl TokenFactory {
 mod gas_benchmark_comprehensive;
 #[cfg(all(test, feature = "legacy-tests"))]
 mod gas_regression_test;
+#[cfg(test)]
+mod gas_compute_thresholds;
 
 #[cfg(test)]
 // mod timelock_test;

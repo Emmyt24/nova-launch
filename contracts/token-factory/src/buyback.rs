@@ -13,30 +13,6 @@ pub struct BuybackCampaign {
     pub max_spend_per_step: i128,
     pub slippage_tolerance_bps: u32,
     pub active: bool,
-    pub treasury: Address,
-    pub beneficiary: Option<Address>,
-    pub end_time: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[soroban_sdk::contracttype]
-pub enum CampaignStatus {
-    Active,
-    Completed,
-    Expired,
-    Cancelled,
-    Finalized,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[soroban_sdk::contracttype]
-pub struct FinalizationSummary {
-    pub campaign_id: u64,
-    pub status: CampaignStatus,
-    pub total_spent: i128,
-    pub total_burned: i128,
-    pub residual: i128,
-    pub returned_to: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,9 +131,6 @@ impl BuybackContract {
         total_budget: i128,
         max_spend_per_step: i128,
         slippage_tolerance_bps: u32,
-        treasury: Address,
-        beneficiary: Option<Address>,
-        end_time: Option<u64>,
     ) -> Result<(), Error> {
         if total_budget <= 0 || max_spend_per_step <= 0 {
             return Err(Error::InvalidAmount);
@@ -180,9 +153,6 @@ impl BuybackContract {
             max_spend_per_step,
             slippage_tolerance_bps,
             active: true,
-            treasury,
-            beneficiary,
-            end_time,
         };
 
         let key = DataKey::BuybackCampaign(campaign_id);
@@ -197,109 +167,6 @@ impl BuybackContract {
             .persistent()
             .get(&key)
             .ok_or(Error::CampaignNotFound)
-    }
-
-    pub fn finalize_campaign(
-        env: Env,
-        campaign_id: u64,
-        status: CampaignStatus,
-    ) -> Result<FinalizationSummary, Error> {
-        let key = DataKey::BuybackCampaign(campaign_id);
-        let mut campaign: BuybackCampaign = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::CampaignNotFound)?;
-
-        if !campaign.active {
-            return Err(Error::CampaignInactive);
-        }
-
-        // Validate finalization status
-        match status {
-            CampaignStatus::Completed => {
-                if campaign.spent < campaign.total_budget {
-                    return Err(Error::InvalidParameters);
-                }
-            }
-            CampaignStatus::Expired => {
-                if let Some(end_time) = campaign.end_time {
-                    if env.ledger().timestamp() < end_time {
-                        return Err(Error::InvalidParameters);
-                    }
-                } else {
-                    return Err(Error::InvalidParameters);
-                }
-            }
-            CampaignStatus::Cancelled => {
-                // Can be cancelled anytime
-            }
-            _ => return Err(Error::InvalidParameters),
-        }
-
-        // Calculate residual
-        let residual = campaign.total_budget.checked_sub(campaign.spent)
-            .ok_or(Error::ArithmeticError)?;
-
-        // Determine return destination
-        let return_to = match status {
-            CampaignStatus::Completed => {
-                campaign.beneficiary.clone().unwrap_or(campaign.treasury.clone())
-            }
-            CampaignStatus::Expired | CampaignStatus::Cancelled => campaign.treasury.clone(),
-            _ => campaign.treasury.clone(),
-        };
-
-        // Return residual funds (in production, transfer tokens)
-        if residual > 0 {
-            return_funds(&env, &return_to, residual)?;
-        }
-
-        // Mark as inactive
-        campaign.active = false;
-        env.storage().persistent().set(&key, &campaign);
-
-        let summary = FinalizationSummary {
-            campaign_id,
-            status,
-            total_spent: campaign.spent,
-            total_burned: campaign.tokens_burned,
-            residual,
-            returned_to: return_to.clone(),
-        };
-
-        // Emit finalization event
-        emit_campaign_finalized(&env, &summary);
-
-        Ok(summary)
-    }
-
-    pub fn cancel_campaign(env: Env, campaign_id: u64) -> Result<FinalizationSummary, Error> {
-        Self::finalize_campaign(env, campaign_id, CampaignStatus::Cancelled)
-    }
-
-    #[cfg(test)]
-    pub fn create_campaign_simple(
-        env: Env,
-        campaign_id: u64,
-        token_address: Address,
-        total_budget: i128,
-        max_spend_per_step: i128,
-        slippage_tolerance_bps: u32,
-    ) -> Result<(), Error> {
-        use soroban_sdk::testutils::Address as _;
-        let treasury = Address::generate(&env);
-        Self::create_campaign(
-            env,
-            campaign_id,
-            token_address,
-            total_budget,
-            max_spend_per_step,
-            slippage_tolerance_bps,
-            treasury,
-            None,
-            None,
-        )
     }
 }
 
@@ -390,26 +257,6 @@ fn emit_buyback_step_settled(
     );
 }
 
-fn return_funds(_env: &Env, _to: &Address, amount: i128) -> Result<(), Error> {
-    if amount < 0 {
-        return Err(Error::InvalidAmount);
-    }
-    // In production: transfer funds to destination
-    Ok(())
-}
-
-fn emit_campaign_finalized(env: &Env, summary: &FinalizationSummary) {
-    env.events().publish(
-        (soroban_sdk::symbol_short!("finalize"), summary.campaign_id),
-        (
-            summary.total_spent,
-            summary.total_burned,
-            summary.residual,
-            &summary.returned_to,
-        ),
-    );
-}
-
 fn calculate_min_with_slippage(amount: i128, slippage_bps: u32) -> Result<i128, Error> {
     let slippage_factor = 10000u32.checked_sub(slippage_bps)
         .ok_or(Error::ArithmeticError)?;
@@ -440,7 +287,7 @@ mod tests {
         let token = Address::generate(&env);
 
         let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(
+            BuybackContract::create_campaign(
                 env.clone(),
                 1,
                 token.clone(),
@@ -471,7 +318,7 @@ mod tests {
         let token = Address::generate(&env);
 
         let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 0, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 0, 100_000, 500)
         });
 
         assert_eq!(result, Err(Error::InvalidAmount));
@@ -483,7 +330,7 @@ mod tests {
         let token = Address::generate(&env);
 
         let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 100_000, 200_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 100_000, 200_000, 500)
         });
 
         assert_eq!(result, Err(Error::InvalidParameters));
@@ -495,7 +342,7 @@ mod tests {
         let token = Address::generate(&env);
 
         let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 10001)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 10001)
         });
 
         assert_eq!(result, Err(Error::InvalidParameters));
@@ -507,7 +354,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(
+            BuybackContract::create_campaign(
                 env.clone(),
                 1,
                 token,
@@ -544,7 +391,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
                 .unwrap();
 
             let result = BuybackContract::execute_buyback_step(env.clone(), 1, 150_000, 1_000_000);
@@ -559,7 +406,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 100_000, 50_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 100_000, 50_000, 500)
                 .unwrap();
 
             // First execution
@@ -581,7 +428,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
                 .unwrap();
 
             // Request more tokens than swap will provide
@@ -613,7 +460,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
                 .unwrap();
 
             let result1 = BuybackContract::execute_buyback_step(env.clone(), 1, 0, 1_000_000);
@@ -633,7 +480,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
                 .unwrap();
 
             // Execute 3 steps
@@ -669,7 +516,7 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
                 .unwrap();
 
             // Successful execution
@@ -718,10 +565,8 @@ mod tests {
 
     #[test]
     fn test_monotonic_invariant_positive_amounts() {
-        use soroban_sdk::testutils::Address as _;
-        let env = Env::default();
         let campaign = BuybackCampaign {
-            token_address: Address::generate(&env),
+            token_address: Address::generate(&Env::default()),
             total_budget: 1_000_000,
             spent: 100_000,
             tokens_bought: 10_000_000,
@@ -729,9 +574,6 @@ mod tests {
             max_spend_per_step: 100_000,
             slippage_tolerance_bps: 500,
             active: true,
-            treasury: Address::generate(&env),
-            beneficiary: None,
-            end_time: None,
         };
 
         let result = check_monotonic_invariants(&campaign, 50_000, 5_000_000);
@@ -740,10 +582,8 @@ mod tests {
 
     #[test]
     fn test_monotonic_invariant_zero_spent() {
-        use soroban_sdk::testutils::Address as _;
-        let env = Env::default();
         let campaign = BuybackCampaign {
-            token_address: Address::generate(&env),
+            token_address: Address::generate(&Env::default()),
             total_budget: 1_000_000,
             spent: 100_000,
             tokens_bought: 10_000_000,
@@ -751,9 +591,6 @@ mod tests {
             max_spend_per_step: 100_000,
             slippage_tolerance_bps: 500,
             active: true,
-            treasury: Address::generate(&env),
-            beneficiary: None,
-            end_time: None,
         };
 
         let result = check_monotonic_invariants(&campaign, 0, 5_000_000);
@@ -762,10 +599,8 @@ mod tests {
 
     #[test]
     fn test_monotonic_invariant_zero_burned() {
-        use soroban_sdk::testutils::Address as _;
-        let env = Env::default();
         let campaign = BuybackCampaign {
-            token_address: Address::generate(&env),
+            token_address: Address::generate(&Env::default()),
             total_budget: 1_000_000,
             spent: 100_000,
             tokens_bought: 10_000_000,
@@ -773,9 +608,6 @@ mod tests {
             max_spend_per_step: 100_000,
             slippage_tolerance_bps: 500,
             active: true,
-            treasury: Address::generate(&env),
-            beneficiary: None,
-            end_time: None,
         };
 
         let result = check_monotonic_invariants(&campaign, 50_000, 0);
@@ -784,10 +616,8 @@ mod tests {
 
     #[test]
     fn test_monotonic_invariant_exceeds_budget() {
-        use soroban_sdk::testutils::Address as _;
-        let env = Env::default();
         let campaign = BuybackCampaign {
-            token_address: Address::generate(&env),
+            token_address: Address::generate(&Env::default()),
             total_budget: 1_000_000,
             spent: 950_000,
             tokens_bought: 95_000_000,
@@ -795,9 +625,6 @@ mod tests {
             max_spend_per_step: 100_000,
             slippage_tolerance_bps: 500,
             active: true,
-            treasury: Address::generate(&env),
-            beneficiary: None,
-            end_time: None,
         };
 
         // Trying to spend 100k when only 50k remains

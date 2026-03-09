@@ -9,6 +9,7 @@ import leaderboardRoutes from "./routes/leaderboard";
 import tokenRoutes from "./routes/tokens";
 import statsRoutes from "./routes/stats";
 import governanceRoutes from "./routes/governance";
+import campaignRoutes from "./routes/campaigns";
 import { Database } from "./config/database";
 import { successResponse, errorResponse } from "./utils/response";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
@@ -37,6 +38,7 @@ app.use("/api/leaderboard", limiter);
 app.use("/api/tokens", limiter);
 app.use("/api/stats", limiter);
 app.use("/api/governance", limiter);
+app.use("/api/campaigns", limiter);
 
 // Body parsing middleware
 app.use(express.json());
@@ -51,6 +53,7 @@ app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/tokens", tokenRoutes);
 app.use("/api/stats", statsRoutes);
 app.use("/api/governance", governanceRoutes);
+app.use("/api/campaigns", campaignRoutes);
 
 // Health check
 app.get("/health", (req, res) => {

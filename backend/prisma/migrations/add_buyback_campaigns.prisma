@@ -1,0 +1,44 @@
+model BuybackCampaign {
+  id              Int      @id @default(autoincrement())
+  tokenAddress    String
+  totalAmount     String
+  executedAmount  String   @default("0")
+  currentStep     Int      @default(0)
+  totalSteps      Int
+  status          CampaignStatus @default(ACTIVE)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  steps           BuybackStep[]
+
+  @@index([status])
+  @@index([tokenAddress])
+  @@index([createdAt])
+}
+
+model BuybackStep {
+  id              Int      @id @default(autoincrement())
+  campaignId      Int
+  stepNumber      Int
+  amount          String
+  status          StepStatus @default(PENDING)
+  executedAt      DateTime?
+  txHash          String?
+  
+  campaign        BuybackCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, stepNumber])
+  @@index([status])
+}
+
+enum CampaignStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum StepStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}

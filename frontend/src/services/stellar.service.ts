@@ -99,6 +99,108 @@ export class StellarService {
     };
   }
 
+  async executeBuybackStep(
+    campaignId: number,
+    executorAddress: string
+  ): Promise<{ txHash: string }> {
+    if (!this.contractClient) {
+      throw this.createError(
+        ErrorCode.CONTRACT_ERROR,
+        'Contract client not initialized'
+      );
+    }
+
+    try {
+      const walletService = new WalletService();
+      const account = await this.server.getAccount(executorAddress);
+
+      const operation = this.contractClient.call(
+        'execute_buyback_step',
+        nativeToScVal(executorAddress, { type: 'address' }),
+        nativeToScVal(campaignId, { type: 'u64' })
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(180)
+        .build();
+
+      const preparedTx = await this.server.prepareTransaction(transaction);
+      const signedXdr = await walletService.signTransaction(preparedTx.toXDR());
+      const signedTx = TransactionBuilder.fromXDR(
+        signedXdr,
+        this.networkPassphrase
+      );
+
+      const response = await this.server.sendTransaction(signedTx);
+
+      if (response.status === 'ERROR') {
+        throw new Error('Transaction failed');
+      }
+
+      let txResponse = await this.server.getTransaction(response.hash);
+      while (txResponse.status === 'NOT_FOUND') {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        txResponse = await this.server.getTransaction(response.hash);
+      }
+
+      if (txResponse.status === 'FAILED') {
+        throw new Error('Transaction failed on network');
+      }
+
+      return { txHash: response.hash };
+    } catch (error) {
+      throw this.createError(
+        ErrorCode.TRANSACTION_FAILED,
+        'Failed to execute buyback step',
+        error instanceof Error ? error.message : undefined
+      );
+    }
+  }
+
+  async getCampaign(campaignId: number): Promise<any> {
+    if (!this.contractClient) {
+      throw this.createError(
+        ErrorCode.CONTRACT_ERROR,
+        'Contract client not initialized'
+      );
+    }
+
+    try {
+      const operation = this.contractClient.call(
+        'get_campaign',
+        nativeToScVal(campaignId, { type: 'u64' })
+      );
+
+      const account = await this.server.getAccount(Keypair.random().publicKey());
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(180)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(transaction);
+
+      if (Soroban.Api.isSimulationSuccess(simulated)) {
+        return scValToNative(simulated.result!.retval);
+      }
+
+      throw new Error('Simulation failed');
+    } catch (error) {
+      throw this.createError(
+        ErrorCode.CONTRACT_ERROR,
+        'Failed to get campaign',
+        error instanceof Error ? error.message : undefined
+      );
+    }
+  }
+}
+
   async fundTestAccount(publicKey: string): Promise<void> {
     try {
       const response = await fetch(`https://friendbot.stellar.org/?addr=${publicKey}`);

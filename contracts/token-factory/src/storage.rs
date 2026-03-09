@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env};
 
-use crate::types::{DataKey, Error, FactoryState, TokenInfo};
+use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, TokenInfo};
 
 // ============================================================
 // Storage Functions - Burn Tracking
@@ -1282,4 +1282,107 @@ pub fn get_valid_proof(env: &Env, milestone_hash: &soroban_sdk::BytesN<32>) -> O
     env.storage()
         .temporary()
         .get(&key)
+}
+
+// ============================================================
+// Storage Functions - Campaign Management
+// ============================================================
+
+/// Get campaign by ID
+pub fn get_campaign(env: &Env, campaign_id: u64) -> Option<crate::types::BuybackCampaign> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Campaign(campaign_id))
+}
+
+/// Set campaign data
+pub fn set_campaign(env: &Env, campaign_id: u64, campaign: &crate::types::BuybackCampaign) {
+    env.storage()
+        .instance()
+        .set(&DataKey::Campaign(campaign_id), campaign);
+}
+
+/// Get total campaign count
+pub fn get_campaign_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::CampaignCount)
+        .unwrap_or(0)
+}
+
+/// Increment campaign count and return new count
+pub fn increment_campaign_count(env: &Env) -> Result<u64, Error> {
+    let count = get_campaign_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage().instance().set(&DataKey::CampaignCount, &count);
+    Ok(count)
+}
+
+/// Get campaign ID by owner and index
+pub fn get_campaign_by_owner(env: &Env, owner: &Address, index: u32) -> Option<u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::CampaignByOwner(owner.clone(), index))
+}
+
+/// Set campaign ID for owner at index
+pub fn set_campaign_by_owner(env: &Env, owner: &Address, index: u32, campaign_id: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::CampaignByOwner(owner.clone(), index), &campaign_id);
+}
+
+/// Get owner's campaign count
+pub fn get_owner_campaign_count(env: &Env, owner: &Address) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::OwnerCampaignCount(owner.clone()))
+        .unwrap_or(0)
+}
+
+/// Increment owner's campaign count
+pub fn increment_owner_campaign_count(env: &Env, owner: &Address) -> Result<u32, Error> {
+    let count = get_owner_campaign_count(env, owner)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::OwnerCampaignCount(owner.clone()), &count);
+    Ok(count)
+}
+
+/// Get active campaign count
+pub fn get_active_campaign_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ActiveCampaignCount)
+        .unwrap_or(0)
+}
+
+/// Set active campaign count
+pub fn set_active_campaign_count(env: &Env, count: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ActiveCampaignCount, &count);
+}
+
+/// Increment active campaign count
+pub fn increment_active_campaign_count(env: &Env) -> Result<u32, Error> {
+    let count = get_active_campaign_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    set_active_campaign_count(env, count);
+    Ok(count)
+}
+
+/// Decrement active campaign count
+pub fn decrement_active_campaign_count(env: &Env) -> Result<u32, Error> {
+    let count = get_active_campaign_count(env);
+    if count == 0 {
+        return Err(Error::ArithmeticError);
+    }
+    let new_count = count - 1;
+    set_active_campaign_count(env, new_count);
+    Ok(new_count)
 }

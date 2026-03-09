@@ -16,7 +16,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -35,7 +41,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, i128::MAX / 2, 1_000_000_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                i128::MAX / 2,
+                1_000_000_000,
+                500,
             )
             .unwrap();
 
@@ -56,7 +68,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -86,7 +104,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -108,7 +132,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000_000, 500_000_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000_000,
+                500_000_000,
+                500,
             )
             .unwrap();
 
@@ -142,7 +172,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -161,7 +197,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -185,7 +227,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
             )
             .unwrap();
 
@@ -216,7 +264,7 @@ mod reconciliation_tests {
 
         env.as_contract(&contract_id, || {
             // 0% slippage requires exact match
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 1_000_000, 100_000, 0)
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 0)
                 .unwrap();
 
             let result = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 5_000_000);
@@ -235,7 +283,13 @@ mod reconciliation_tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign_simple(env.clone(), 1, token, 100_000, 50_000, 500,
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                100_000,
+                50_000,
+                500,
             )
             .unwrap();
 

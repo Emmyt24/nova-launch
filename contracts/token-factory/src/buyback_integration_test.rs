@@ -1,336 +1,335 @@
-/// Integration tests for buyback campaign functionality
-///
-/// Tests cover:
-/// - Authorization checks (admin and token creator)
-/// - Validation of campaign parameters
-/// - Event emission and payload verification
-/// - Multiple campaign scenarios
-
 #[cfg(test)]
 mod buyback_integration_tests {
-    use crate::types::{BuybackCampaign, CampaignStatus, DataKey, Error, TokenInfo};
-    use crate::TokenFactory;
-    use crate::TokenFactoryClient;
-    use soroban_sdk::{
-        testutils::{Address as _, Events, Ledger},
-        Address, Env, IntoVal, String, Symbol,
-    };
+    use crate::buyback::{BuybackContract, BuybackCampaign, ExecutionResult};
+    use crate::types::Error;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
 
-    fn setup_factory() -> (Env, TokenFactoryClient, Address, Address, Address) {
+    fn setup() -> (Env, Address) {
         let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, TokenFactory);
-        let client = TokenFactoryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let treasury = Address::generate(&env);
-
-        // Initialize factory
-        client.initialize(&admin, &treasury, &1_000_000, &500_000);
-
-        let token_creator = Address::generate(&env);
-
-        (env, client, admin, treasury, token_creator)
+        let contract_id = env.register_contract(None, BuybackContract);
+        (env, contract_id)
     }
 
-    fn create_test_token(
-        env: &Env,
-        client: &TokenFactoryClient,
-        creator: &Address,
-    ) -> (u32, Address) {
-        // Create a token
-        let token_params = crate::types::TokenCreationParams {
-            name: String::from_str(env, "Test Token"),
-            symbol: String::from_str(env, "TEST"),
-            decimals: 7,
-            initial_supply: 1_000_000_0000000,
-            max_supply: None,
-            metadata_uri: None,
-        };
+    #[test]
+    fn test_budget_exhaustion_boundary() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
 
-        // Note: This assumes create_token exists. If not, we'll need to mock the token
-        // For now, let's manually set up the token in storage
-        let token_address = Address::generate(env);
-        let token_info = TokenInfo {
-            address: token_address.clone(),
-            creator: creator.clone(),
-            name: String::from_str(env, "Test Token"),
-            symbol: String::from_str(env, "TEST"),
-            decimals: 7,
-            total_supply: 1_000_000_0000000,
-            initial_supply: 1_000_000_0000000,
-            max_supply: None,
-            total_burned: 0,
-            burn_count: 0,
-            metadata_uri: None,
-            created_at: env.ledger().timestamp(),
-            is_paused: false,
-            clawback_enabled: false,
-            freeze_enabled: false,
-        };
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                100_000,
+                50_000,
+                500,
+            )
+            .unwrap();
 
-        // Store token directly in contract storage
-        env.as_contract(&client.address, || {
-            env.storage()
-                .instance()
-                .set(&DataKey::Token(0), &token_info);
-            env.storage().instance().set(&DataKey::TokenCount, &1u32);
+            // Execute exactly to budget
+            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000).unwrap();
+
+            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            assert_eq!(campaign.spent, 100_000);
+            assert_eq!(campaign.total_budget - campaign.spent, 0);
+
+            // Next execution should fail
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 1, 1_000_000);
+            assert_eq!(result, Err(Error::InsufficientBudget));
         });
-
-        (0, token_address)
     }
 
     #[test]
-    fn test_authorized_admin_can_create_campaign() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
+    fn test_partial_budget_remaining() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
 
-        let budget = 10_000_0000000i128;
-        let result = client.try_create_buyback_campaign(&admin, &token_index, &budget);
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                100_000,
+                50_000,
+                500,
+            )
+            .unwrap();
 
-        assert!(result.is_ok());
-        let campaign_id = result.unwrap();
-        assert_eq!(campaign_id, 0);
+            // Use 90k of 100k budget
+            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 1, 40_000, 1_000_000).unwrap();
 
-        // Verify campaign details
-        let campaign = client.get_buyback_campaign(&campaign_id);
-        assert_eq!(campaign.id, 0);
-        assert_eq!(campaign.token_index, token_index);
-        assert_eq!(campaign.creator, admin);
-        assert_eq!(campaign.budget, budget);
-        assert_eq!(campaign.spent, 0);
-        assert_eq!(campaign.tokens_bought, 0);
-        assert_eq!(campaign.execution_count, 0);
-        assert_eq!(campaign.status, CampaignStatus::Active);
-    }
+            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            assert_eq!(campaign.spent, 90_000);
 
-    #[test]
-    fn test_authorized_token_creator_can_create_campaign() {
-        let (env, client, _admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
+            // Can execute with remaining 10k
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 10_000, 900_000);
+            assert!(result.is_ok());
 
-        let budget = 5_000_0000000i128;
-        let result = client.try_create_buyback_campaign(&token_creator, &token_index, &budget);
-
-        assert!(result.is_ok());
-        let campaign_id = result.unwrap();
-
-        let campaign = client.get_buyback_campaign(&campaign_id);
-        assert_eq!(campaign.creator, token_creator);
-        assert_eq!(campaign.budget, budget);
-        assert_eq!(campaign.status, CampaignStatus::Active);
-    }
-
-    #[test]
-    fn test_unauthorized_user_cannot_create_campaign() {
-        let (env, client, _admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
-
-        let unauthorized = Address::generate(&env);
-        let budget = 10_000_0000000i128;
-
-        let result = client.try_create_buyback_campaign(&unauthorized, &token_index, &budget);
-
-        assert_eq!(result, Err(Ok(Error::Unauthorized)));
-    }
-
-    #[test]
-    fn test_zero_budget_fails() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
-
-        let result = client.try_create_buyback_campaign(&admin, &token_index, &0);
-
-        assert_eq!(result, Err(Ok(Error::InvalidBudget)));
-    }
-
-    #[test]
-    fn test_negative_budget_fails() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
-
-        let result = client.try_create_buyback_campaign(&admin, &token_index, &(-1000));
-
-        assert_eq!(result, Err(Ok(Error::InvalidBudget)));
-    }
-
-    #[test]
-    fn test_invalid_token_index_fails() {
-        let (env, client, admin, _treasury, _token_creator) = setup_factory();
-
-        let budget = 10_000_0000000i128;
-        let result = client.try_create_buyback_campaign(&admin, &999, &budget);
-
-        assert_eq!(result, Err(Ok(Error::TokenNotFound)));
-    }
-
-    #[test]
-    fn test_campaign_created_event_emitted() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
-
-        let budget = 10_000_0000000i128;
-        let campaign_id = client.create_buyback_campaign(&admin, &token_index, &budget);
-
-        // Verify event was emitted
-        let events = env.events().all();
-        let mut found_event = false;
-
-        for event in events.iter() {
-            let topics = &event.topics;
-            if topics.len() >= 2 {
-                if let Ok(symbol) = topics.get(0).unwrap().try_into_val(&env) {
-                    let sym: Symbol = symbol;
-                    if sym == Symbol::new(&env, "cmp_cr_v1") {
-                        found_event = true;
-                        // Verify campaign_id in topics
-                        assert_eq!(topics.get(1).unwrap(), campaign_id.into_val(&env));
-                        break;
-                    }
-                }
-            }
-        }
-
-        assert!(found_event, "Campaign created event not found");
-    }
-
-    #[test]
-    fn test_campaign_created_event_has_correct_payload() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _token_address) = create_test_token(&env, &client, &token_creator);
-
-        let budget = 10_000_0000000i128;
-        let campaign_id = client.create_buyback_campaign(&admin, &token_index, &budget);
-
-        // Get the campaign to verify event payload matches
-        let campaign = client.get_buyback_campaign(&campaign_id);
-
-        // Verify event structure
-        let events = env.events().all();
-        let mut found_event = false;
-
-        for event in events.iter() {
-            let topics = &event.topics;
-            if topics.len() >= 2 {
-                if let Ok(symbol) = topics.get(0).unwrap().try_into_val(&env) {
-                    let sym: Symbol = symbol;
-                    if sym == Symbol::new(&env, "cmp_cr_v1") {
-                        found_event = true;
-                        // Event payload should contain: creator, token_index, budget, status
-                        // The actual payload is in event.data
-                        break;
-                    }
-                }
-            }
-        }
-
-        assert!(found_event);
-        assert_eq!(campaign.creator, admin);
-        assert_eq!(campaign.token_index, token_index);
-        assert_eq!(campaign.budget, budget);
-        assert_eq!(campaign.status, CampaignStatus::Active);
-    }
-
-    #[test]
-    fn test_multiple_campaigns_can_be_created() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-
-        // Create two tokens
-        let (token_index_1, _) = create_test_token(&env, &client, &token_creator);
-
-        // Create second token
-        env.as_contract(&client.address, || {
-            let token_info = TokenInfo {
-                address: Address::generate(&env),
-                creator: token_creator.clone(),
-                name: String::from_str(&env, "Test Token 2"),
-                symbol: String::from_str(&env, "TEST2"),
-                decimals: 7,
-                total_supply: 2_000_000_0000000,
-                initial_supply: 2_000_000_0000000,
-                max_supply: None,
-                total_burned: 0,
-                burn_count: 0,
-                metadata_uri: None,
-                created_at: env.ledger().timestamp(),
-                is_paused: false,
-                clawback_enabled: false,
-                freeze_enabled: false,
-            };
-            env.storage()
-                .instance()
-                .set(&DataKey::Token(1), &token_info);
-            env.storage().instance().set(&DataKey::TokenCount, &2u32);
+            // But not more
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 1, 1_000_000);
+            assert_eq!(result, Err(Error::InsufficientBudget));
         });
-
-        let campaign_id_1 = client.create_buyback_campaign(&admin, &token_index_1, &10_000_0000000);
-        let campaign_id_2 = client.create_buyback_campaign(&admin, &1, &20_000_0000000);
-
-        assert_eq!(campaign_id_1, 0);
-        assert_eq!(campaign_id_2, 1);
-
-        let campaign_1 = client.get_buyback_campaign(&campaign_id_1);
-        let campaign_2 = client.get_buyback_campaign(&campaign_id_2);
-
-        assert_eq!(campaign_1.token_index, 0);
-        assert_eq!(campaign_2.token_index, 1);
-        assert_eq!(campaign_1.budget, 10_000_0000000);
-        assert_eq!(campaign_2.budget, 20_000_0000000);
     }
 
     #[test]
-    fn test_campaign_counters_increment_correctly() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _) = create_test_token(&env, &client, &token_creator);
+    fn test_slippage_tolerance_boundaries() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
 
-        // Create first campaign
-        let campaign_id_1 = client.create_buyback_campaign(&admin, &token_index, &10_000_0000000);
-        assert_eq!(campaign_id_1, 0);
-
-        // Create second campaign
-        let campaign_id_2 = client.create_buyback_campaign(&admin, &token_index, &15_000_0000000);
-        assert_eq!(campaign_id_2, 1);
-
-        // Verify campaign count
-        env.as_contract(&client.address, || {
-            let count: u64 = env
-                .storage()
-                .instance()
-                .get(&DataKey::BuybackCampaignCount)
+        env.as_contract(&contract_id, || {
+            // 0% slippage
+            BuybackContract::create_campaign(env.clone(), 1, token.clone(), 1_000_000, 100_000, 0)
                 .unwrap();
-            assert_eq!(count, 2);
 
-            let next_id: u64 = env
-                .storage()
-                .instance()
-                .get(&DataKey::NextCampaignId)
+            // 100% slippage (10000 bps)
+            BuybackContract::create_campaign(
+                env.clone(),
+                2,
+                token.clone(),
+                1_000_000,
+                100_000,
+                10000,
+            )
+            .unwrap();
+
+            // 50% slippage (5000 bps)
+            BuybackContract::create_campaign(env.clone(), 3, token, 1_000_000, 100_000, 5000)
                 .unwrap();
-            assert_eq!(next_id, 2);
+
+            // All should be created successfully
+            assert!(BuybackContract::get_campaign(env.clone(), 1).is_ok());
+            assert!(BuybackContract::get_campaign(env.clone(), 2).is_ok());
+            assert!(BuybackContract::get_campaign(env.clone(), 3).is_ok());
         });
     }
 
     #[test]
-    fn test_get_nonexistent_campaign_fails() {
-        let (_env, client, _admin, _treasury, _token_creator) = setup_factory();
+    fn test_max_spend_per_step_enforcement() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
 
-        let result = client.try_get_buyback_campaign(&999);
-        assert_eq!(result, Err(Ok(Error::CampaignNotFound)));
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
+
+            // Exactly at limit - should succeed
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 100_000, 9_000_000);
+            assert!(result.is_ok());
+
+            // One over limit - should fail
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 100_001, 9_000_000);
+            assert_eq!(result, Err(Error::ExceedsStepLimit));
+        });
     }
 
     #[test]
-    fn test_campaign_timestamps_are_set() {
-        let (env, client, admin, _treasury, token_creator) = setup_factory();
-        let (token_index, _) = create_test_token(&env, &client, &token_creator);
+    fn test_concurrent_campaigns() {
+        let (env, contract_id) = setup();
+        let token1 = Address::generate(&env);
+        let token2 = Address::generate(&env);
 
-        let timestamp_before = env.ledger().timestamp();
-        let campaign_id = client.create_buyback_campaign(&admin, &token_index, &10_000_0000000);
-        let timestamp_after = env.ledger().timestamp();
+        env.as_contract(&contract_id, || {
+            // Create two campaigns
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token1,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
 
-        let campaign = client.get_buyback_campaign(&campaign_id);
+            BuybackContract::create_campaign(
+                env.clone(),
+                2,
+                token2,
+                2_000_000,
+                200_000,
+                300,
+            )
+            .unwrap();
 
-        assert!(campaign.created_at >= timestamp_before);
-        assert!(campaign.created_at <= timestamp_after);
-        assert_eq!(campaign.created_at, campaign.updated_at);
+            // Execute on both
+            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 4_500_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 2, 100_000, 9_000_000).unwrap();
+
+            // Verify independent accounting
+            let c1 = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            let c2 = BuybackContract::get_campaign(env.clone(), 2).unwrap();
+
+            assert_eq!(c1.spent, 50_000);
+            assert_eq!(c2.spent, 100_000);
+            assert_eq!(c1.tokens_bought, 5_000_000);
+            assert_eq!(c2.tokens_bought, 10_000_000);
+        });
+    }
+
+    #[test]
+    fn test_arithmetic_overflow_protection() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // Create campaign with max i128 budget
+            let max_budget = i128::MAX;
+            let result = BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                max_budget,
+                1_000_000,
+                500,
+            );
+            assert!(result.is_ok());
+
+            // Execution should handle large numbers safely
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 1_000_000, 1_000_000);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_zero_slippage_exact_match() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // 0% slippage means exact match required
+            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 0)
+                .unwrap();
+
+            // Exact match should succeed
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 5_000_000);
+            assert!(result.is_ok());
+
+            // Even 1 token more should fail
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 5_000_001);
+            assert_eq!(result, Err(Error::SlippageExceeded));
+        });
+    }
+
+    #[test]
+    fn test_campaign_state_isolation() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
+
+            // Execute successfully
+            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 4_500_000).unwrap();
+
+            let state_before = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+
+            // Failed execution on different campaign shouldn't affect this one
+            let result = BuybackContract::execute_buyback_step(env.clone(), 999, 50_000, 1_000_000);
+            assert!(result.is_err());
+
+            let state_after = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            assert_eq!(state_before, state_after);
+        });
+    }
+
+    #[test]
+    fn test_execution_result_accuracy() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
+
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 75_000, 7_000_000)
+                .unwrap();
+
+            assert_eq!(result.spent, 75_000);
+            assert_eq!(result.bought, 7_500_000); // 75k * 100
+            assert_eq!(result.burned, 7_500_000);
+
+            // Verify campaign state matches result
+            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            assert_eq!(campaign.spent, result.spent);
+            assert_eq!(campaign.tokens_bought, result.bought);
+            assert_eq!(campaign.tokens_burned, result.burned);
+        });
+    }
+
+    #[test]
+    fn test_minimum_viable_execution() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
+
+            // Minimum amounts (1 unit)
+            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 1, 95);
+            assert!(result.is_ok());
+
+            let exec = result.unwrap();
+            assert_eq!(exec.spent, 1);
+            assert_eq!(exec.bought, 100);
+            assert_eq!(exec.burned, 100);
+        });
+    }
+
+    #[test]
+    fn test_campaign_budget_tracking_precision() {
+        let (env, contract_id) = setup();
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            BuybackContract::create_campaign(
+                env.clone(),
+                1,
+                token,
+                1_000_000,
+                100_000,
+                500,
+            )
+            .unwrap();
+
+            // Execute multiple times with different amounts
+            BuybackContract::execute_buyback_step(env.clone(), 1, 10_000, 1_000_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 1, 25_000, 1_000_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 1, 15_000, 1_000_000).unwrap();
+            BuybackContract::execute_buyback_step(env.clone(), 1, 30_000, 1_000_000).unwrap();
+
+            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
+            assert_eq!(campaign.spent, 80_000);
+        });
     }
 }

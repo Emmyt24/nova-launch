@@ -137,6 +137,7 @@ pub fn create_token(
         symbol,
         decimals,
         initial_supply,
+        max_supply: None,
         metadata_uri,
     };
 
@@ -367,6 +368,7 @@ mod tests {
             symbol: String::from_str(&env, "ALP"),
             decimals: 7,
             initial_supply: 1_000_000,
+            max_supply: None,
             metadata_uri: None,
         };
         let token_b = TokenCreationParams {
@@ -374,6 +376,7 @@ mod tests {
             symbol: String::from_str(&env, "BET"),
             decimals: 7,
             initial_supply: 2_000_000,
+            max_supply: None,
             metadata_uri: None,
         };
 
@@ -387,8 +390,11 @@ mod tests {
         assert_eq!(created.len(), 2);
 
         let all = env.events().all();
-        let delta = all.slice(before as u32..all.len());
+        let delta = all.slice(before as u32..);
         assert_eq!(delta.len(), 3, "expected 2 create events + 1 batch summary");
+
+        // Verify events were emitted (simplified check without Val conversion issues)
+        assert!(delta.len() >= 3);
     }
     */
 
@@ -406,6 +412,7 @@ mod tests {
             symbol: String::from_str(&env, "VLD"),
             decimals: 7,
             initial_supply: 1_000_000,
+            max_supply: None,
             metadata_uri: None,
         };
         let invalid = TokenCreationParams {
@@ -413,6 +420,7 @@ mod tests {
             symbol: String::from_str(&env, "BAD"),
             decimals: 7,
             initial_supply: 1_000_000,
+            max_supply: None,
             metadata_uri: None,
         };
 

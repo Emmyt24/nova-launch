@@ -548,7 +548,10 @@ pub fn create_proposal(
         env,
         proposal_id,
         proposer,
-        action_type,
+        &action_type,
+        start_time,
+        end_time,
+        eta,
     );
 
     Ok(proposal_id)

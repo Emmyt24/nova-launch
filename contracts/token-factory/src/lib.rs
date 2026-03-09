@@ -43,7 +43,7 @@ mod stream_claim_differential_test;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Vec};
 use types::{
     ContractMetadata, Error, FactoryState, PaginationCursor, StreamInfo, StreamPage, StreamParams,
-    TokenInfo, TokenStats, Vault, VaultStatus, TokenCreationParams,
+    TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 

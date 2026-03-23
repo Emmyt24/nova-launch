@@ -199,6 +199,49 @@ export class StellarService {
       );
     }
   }
+
+  /**
+   * Check if factory contract is paused
+   */
+  async isPaused(): Promise<boolean> {
+    if (!this.contractClient) {
+      throw this.createError(
+        ErrorCode.CONTRACT_ERROR,
+        'Contract client not initialized'
+      );
+    }
+
+    try {
+      const dummyKeypair = Keypair.random();
+      const account = await this.server.getAccount(dummyKeypair.publicKey()).catch(() => {
+        // Create minimal account object if account doesn't exist
+        return {
+          accountId: () => dummyKeypair.publicKey(),
+          sequenceNumber: () => '0',
+        } as any;
+      });
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(this.contractClient.call('is_paused'))
+        .setTimeout(30)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(tx);
+
+      if (Soroban.Api.isSimulationSuccess(simulated) && simulated.result) {
+        return scValToNative(simulated.result.retval);
+      }
+
+      return false;
+    } catch (error) {
+      console.error('Failed to check pause state:', error);
+      // Default to not paused on error to avoid blocking users unnecessarily
+      return false;
+    }
+  }
 }
 
   async fundTestAccount(publicKey: string): Promise<void> {

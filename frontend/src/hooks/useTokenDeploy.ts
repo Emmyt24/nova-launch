@@ -8,7 +8,8 @@ import {
     validateTokenParams,
 } from '../utils/validation';
 import { IPFSService } from '../services/IPFSService';
-import { StellarService, getDeploymentFeeBreakdown } from '../services/StellarService';
+import { StellarService } from '../services/stellar.service';
+import { getDeploymentFeeBreakdown } from '../utils/feeCalculation';
 import { analytics, AnalyticsEvent } from '../services/analytics';
 import { useAnalytics } from './useAnalytics';
 import { transactionHistoryStorage } from '../services/TransactionHistoryStorage';
@@ -118,6 +119,32 @@ export function useTokenDeploy(network: 'testnet' | 'mainnet', options: UseToken
         }
 
         setStatus('deploying');
+        
+        // Check if factory is paused before attempting deployment
+        try {
+            const isPaused = await stellarService.isPaused();
+            if (isPaused) {
+                const appError = createError(
+                    ErrorCode.CONTRACT_ERROR,
+                    'Protocol is currently paused for maintenance',
+                    `The factory contract on ${network} is paused. Please try again later or contact support.`
+                );
+                setError(appError);
+                setStatus('error');
+                try {
+                    analytics.track(AnalyticsEvent.TOKEN_DEPLOY_FAILED, {
+                        network,
+                        errorCode: appError.code,
+                        reason: 'protocol_paused',
+                    });
+                } catch {}
+                throw appError;
+            }
+        } catch (pauseCheckError) {
+            // If pause check fails, log but continue (fail open to avoid blocking users)
+            console.warn('Failed to check pause state, continuing with deployment:', pauseCheckError);
+        }
+
         try {
             const result = await stellarService.deployToken({
                 ...params,

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { DeploymentResult, TokenDeployParams, WalletState } from '../../types';
 import { useTokenDeploy } from '../../hooks/useTokenDeploy';
+import { useFactoryState } from '../../hooks/useFactoryState';
 import { formatXLM, truncateAddress } from '../../utils/formatting';
 import { BasicInfoStep, type BasicInfoData } from './BasicInfoStep';
 import { FeeDisplay } from './FeeDisplay';
@@ -30,6 +31,9 @@ export function TokenDeployForm({
 
     const { deploy, reset, status, statusMessage, isDeploying, error, getFeeBreakdown } =
         useTokenDeploy(wallet.network);
+    
+    const { isPaused, loading: pauseLoading, error: pauseError, refresh: refreshPauseState } = 
+        useFactoryState({ network: wallet.network, pollingInterval: 30000 });
 
     const hasMetadataInput = Boolean(metadataDescription.trim() || metadataImage);
     const feeBreakdown = useMemo(
@@ -175,6 +179,48 @@ export function TokenDeployForm({
                 </p>
             </div>
 
+            {isPaused && !pauseLoading && (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 p-4">
+                    <div className="flex items-start">
+                        <div className="flex-shrink-0">
+                            <svg className="h-5 w-5 text-orange-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                            </svg>
+                        </div>
+                        <div className="ml-3 flex-1">
+                            <h3 className="text-sm font-medium text-orange-800">Protocol Maintenance</h3>
+                            <p className="mt-2 text-sm text-orange-700">
+                                The factory contract on <span className="font-semibold">{wallet.network}</span> is currently paused for maintenance. 
+                                Token deployment and admin actions are temporarily disabled.
+                            </p>
+                            <p className="mt-2 text-sm text-orange-700">
+                                Please check back later or contact support for more information.
+                            </p>
+                            <button
+                                onClick={() => void refreshPauseState()}
+                                className="mt-3 text-sm font-medium text-orange-800 hover:text-orange-900 underline"
+                            >
+                                Check Status Again
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {pauseError && !pauseLoading && (
+                <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
+                    <p className="text-sm text-yellow-800">
+                        Unable to verify protocol status. You may proceed, but deployment might fail if the protocol is paused.
+                    </p>
+                    <button
+                        onClick={() => void refreshPauseState()}
+                        className="mt-2 text-sm font-medium text-yellow-800 hover:text-yellow-900 underline"
+                    >
+                        Retry Status Check
+                    </button>
+                </div>
+            )}
+
             {!wallet.connected ? (
                 <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
                     <p className="text-sm text-yellow-800">Connect your wallet to continue deployment.</p>
@@ -269,10 +315,11 @@ export function TokenDeployForm({
                     loading={isDeploying}
                     loadingText={status === 'uploading' ? 'Uploading...' : 'Deploying...'}
                     className="w-full"
-                    disabled={!wallet.connected}
+                    disabled={!wallet.connected || isPaused || pauseLoading}
                     data-tutorial="deploy-button"
+                    title={isPaused ? 'Protocol is paused for maintenance' : undefined}
                 >
-                    Deploy Token
+                    {isPaused ? 'Protocol Paused' : 'Deploy Token'}
                 </LoadingButton>
             </div>
         </div>

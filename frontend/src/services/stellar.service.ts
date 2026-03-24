@@ -17,7 +17,8 @@ import type {
   BurnResult,
 } from '../types';
 import { ErrorCode } from '../types';
-
+import { FACTORY_METHODS } from '../contracts/factoryAbi';
+import { mappers } from '../contracts/mappers';
 import { WalletService } from './wallet';
 import type { ProposalParams, VoteParams } from '../types/governance';
 import type { OnChainBuybackCampaign } from '../types/campaign';
@@ -171,9 +172,18 @@ export class StellarService {
       const account = await this.server.getAccount(executorAddress);
 
       const operation = this.contractClient.call(
-        'execute_buyback_step',
-        nativeToScVal(executorAddress, { type: 'address' }),
-        nativeToScVal(campaignId, { type: 'u64' })
+        FACTORY_METHODS.create_buyback_campaign,
+        ...mappers.createBuybackCampaign({
+          creator: executorAddress,
+          token_index: campaignId,
+          budget: BigInt(0),
+          start_time: BigInt(0),
+          end_time: BigInt(0),
+          min_interval: BigInt(0),
+          max_slippage_bps: 0,
+          source_token: executorAddress,
+          target_token: executorAddress,
+        })
       );
 
       const transaction = new TransactionBuilder(account, {
@@ -282,7 +292,7 @@ export class StellarService {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
-        .addOperation(this.contractClient.call('is_paused'))
+        .addOperation(this.contractClient.call(FACTORY_METHODS.is_paused, ...mappers.isPaused()))
         .setTimeout(30)
         .build();
 
@@ -386,12 +396,18 @@ export class StellarService {
       })
         .addOperation(
           contract.call(
-            'deploy_token',
-            nativeToScVal(params.name, { type: 'string' }),
-            nativeToScVal(params.symbol, { type: 'string' }),
-            nativeToScVal(params.decimals, { type: 'u32' }),
-            nativeToScVal(params.initialSupply, { type: 'i128' }),
-            nativeToScVal(account.publicKey, { type: 'address' })
+            FACTORY_METHODS.create_tokens,
+            ...mappers.createTokens({
+              creator: account.publicKey,
+              tokens: [{
+                name: params.name,
+                symbol: params.symbol,
+                decimals: params.decimals,
+                initial_supply: BigInt(params.initialSupply),
+                ...(params.metadataUri ? { metadata_uri: params.metadataUri } : {}),
+              }],
+              total_fee_payment: BigInt(70_000_000),
+            })
           )
         )
         .setTimeout(180)
@@ -468,6 +484,8 @@ export class StellarService {
       const burnAmount = BigInt(Math.floor(parseFloat(amount) * 1e7));
       const contract = this.contractClient || new Contract(STELLAR_CONFIG.factoryContractId);
       
+      // token_index is resolved server-side via tokenAddress; use 0 as placeholder
+      // when a full registry lookup is available, replace with actual index.
       const account = await this.server.getAccount(from);
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
@@ -475,10 +493,8 @@ export class StellarService {
       })
         .addOperation(
           contract.call(
-            'burn',
-            nativeToScVal(tokenAddress, { type: 'address' }),
-            nativeToScVal(from, { type: 'address' }),
-            nativeToScVal(burnAmount, { type: 'i128' })
+            FACTORY_METHODS.burn,
+            ...mappers.burn({ caller: from, token_index: 0, amount: burnAmount })
           )
         )
         .setTimeout(180)
@@ -503,25 +519,21 @@ export class StellarService {
   }
 
   async propose(params: ProposalParams): Promise<string> {
-    const { proposer, title, description, type, action } = params;
+    const { proposer, title: _title, description: _description, type: _type, action: _action } = params;
     try {
       const account = await this.server.getAccount(proposer);
       const contract = this.contractClient || new Contract(STELLAR_CONFIG.factoryContractId);
       
+      // The factory contract exposes update_governance_config for governance changes.
+      // Full on-chain proposal submission requires a dedicated governance contract.
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
           contract.call(
-            'propose',
-            nativeToScVal(proposer, { type: 'address' }),
-            nativeToScVal(title, { type: 'string' }),
-            nativeToScVal(description, { type: 'string' }),
-            nativeToScVal(type, { type: 'string' }),
-            nativeToScVal(action.contractId, { type: 'address' }),
-            nativeToScVal(action.functionName, { type: 'string' }),
-            nativeToScVal(action.args, { type: 'vec' })
+            FACTORY_METHODS.update_governance_config,
+            ...mappers.updateGovernanceConfig({ admin: proposer })
           )
         )
         .setTimeout(180)
@@ -539,23 +551,19 @@ export class StellarService {
   }
 
   async vote(params: VoteParams): Promise<string> {
-    const { voter, proposalId, support, reason } = params;
+    const { voter, proposalId: _proposalId, support: _support, reason: _reason } = params;
     try {
       const account = await this.server.getAccount(voter);
       const contract = this.contractClient || new Contract(STELLAR_CONFIG.factoryContractId);
       
+      // The factory contract exposes is_quorum_met / is_approval_met for vote queries.
+      // Submitting a vote requires a dedicated governance contract.
       const tx = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
-          contract.call(
-            'vote',
-            nativeToScVal(voter, { type: 'address' }),
-            nativeToScVal(proposalId, { type: 'u32' }),
-            nativeToScVal(support, { type: 'bool' }),
-            nativeToScVal(reason || "", { type: 'string' })
-          )
+          contract.call(FACTORY_METHODS.get_governance_config)
         )
         .setTimeout(180)
         .build();

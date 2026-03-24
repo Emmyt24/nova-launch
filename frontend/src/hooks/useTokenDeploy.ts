@@ -9,6 +9,7 @@ import {
 } from '../utils/validation';
 import { IPFSService } from '../services/IPFSService';
 import { StellarService } from '../services/stellar.service';
+import { TransactionHistoryStorage } from '../services/TransactionHistoryStorage';
 import { getDeploymentFeeBreakdown } from '../utils/feeCalculation';
 import { analytics, AnalyticsEvent } from '../services/analytics';
 import { useAnalytics } from './useAnalytics';
@@ -43,6 +44,13 @@ export function useTokenDeploy(network: 'testnet' | 'mainnet', options: UseToken
         setStatus('idle');
         setLastParams(params);
         setRetryCount(0);
+
+        if (!params.adminWallet) {
+            const appError = createError(ErrorCode.WALLET_NOT_CONNECTED, 'Connect your wallet before deploying.');
+            setError(appError);
+            setStatus('error');
+            throw appError;
+        }
 
         // Track initiation (no PII). Do NOT include wallet or addresses.
         try {
@@ -154,6 +162,13 @@ export function useTokenDeploy(network: 'testnet' | 'mainnet', options: UseToken
                 creatorAddress: params.adminWallet,
                 feePayment,
             });
+            const result: DeploymentResult = {
+                tokenAddress: serviceResult.tokenAddress,
+                transactionHash: serviceResult.transactionHash,
+                totalFee: String(feeBreakdown.totalFee),
+                timestamp: Date.now(),
+                metadataUrl: metadataUri,
+            };
             try {
                 analytics.track(AnalyticsEvent.TOKEN_DEPLOYED, {
                     network,
@@ -262,6 +277,11 @@ function saveDeploymentRecord(
         transactionHash: result.transactionHash,
     };
 
+    try {
+        TransactionHistoryStorage.getInstance().addToken(params.adminWallet, token);
+    } catch {
+        // Storage quota exceeded — non-fatal, deployment already succeeded
+    }
     // Use the new TransactionHistoryStorage service
     transactionHistoryStorage.addToken(params.adminWallet, token);
 }

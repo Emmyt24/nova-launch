@@ -9,6 +9,51 @@ import {
 import { getNetworkConfig } from '../config/stellar';
 import { withRetry, DEFAULT_RETRY_CONFIG } from '../utils/retry';
 
+// ---------------------------------------------------------------------------
+// Browser compatibility assumptions (explicit)
+// ---------------------------------------------------------------------------
+// Freighter is a browser extension and relies on the following browser APIs:
+//   - window.freighter (injected by the extension into the page context)
+//   - navigator.clipboard (used by WalletInfo for address copy)
+//   - window.addEventListener / CustomEvent (used by WatchWalletChanges)
+//
+// Supported environments:
+//   - Chrome / Chromium 90+  (Freighter extension available)
+//   - Firefox 90+            (Freighter extension available)
+//   - Brave (Chromium-based) (Freighter extension available)
+//   - Edge (Chromium-based)  (Freighter extension available)
+//
+// Unsupported / degraded environments:
+//   - Safari: Freighter extension not available in the Safari Web Store.
+//             WalletService.isInstalled() returns false; UI shows install prompt.
+//   - Mobile browsers: Extension APIs unavailable; same degraded path as Safari.
+//   - SSR / Node.js: window is undefined; all methods return safe defaults.
+//
+// The helpers below make these assumptions testable and explicit.
+// ---------------------------------------------------------------------------
+
+/** Returns true when running in a browser context (not SSR/Node). */
+export function isBrowserEnvironment(): boolean {
+    return typeof window !== 'undefined' && typeof window.document !== 'undefined';
+}
+
+/**
+ * Returns true when the Freighter extension has injected its API into the page.
+ * This is a synchronous pre-check; use WalletService.isInstalled() for the
+ * authoritative async check that also verifies the extension is responsive.
+ */
+export function isFreighterInjected(): boolean {
+    return isBrowserEnvironment() && typeof (window as any).freighter !== 'undefined';
+}
+
+/**
+ * Returns true when the Clipboard API is available.
+ * Older browsers and non-secure contexts (HTTP) may not support it.
+ */
+export function isClipboardApiAvailable(): boolean {
+    return isBrowserEnvironment() && typeof navigator.clipboard !== 'undefined';
+}
+
 export class WalletService {
     static async isInstalled(): Promise<boolean> {
         try {

@@ -39,8 +39,9 @@ export class WebhookDeliveryService {
 
   /**
    * Deliver webhook to a single subscription with retry logic
+   * @internal
    */
-  private async deliverWebhook(
+  async deliverWebhook(
     subscription: WebhookSubscription,
     event: WebhookEventType,
     data: WebhookEventData
@@ -54,8 +55,10 @@ export class WebhookDeliveryService {
     let lastError: string | null = null;
     let statusCode: number | null = null;
     let success = false;
+    let attempts = 0;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      attempts = attempt;
       try {
         console.log(
           `Delivering webhook to ${subscription.url} (attempt ${attempt}/${MAX_RETRIES})`
@@ -98,6 +101,11 @@ export class WebhookDeliveryService {
           }
         );
 
+        // 4xx errors are non-retryable — stop immediately
+        if (statusCode !== null && statusCode >= 400 && statusCode < 500) {
+          break;
+        }
+
         // Wait before retrying (exponential backoff)
         if (attempt < MAX_RETRIES) {
           await this.delay(RETRY_DELAY_MS * Math.pow(2, attempt - 1));
@@ -112,7 +120,7 @@ export class WebhookDeliveryService {
       payload,
       statusCode,
       success,
-      MAX_RETRIES,
+      attempts,
       lastError
     );
 

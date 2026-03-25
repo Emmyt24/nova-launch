@@ -24,6 +24,9 @@ echo -e "${GREEN}=== Contract Smoke Tests ===${NC}"
 echo "Contract: $CONTRACT_ID"
 echo "Network: $NETWORK"
 echo ""
+echo -e "${YELLOW}Tip: For a full-stack smoke test (chain + backend + API), run:${NC}"
+echo "  ./scripts/fullstack-smoke-test.sh --network $NETWORK"
+echo ""
 
 PASSED=0
 FAILED=0

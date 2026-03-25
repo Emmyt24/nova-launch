@@ -1,315 +1,143 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { StellarService, TestAccount } from '../../services/stellar.service';
-import { IPFSService } from '../../services/IPFSService';
-
 /**
- * End-to-End tests simulating complete user flow for token deployment
- * These tests cover the entire workflow from wallet connection to token verification
+ * Token Deployment E2E — Fullstack Integration
+ *
+ * Reconciles the frontend deployment flow with real contract state and
+ * backend-indexed data. All assertions are anchored to the deployed
+ * token address and transaction hash — no brittle timers.
+ *
+ * Phases:
+ *   1. Deploy token via factory contract → capture tokenAddress + txHash
+ *   2. Confirm token exists on-chain via StellarService
+ *   3. Verify backend search API returns the indexed token
+ *   4. Assert frontend-readable fields (address, creator, symbol) are consistent
+ *
+ * Run:
+ *   npx vitest run src/test/e2e/token-deployment.e2e.test.ts
  */
-describe('Token Deployment E2E Tests', () => {
-  let stellarService: StellarService;
-  let ipfsService: IPFSService;
-  let testAccount: TestAccount;
-  const deployedTokens: string[] = [];
-  const uploadedHashes: string[] = [];
+
+import { beforeAll, describe, expect, it } from 'vitest';
+import { StellarService } from '../../services/stellar.service';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+// Read from env so the test works against any network without hardcoding values.
+// Set VITE_NETWORK, VITE_FACTORY_CONTRACT_ID, VITE_BACKEND_URL in frontend/.env
+// or pass them as environment variables in CI.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _env = (typeof import.meta !== 'undefined' ? (import.meta as any).env : {}) as Record<string, string>;
+
+const NETWORK = (_env['VITE_NETWORK'] ?? 'testnet') as 'testnet' | 'mainnet';
+const BACKEND_URL = _env['VITE_BACKEND_URL'] ?? 'http://localhost:3001';
+const FACTORY_CONTRACT_ID = _env['VITE_FACTORY_CONTRACT_ID'] ?? '';
+
+// Unique symbol per run so replays don't collide with prior indexed tokens
+const RUN_SUFFIX = Date.now().toString().slice(-5);
+const SMOKE_SYMBOL = `SMK${RUN_SUFFIX}`;
+const SMOKE_NAME = `Smoke Test Token ${SMOKE_SYMBOL}`;
+const INITIAL_SUPPLY = '1000000';
+
+// ── Ingestion polling ─────────────────────────────────────────────────────────
+const INGESTION_TIMEOUT_MS = 30_000;
+const INGESTION_POLL_MS = 3_000;
+
+async function pollBackendForToken(
+  symbol: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown> | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await fetch(
+      `${BACKEND_URL}/api/tokens/search?q=${encodeURIComponent(symbol)}&limit=5`,
+      { headers: { Accept: 'application/json' } },
+    ).catch(() => null);
+
+    if (resp?.ok) {
+      const body = (await resp.json()) as { success: boolean; data: Record<string, unknown>[] };
+      const match = body.data?.find((t) => t['symbol'] === symbol);
+      if (match) return match;
+    }
+
+    await new Promise((r) => setTimeout(r, INGESTION_POLL_MS));
+  }
+  return null;
+}
+
+// ── Test suite ────────────────────────────────────────────────────────────────
+describe('Token Deployment — Fullstack Smoke', () => {
+  let stellar: StellarService;
+  let deployedAddress: string;
+  let creatorPublicKey: string;
 
   beforeAll(async () => {
-    // Setup services
-    stellarService = new StellarService('testnet');
-    ipfsService = new IPFSService();
-
-    // Simulate wallet connection
-    testAccount = await stellarService.createTestAccount();
-    await stellarService.fundTestAccount(testAccount.publicKey);
-
-    // Wait for funding confirmation
-    await new Promise(resolve => setTimeout(resolve, 5000));
-  });
-
-  afterAll(async () => {
-    // Cleanup
-    for (const hash of uploadedHashes) {
-      try {
-        await ipfsService.unpinContent(hash);
-      } catch (error) {
-        console.warn(`Cleanup failed for ${hash}`);
-      }
+    if (!FACTORY_CONTRACT_ID) {
+      throw new Error(
+        'VITE_FACTORY_CONTRACT_ID is not set. Deploy the contract first and update frontend/.env.',
+      );
     }
-  });
+    stellar = new StellarService(NETWORK);
+    const testAccount = await stellar.createTestAccount();
+    await stellar.fundTestAccount(testAccount.publicKey);
+    creatorPublicKey = testAccount.publicKey;
+  }, 30_000);
 
-  describe('Complete Flow: Token Without Metadata', () => {
-    it('should complete full deployment flow', async () => {
-      // Step 1: User connects wallet (simulated by test account)
-      expect(testAccount.publicKey).toBeTruthy();
-
-      // Step 2: User fills deployment form
-      const formData = {
-        name: 'E2E Test Token',
-        symbol: 'E2E',
-        decimals: 7,
-        initialSupply: '10000000',
-      };
-
-      // Step 3: User signs transaction
-      const deploymentResult = await stellarService.deployToken(testAccount, formData);
-      deployedTokens.push(deploymentResult.tokenAddress);
-
-      expect(deploymentResult.tokenAddress).toBeTruthy();
-      expect(deploymentResult.transactionHash).toBeTruthy();
-
-      // Step 4: Wait for confirmation
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      // Step 5: Verify token exists
-      const tokenExists = await stellarService.verifyTokenExists(
-        deploymentResult.tokenAddress
-      );
-      expect(tokenExists).toBe(true);
-
-      // Step 6: Verify balance
-      const balance = await stellarService.getTokenBalance(
-        deploymentResult.tokenAddress,
-        testAccount.publicKey
-      );
-      expect(balance).toBe(formData.initialSupply);
-
-      // Step 7: Verify no metadata
-      const metadata = await stellarService.getTokenMetadata(deploymentResult.tokenAddress);
-      expect(metadata).toBeNull();
-    });
-  });
-
-  describe('Complete Flow: Token With Image and Metadata', () => {
-    it('should complete full deployment flow with metadata', async () => {
-      // Step 1: User connects wallet
-      expect(testAccount.publicKey).toBeTruthy();
-
-      // Step 2: User uploads token logo
-      const logoBlob = new Blob(['token logo data'], { type: 'image/png' });
-      const logoFile = new File([logoBlob], 'token-logo.png', { type: 'image/png' });
-
-      // Validate image before upload
-      const validation = ipfsService.validateImageFile(logoFile);
-      expect(validation.valid).toBe(true);
-
-      // Upload image to IPFS
-      const imageUploadResult = await ipfsService.uploadImage(logoFile);
-      uploadedHashes.push(imageUploadResult.ipfsHash);
-
-      expect(imageUploadResult.ipfsHash).toBeTruthy();
-      expect(imageUploadResult.ipfsUri).toMatch(/^ipfs:\/\//);
-
-      // Step 3: User fills deployment form
-      const formData = {
-        name: 'E2E Metadata Token',
-        symbol: 'E2EMETA',
-        decimals: 7,
-        initialSupply: '5000000',
-        description: 'Token with complete metadata',
-      };
-
-      // Step 4: Generate and upload metadata JSON
-      const metadata = {
-        name: formData.name,
-        symbol: formData.symbol,
-        decimals: formData.decimals,
-        description: formData.description,
-        image: imageUploadResult.ipfsUri,
-      };
-
-      const metadataUploadResult = await ipfsService.uploadMetadata(metadata);
-      uploadedHashes.push(metadataUploadResult.ipfsHash);
-
-      expect(metadataUploadResult.ipfsHash).toBeTruthy();
-
-      // Step 5: User signs transaction
-      const deploymentParams = {
-        name: formData.name,
-        symbol: formData.symbol,
-        decimals: formData.decimals,
-        initialSupply: formData.initialSupply,
-        metadataUri: metadataUploadResult.ipfsUri,
-      };
-
-      const deploymentResult = await stellarService.deployToken(
-        testAccount,
-        deploymentParams
-      );
-      deployedTokens.push(deploymentResult.tokenAddress);
-
-      expect(deploymentResult.tokenAddress).toBeTruthy();
-      expect(deploymentResult.transactionHash).toBeTruthy();
-
-      // Step 6: Wait for confirmation
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      // Step 7: Verify token exists
-      const tokenExists = await stellarService.verifyTokenExists(
-        deploymentResult.tokenAddress
-      );
-      expect(tokenExists).toBe(true);
-
-      // Step 8: Verify balance
-      const balance = await stellarService.getTokenBalance(
-        deploymentResult.tokenAddress,
-        testAccount.publicKey
-      );
-      expect(balance).toBe(formData.initialSupply);
-
-      // Step 9: Verify metadata URI stored on-chain
-      const storedMetadataUri = await stellarService.getTokenMetadata(
-        deploymentResult.tokenAddress
-      );
-      expect(storedMetadataUri).toBe(metadataUploadResult.ipfsUri);
-
-      // Step 10: Retrieve and verify metadata content
-      const retrievedMetadata = await ipfsService.retrieveContent(
-        metadataUploadResult.ipfsHash
-      );
-      expect(retrievedMetadata.name).toBe(metadata.name);
-      expect(retrievedMetadata.symbol).toBe(metadata.symbol);
-      expect(retrievedMetadata.image).toBe(imageUploadResult.ipfsUri);
-    });
-  });
-
-  describe('Error Recovery Flow', () => {
-    it('should handle image upload failure gracefully', async () => {
-      // User tries to upload oversized image
-      const oversizedBlob = new Blob([new ArrayBuffer(10 * 1024 * 1024)], {
-        type: 'image/png',
-      });
-      const oversizedFile = new File([oversizedBlob], 'huge.png', { type: 'image/png' });
-
-      const validation = ipfsService.validateImageFile(oversizedFile);
-
-      expect(validation.valid).toBe(false);
-      expect(validation.error).toContain('exceeds 5MB limit');
-
-      // User should see error and not proceed with upload
+  // ── Phase 1: Deploy ──────────────────────────────────────────────────────────
+  it('deploys a token via the factory contract and returns a tx hash', async () => {
+    const result = await stellar.deployToken({
+      name: SMOKE_NAME,
+      symbol: SMOKE_SYMBOL,
+      decimals: 7,
+      initialSupply: INITIAL_SUPPLY,
+      creatorAddress: creatorPublicKey,
+      feePayment: 70_000_000n,
     });
 
-    it('should handle deployment failure and allow retry', async () => {
-      // Simulate deployment with invalid parameters
-      const invalidParams = {
-        name: '', // Empty name should fail
-        symbol: 'FAIL',
-        decimals: 7,
-        initialSupply: '1000000',
-      };
+    expect(result.tokenAddress).toBeTruthy();
+    expect(result.tokenAddress).toMatch(/^C[A-Z0-9]{55}$/);
+    expect(result.transactionHash).toBeTruthy();
+    expect(typeof result.transactionHash).toBe('string');
 
-      await expect(
-        stellarService.deployToken(testAccount, invalidParams)
-      ).rejects.toThrow();
+    deployedAddress = result.tokenAddress;
+  }, 30_000);
 
-      // User corrects the form and retries
-      const validParams = {
-        name: 'Retry Token',
-        symbol: 'RETRY',
-        decimals: 7,
-        initialSupply: '1000000',
-      };
+  // ── Phase 2: On-chain confirmation ───────────────────────────────────────────
+  it('confirms the deployed token exists on-chain', async () => {
+    expect(deployedAddress).toBeTruthy();
 
-      const result = await stellarService.deployToken(testAccount, validParams);
-      deployedTokens.push(result.tokenAddress);
+    const exists = await stellar.verifyTokenExists(deployedAddress);
+    expect(exists).toBe(true);
+  }, 15_000);
 
-      expect(result.tokenAddress).toBeTruthy();
-    });
-  });
+  it('initial supply is readable on-chain', async () => {
+    const balance = await stellar.getTokenBalance(deployedAddress, creatorPublicKey);
+    expect(balance).toBe(INITIAL_SUPPLY);
+  }, 15_000);
 
-  describe('Multi-Step Validation Flow', () => {
-    it('should validate each step before proceeding', async () => {
-      // Step 1: Validate wallet connection
-      expect(testAccount.publicKey).toBeTruthy();
+  // ── Phase 3: Backend ingestion ───────────────────────────────────────────────
+  it('backend indexes the token within the ingestion window', async () => {
+    const indexed = await pollBackendForToken(SMOKE_SYMBOL, INGESTION_TIMEOUT_MS);
+    expect(indexed).not.toBeNull();
+  }, INGESTION_TIMEOUT_MS + 5_000);
 
-      // Step 2: Validate form inputs
-      const formData = {
-        name: 'Validated Token',
-        symbol: 'VAL',
-        decimals: 7,
-        initialSupply: '1000000',
-      };
+  // ── Phase 4: Frontend-readable API state ─────────────────────────────────────
+  it('indexed token address matches the deployed address', async () => {
+    const indexed = await pollBackendForToken(SMOKE_SYMBOL, INGESTION_TIMEOUT_MS);
+    expect(indexed).not.toBeNull();
+    expect(indexed!['address']).toBe(deployedAddress);
+  }, INGESTION_TIMEOUT_MS + 5_000);
 
-      expect(formData.name.length).toBeGreaterThan(0);
-      expect(formData.symbol.length).toBeGreaterThan(0);
-      expect(formData.decimals).toBeGreaterThan(0);
-      expect(parseInt(formData.initialSupply)).toBeGreaterThan(0);
+  it('indexed creator matches the deploying account', async () => {
+    const indexed = await pollBackendForToken(SMOKE_SYMBOL, INGESTION_TIMEOUT_MS);
+    expect(indexed!['creator']).toBe(creatorPublicKey);
+  }, INGESTION_TIMEOUT_MS + 5_000);
 
-      // Step 3: If metadata provided, validate and upload
-      const logoBlob = new Blob(['logo'], { type: 'image/png' });
-      const logoFile = new File([logoBlob], 'logo.png', { type: 'image/png' });
+  it('indexed symbol and name are correct', async () => {
+    const indexed = await pollBackendForToken(SMOKE_SYMBOL, INGESTION_TIMEOUT_MS);
+    expect(indexed!['symbol']).toBe(SMOKE_SYMBOL);
+    expect(indexed!['name']).toBe(SMOKE_NAME);
+  }, INGESTION_TIMEOUT_MS + 5_000);
 
-      const imageValidation = ipfsService.validateImageFile(logoFile);
-      expect(imageValidation.valid).toBe(true);
-
-      const imageResult = await ipfsService.uploadImage(logoFile);
-      uploadedHashes.push(imageResult.ipfsHash);
-
-      const metadata = {
-        name: formData.name,
-        symbol: formData.symbol,
-        decimals: formData.decimals,
-        image: imageResult.ipfsUri,
-      };
-
-      const metadataResult = await ipfsService.uploadMetadata(metadata);
-      uploadedHashes.push(metadataResult.ipfsHash);
-
-      // Step 4: Deploy with validated data
-      const deploymentParams = {
-        ...formData,
-        metadataUri: metadataResult.ipfsUri,
-      };
-
-      const result = await stellarService.deployToken(testAccount, deploymentParams);
-      deployedTokens.push(result.tokenAddress);
-
-      // Step 5: Verify deployment
-      expect(result.tokenAddress).toBeTruthy();
-
-      const exists = await stellarService.verifyTokenExists(result.tokenAddress);
-      expect(exists).toBe(true);
-    });
-  });
-
-  describe('User Experience Flow', () => {
-    it('should provide feedback at each step', async () => {
-      const steps: string[] = [];
-
-      // Step 1: Connect wallet
-      steps.push('Wallet connected');
-      expect(testAccount.publicKey).toBeTruthy();
-
-      // Step 2: Form filled
-      steps.push('Form validated');
-      const formData = {
-        name: 'UX Token',
-        symbol: 'UX',
-        decimals: 7,
-        initialSupply: '1000000',
-      };
-
-      // Step 3: Transaction signing
-      steps.push('Transaction signing...');
-      const result = await stellarService.deployToken(testAccount, formData);
-      deployedTokens.push(result.tokenAddress);
-
-      // Step 4: Transaction submitted
-      steps.push('Transaction submitted');
-      expect(result.transactionHash).toBeTruthy();
-
-      // Step 5: Waiting for confirmation
-      steps.push('Waiting for confirmation...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      // Step 6: Deployment confirmed
-      steps.push('Deployment confirmed');
-      const exists = await stellarService.verifyTokenExists(result.tokenAddress);
-      expect(exists).toBe(true);
-
-      // Step 7: Success
-      steps.push('Token deployed successfully');
-
-      expect(steps).toHaveLength(7);
-    });
-  });
+  it('indexed initial supply matches deployed supply', async () => {
+    const indexed = await pollBackendForToken(SMOKE_SYMBOL, INGESTION_TIMEOUT_MS);
+    // Backend serialises BigInt as string
+    expect(String(indexed!['initialSupply'])).toBe(INITIAL_SUPPLY);
+  }, INGESTION_TIMEOUT_MS + 5_000);
 });

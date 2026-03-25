@@ -108,3 +108,107 @@ export function getErrorMessage(error: unknown): string {
     }
     return 'An unknown error occurred';
 }
+
+/**
+ * Format a BigInt string value for display with proper decimal handling
+ * Handles token supply values that come as strings from the backend
+ */
+export function formatTokenSupply(
+    value: string,
+    decimals: number = 7,
+    options: { compact?: boolean; maxDecimals?: number } = {}
+): string {
+    const { compact = false, maxDecimals = 2 } = options;
+
+    if (!value || value === '0') {
+        return '0';
+    }
+
+    try {
+        const bigValue = BigInt(value);
+        const divisor = BigInt(10 ** decimals);
+        const wholePart = bigValue / divisor;
+        const remainder = bigValue % divisor;
+
+        if (compact) {
+            return formatCompactNumber(Number(wholePart));
+        }
+
+        const wholeStr = wholePart.toString();
+        if (remainder === BigInt(0)) {
+            return formatNumber(wholeStr);
+        }
+
+        const decimalStr = remainder.toString().padStart(decimals, '0').slice(0, maxDecimals);
+        const trimmedDecimal = decimalStr.replace(/0+$/, '');
+
+        if (!trimmedDecimal) {
+            return formatNumber(wholeStr);
+        }
+
+        return `${formatNumber(wholeStr)}.${trimmedDecimal}`;
+    } catch {
+        return formatNumber(value);
+    }
+}
+
+/**
+ * Format a number in compact notation (e.g., 1.5M, 2.3B)
+ */
+export function formatCompactNumber(value: number): string {
+    if (value < 1000) {
+        return value.toString();
+    }
+
+    const suffixes = ['', 'K', 'M', 'B', 'T'];
+    const tier = Math.floor(Math.log10(Math.abs(value)) / 3);
+    const suffix = suffixes[Math.min(tier, suffixes.length - 1)];
+    const scale = Math.pow(10, tier * 3);
+    const scaled = value / scale;
+
+    return scaled.toFixed(scaled < 10 ? 2 : scaled < 100 ? 1 : 0) + suffix;
+}
+
+/**
+ * Calculate percentage burned from supply strings
+ */
+export function calculateBurnPercentage(
+    totalBurned: string,
+    initialSupply: string
+): number {
+    if (!totalBurned || !initialSupply || initialSupply === '0') {
+        return 0;
+    }
+
+    try {
+        const burned = BigInt(totalBurned);
+        const initial = BigInt(initialSupply);
+
+        if (initial === BigInt(0)) {
+            return 0;
+        }
+
+        const percentage = Number((burned * BigInt(10000)) / initial) / 100;
+        return Math.min(percentage, 100);
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * Format burn statistics for display
+ */
+export function formatBurnStats(
+    totalBurned: string,
+    burnCount: number,
+    initialSupply: string,
+    decimals: number = 7
+): { burnedAmount: string; burnCount: string; percentage: string } {
+    const percentage = calculateBurnPercentage(totalBurned, initialSupply);
+
+    return {
+        burnedAmount: formatTokenSupply(totalBurned, decimals, { compact: true }),
+        burnCount: formatNumber(burnCount),
+        percentage: `${percentage.toFixed(2)}%`,
+    };
+}

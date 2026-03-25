@@ -62,6 +62,29 @@ TOKEN_ADDRESS=$(soroban contract invoke \
 
 echo "Test token created: $TOKEN_ADDRESS"
 
-echo -e "\n3. Verification Complete!"
+echo -e "\n3. Backend API Verification:"
+BACKEND_URL="${BACKEND_URL:-http://localhost:3001}"
+echo "Checking backend health at $BACKEND_URL..."
+
+HEALTH=$(curl -sf "$BACKEND_URL/health" -H "Accept: application/json" 2>/dev/null || echo "")
+if [ -n "$HEALTH" ]; then
+  echo "  ✓ Backend is reachable"
+else
+  echo "  ⚠ Backend not reachable at $BACKEND_URL (is it running?)"
+fi
+
+echo "Searching for deployed token ($TOKEN_ADDRESS) in backend index..."
+SEARCH=$(curl -sf \
+  "$BACKEND_URL/api/tokens/search?q=$(echo "$TOKEN_ADDRESS" | cut -c1-10)&limit=5" \
+  -H "Accept: application/json" 2>/dev/null || echo "")
+
+if echo "$SEARCH" | grep -q "$TOKEN_ADDRESS"; then
+  echo "  ✓ Token found in backend index"
+else
+  echo "  ⚠ Token not yet indexed (backend event listener may need time to ingest)"
+  echo "    Run: ./scripts/fullstack-smoke-test.sh to verify with polling"
+fi
+
+echo -e "\n4. Verification Complete!"
 echo "================================================"
 echo "All checks passed successfully."

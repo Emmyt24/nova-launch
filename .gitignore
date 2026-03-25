@@ -40,6 +40,8 @@ npm-debug.log*
 !contracts/token-factory/TESTING.md
 !DEPLOYMENT_GUIDE.md
 !DEPLOYMENT_CHECKLIST.md
+!docs/buyback-lifecycle-e2e.md
+!docs/FULLSTACK_SMOKE_TEST.md
 !CONFLICT_AND_CI_REPORT.md
 !GLOBAL_ERROR_HANDLING.md
 !docs/user-guides/*.md

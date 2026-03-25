@@ -312,6 +312,84 @@ export class StellarService {
     }
   }
 
+  // ── Admin / Treasury read methods ────────────────────────────────────────────
+
+  /**
+   * Simulate a no-arg contract read and return the native JS value.
+   * Uses a throw-away keypair — no funded account required.
+   */
+  private async simulateRead(method: string, args: import('@stellar/stellar-sdk').xdr.ScVal[] = []): Promise<unknown> {
+    if (!this.contractClient) {
+      throw this.createError(ErrorCode.CONTRACT_ERROR, 'Contract client not initialized');
+    }
+    const dummyAccount = new Account(Keypair.random().publicKey(), '0');
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(this.contractClient.call(method, ...args))
+      .setTimeout(30)
+      .build();
+    const sim = await this.server.simulateTransaction(tx);
+    if (!Soroban.Api.isSimulationSuccess(sim) || !sim.result) {
+      throw this.createError(ErrorCode.SIMULATION_FAILED, `Simulation failed for ${method}`);
+    }
+    return scValToNative(sim.result.retval);
+  }
+
+  /** Read current admin, proposed admin, treasury, fees, and pause state. */
+  async getAdminState(): Promise<import('../types/admin').FactoryAdminState> {
+    const raw = await this.simulateRead(FACTORY_METHODS.get_state) as Record<string, unknown>;
+    return {
+      admin: String(raw['admin'] ?? ''),
+      proposedAdmin: raw['proposed_admin'] ? String(raw['proposed_admin']) : null,
+      treasury: String(raw['treasury'] ?? ''),
+      baseFee: BigInt(String(raw['base_fee'] ?? '0')),
+      metadataFee: BigInt(String(raw['metadata_fee'] ?? '0')),
+      paused: Boolean(raw['paused']),
+    };
+  }
+
+  /** Read treasury policy: daily cap, withdrawn today, remaining capacity, allowlist. */
+  async getTreasuryPolicy(): Promise<import('../types/admin').TreasuryPolicy> {
+    const [rawPolicy, remaining] = await Promise.all([
+      this.simulateRead(FACTORY_METHODS.get_treasury_policy) as Promise<Record<string, unknown>>,
+      this.simulateRead(FACTORY_METHODS.get_remaining_capacity).catch(() => BigInt(0)),
+    ]);
+    return {
+      dailyCap: BigInt(String(rawPolicy['daily_cap'] ?? '0')),
+      withdrawnToday: BigInt(String(rawPolicy['withdrawn_today'] ?? '0')),
+      remainingCapacity: BigInt(String(remaining ?? '0')),
+      allowedRecipients: Array.isArray(rawPolicy['allowed_recipients'])
+        ? (rawPolicy['allowed_recipients'] as unknown[]).map(String)
+        : [],
+    };
+  }
+
+  /** Read timelock configuration (min/max delay). */
+  async getTimelockConfig(): Promise<import('../types/admin').TimelockConfig> {
+    const raw = await this.simulateRead(FACTORY_METHODS.get_timelock_config) as Record<string, unknown>;
+    return {
+      minDelay: Number(raw['min_delay'] ?? 0),
+      maxDelay: Number(raw['max_delay'] ?? 0),
+    };
+  }
+
+  /** Read any pending scheduled change, or null if none. */
+  async getPendingChange(): Promise<import('../types/admin').PendingChange | null> {
+    try {
+      const raw = await this.simulateRead(FACTORY_METHODS.get_pending_change) as Record<string, unknown> | null;
+      if (!raw) return null;
+      return {
+        changeType: String(raw['change_type'] ?? 'unknown'),
+        executeAfter: Number(raw['execute_after'] ?? 0),
+        description: String(raw['description'] ?? ''),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fundTestAccount(publicKey: string): Promise<void> {
     try {
       const response = await fetch(`https://friendbot.stellar.org/?addr=${publicKey}`);

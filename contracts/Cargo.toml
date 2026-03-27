@@ -1,3 +1,9 @@
 [workspace]
-members = ["token-factory"]
+members = [
+    "token-factory",
+    "admin-roles",
+    "event-emitter",
+    "vesting",
+    "referral",
+]
 resolver = "2"

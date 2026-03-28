@@ -36,6 +36,9 @@ mod validation;
 mod campaign_state_test;
 
 #[cfg(test)]
+mod campaign_event_idempotency_test;
+
+#[cfg(test)]
 mod governance_property_test;
 #[cfg(test)]
 mod payload_validation_fuzz_test;

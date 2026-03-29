@@ -42,7 +42,14 @@ export class GovernanceEventMapper {
 
     const eventName = event.topic[0];
     const governanceEvents = [
-      // v1 versioned events (abbreviated to fit 9-char limit)
+      // v1 versioned events (full suffix form)
+      'prop_cr_v1',
+      'vote_cs_v1',
+      'prop_qu_v1',
+      'prop_ex_v1',
+      'prop_ca_v1',
+      'prop_st_v1',
+      // v1 abbreviated (no suffix)
       'prop_cr',
       'vote_cs',
       'prop_qu',
@@ -70,21 +77,29 @@ export class GovernanceEventMapper {
     const eventName = event.topic[0];
 
     switch (eventName) {
-      // v1 versioned events (abbreviated)
+      // v1 versioned events (with suffix)
+      case 'prop_cr_v1':
+      // v1 abbreviated (no suffix)
       case 'prop_cr':
+      // Legacy
       case 'prop_create':
         return this.mapProposalCreatedEvent(event);
+      case 'vote_cs_v1':
       case 'vote_cs':
       case 'vote_cast':
         return this.mapVoteCastEvent(event);
+      case 'prop_qu_v1':
       case 'prop_qu':
         return this.mapProposalQueuedEvent(event);
+      case 'prop_ex_v1':
       case 'prop_ex':
       case 'prop_exec':
         return this.mapProposalExecutedEvent(event);
+      case 'prop_ca_v1':
       case 'prop_ca':
       case 'prop_cancel':
         return this.mapProposalCancelledEvent(event);
+      case 'prop_st_v1':
       case 'prop_status':
         return this.mapProposalStatusChangedEvent(event);
       default:
@@ -139,23 +154,22 @@ export class GovernanceEventMapper {
   }
 
   /**
-   * Map proposal queued event
+   * Map proposal queued event — queuing is a status transition, not an execution.
    */
-  private mapProposalQueuedEvent(event: StellarEvent): ProposalExecutedEvent {
+  private mapProposalQueuedEvent(event: StellarEvent): ProposalStatusChangedEvent {
     const value = event.value || {};
-    const proposalId = event.topic[1] ? parseInt(event.topic[1], 10) : 0;
+    const proposalId = value.proposal_id
+      ?? (event.topic[1] ? parseInt(event.topic[1], 10) : 0);
 
     return {
-      type: 'proposal_executed',
+      type: 'proposal_status_changed',
       txHash: event.transaction_hash,
       ledger: event.ledger,
       timestamp: new Date(event.ledger_close_time),
       contractId: event.contract_id,
       proposalId,
-      executor: value.executor || '',
-      success: true,
-      returnData: value.return_data,
-      gasUsed: value.gas_used?.toString(),
+      oldStatus: this.mapProposalStatus(value.old_status ?? 'passed'),
+      newStatus: ProposalStatus.QUEUED,
     };
   }
 
@@ -250,6 +264,7 @@ export class GovernanceEventMapper {
         ProposalStatus.ACTIVE,
         ProposalStatus.PASSED,
         ProposalStatus.REJECTED,
+        ProposalStatus.QUEUED,
         ProposalStatus.EXECUTED,
         ProposalStatus.CANCELLED,
         ProposalStatus.EXPIRED,
@@ -261,6 +276,7 @@ export class GovernanceEventMapper {
       'active': ProposalStatus.ACTIVE,
       'passed': ProposalStatus.PASSED,
       'rejected': ProposalStatus.REJECTED,
+      'queued': ProposalStatus.QUEUED,
       'executed': ProposalStatus.EXECUTED,
       'cancelled': ProposalStatus.CANCELLED,
       'expired': ProposalStatus.EXPIRED,

@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { GovernanceEventParser } from '../services/governanceEventParser';
 import { query, param } from 'express-validator';
 import { validate } from '../middleware/validation';
+import type { ProposalListResponse, ProposalDetailResponse, ProposalVotesResponse } from '../contracts/apiSchemas';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -148,15 +149,17 @@ router.get(
       })),
     }));
 
-    res.json({
+    const response: ProposalListResponse = {
       success: true,
       data: {
-        proposals: serializedProposals,
+        proposals: serializedProposals as any,
         total,
         limit: parseInt(limit as string),
         offset: parseInt(offset as string),
       },
-    });
+    };
+
+    res.json(response);
   } catch (error) {
     console.error('Error fetching proposals:', error);
     res.status(500).json({
@@ -233,13 +236,15 @@ router.get(
       })),
     };
 
-    res.json({
+    const response: ProposalDetailResponse = {
       success: true,
       data: {
-        proposal: serializedProposal,
+        proposal: serializedProposal as any,
         analytics,
       },
-    });
+    };
+
+    res.json(response);
   } catch (error) {
     console.error('Error fetching proposal:', error);
     res.status(500).json({

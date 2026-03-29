@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma";
 
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import type { TokenSearchResponse } from "../contracts/apiSchemas";
 
 const router = Router();
 
@@ -190,9 +191,9 @@ router.get("/search", async (req: Request, res: Response) => {
 
     const totalPages = Math.ceil(total / limit);
 
-    const response = {
+    const response: TokenSearchResponse = {
       success: true,
-      data: serializedTokens,
+      data: serializedTokens as any,
       pagination: {
         page,
         limit,

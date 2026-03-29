@@ -5,6 +5,7 @@ import { mapBuybackCampaign } from '../../services/mappers/buybackCampaignMapper
 import type { BuybackCampaignModel } from '../../types/campaign';
 import { useProjectionRefresh } from '../../hooks/useProjectionRefresh';
 import { campaignApi } from '../../services/campaignApi';
+import { getTxUrl } from '../../utils/explorer';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
 
@@ -225,7 +226,7 @@ export const CampaignDashboard: React.FC<CampaignDashboardProps> = ({
                 </div>
                 {step.txHash && (
                   <a
-                    href={`https://stellar.expert/explorer/testnet/tx/${step.txHash}`}
+                    href={getTxUrl(step.txHash, network)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs text-blue-600 hover:text-blue-800 underline mt-2 block"

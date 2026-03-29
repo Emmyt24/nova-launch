@@ -8,6 +8,7 @@ import {
 } from '../../utils/formatting';
 import type { TokenInfo } from '../../types';
 import { fetchTokenDetail, type TokenDetail, invalidateTokenCache } from '../../services/tokenInfoApi';
+import { getContractUrl, getTxUrl } from '../../utils/explorer';
 
 /**
  * Extended token info with indexed metadata from backend
@@ -88,14 +89,10 @@ export function TokenCard({ token, network, fetchEnrichedData = true, onDetailLo
         }
     };
 
-    const explorerUrl = network === 'testnet'
-        ? `https://stellar.expert/explorer/testnet/contract/${token.address}`
-        : `https://stellar.expert/explorer/public/contract/${token.address}`;
+    const explorerUrl = getContractUrl(token.address, network);
 
     const txUrl = token.transactionHash
-        ? network === 'testnet'
-            ? `https://stellar.expert/explorer/testnet/tx/${token.transactionHash}`
-            : `https://stellar.expert/explorer/public/tx/${token.transactionHash}`
+        ? getTxUrl(token.transactionHash, network)
         : null;
 
     const handleCopy = async () => {

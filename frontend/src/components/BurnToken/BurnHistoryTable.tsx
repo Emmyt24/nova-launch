@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { getTxUrl } from "../../utils/explorer";
 
 type BurnRecord = {
   id: string;
@@ -13,7 +14,7 @@ type BurnRecord = {
 type Props = {
   records: BurnRecord[];
   loading?: boolean;
-  explorerBase?: string; // e.g. https://explorer.testnet.example/tx
+  network?: 'testnet' | 'mainnet';
 };
 
 const PAGE_SIZE = 10;
@@ -43,7 +44,7 @@ function formatAmount(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(value);
 }
 
-export default function BurnHistoryTable({ records, loading, explorerBase }: Props) {
+export default function BurnHistoryTable({ records, loading, network = 'testnet' }: Props) {
   const [filter, setFilter] = useState<"all" | "self" | "admin">("all");
   const [sortKey, setSortKey] = useState<"date" | "from" | "amount">("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -84,8 +85,7 @@ export default function BurnHistoryTable({ records, loading, explorerBase }: Pro
 
   function explorerLink(tx?: string) {
     if (!tx) return undefined;
-    if (explorerBase) return `${explorerBase.replace(/\/$/, "")}/${tx}`;
-    return tx;
+    return getTxUrl(tx, network);
   }
 
   const styles: { [k: string]: React.CSSProperties } = {

@@ -9,6 +9,7 @@ import { TokenEventParser, RawTokenEvent } from "./tokenEventParser";
 import { EventCursorStore } from "./eventCursorStore";
 import { StreamEventParser } from "./streamEventParser";
 import { parseVaultCreatedEvent, parseVaultClaimedEvent, parseVaultCancelledEvent, parseVaultMetadataUpdatedEvent } from "./vaultEventParser";
+import { decodeEvent, kindForTopic } from "./eventVersioning/decoderRegistry";
 import { 
   BACKGROUND_RETRY_CONFIG,
   calculateBackoffDelay,
@@ -203,90 +204,76 @@ export class StellarEventListener {
   }
 
   /**
-   * Process a single event
+   * Process a single event — all routing goes through the decoder registry.
    */
   private async processEvent(event: StellarEvent): Promise<void> {
     try {
-      // Check if this is a governance event
-      if (governanceEventMapper.isGovernanceEvent(event)) {
+      const normalized = decodeEvent(event);
+
+      if (normalized.kind === 'unknown') {
+        // Already logged by decodeEvent; nothing more to do.
+        return;
+      }
+
+      const kind = normalized.kind;
+
+      // ── Governance ──────────────────────────────────────────────────────
+      if (kind.startsWith('proposal_') || kind === 'vote_cast') {
+        // Still delegate to the existing mapper+parser for full Prisma projection
         const governanceEvent = governanceEventMapper.mapEvent(event);
         if (governanceEvent) {
           await this.governanceParser.parseEvent(governanceEvent);
-          console.log(`Processed governance event: ${governanceEvent.type}`);
         }
         return;
       }
 
-      // Route buyback campaign events
-      if (this.isBuybackEvent(event)) {
-        await this.processBuybackEvent(event);
-        return;
-      }
-
-      // Route stream and vault events
-      if (this.isStreamOrVaultEvent(event)) {
+      // ── Vault / Stream ──────────────────────────────────────────────────
+      if (kind.startsWith('vault_')) {
         await this.processStreamOrVaultEvent(event);
         return;
       }
 
-      // Parse event topic to determine event type
-      const eventType = this.parseEventType(event);
-
-      // Extract event data based on type
-      const eventData = this.extractEventData(event, eventType);
-
-      if (!eventData) {
+      // ── Campaign ────────────────────────────────────────────────────────
+      if (kind.startsWith('campaign_')) {
+        await this.processBuybackEvent(event);
         return;
       }
 
-      // Persist token projection (idempotent)
+      // ── Token ───────────────────────────────────────────────────────────
       const rawTokenEvent = this.toRawTokenEvent(event);
       if (rawTokenEvent) {
         await this.tokenEventParser.parseEvent(rawTokenEvent);
       }
 
-      // Trigger webhooks only if we have a webhook event type
-      if (eventType) {
-        await webhookDeliveryService.triggerEvent(
-          eventType,
-          eventData,
-          eventData.tokenAddress
-        );
+      // Webhook dispatch for token events
+      const webhookType = this.kindToWebhookType(kind);
+      if (webhookType) {
+        const eventData = this.extractEventData(event, webhookType);
+        if (eventData) {
+          await webhookDeliveryService.triggerEvent(webhookType, eventData, eventData.tokenAddress);
+        }
       }
     } catch (error) {
       console.error("Error processing event:", error);
     }
   }
 
+  /** Map a normalized kind to a WebhookEventType, if applicable. */
+  private kindToWebhookType(kind: string): WebhookEventType | null {
+    switch (kind) {
+      case 'token_burned':       return WebhookEventType.TOKEN_BURN_SELF;
+      case 'token_admin_burned': return WebhookEventType.TOKEN_BURN_ADMIN;
+      case 'token_created':      return WebhookEventType.TOKEN_CREATED;
+      default:                   return null;
+    }
+  }
+
   /**
-   * Parse event type from Stellar event
+   * Parse event type from Stellar event (kept for extractEventData compatibility)
+   * @deprecated Use kindToWebhookType with the decoder registry instead
    */
   private parseEventType(event: StellarEvent): WebhookEventType | null {
-    // Event topics are typically structured as [event_name, ...]
-    if (event.topic.length < 1) {
-      return null;
-    }
-
-    const eventName = event.topic[0];
-
-    switch (eventName) {
-      case "tok_burn":
-        return WebhookEventType.TOKEN_BURN_SELF;
-
-      case "adm_burn":
-        return WebhookEventType.TOKEN_BURN_ADMIN;
-
-      case "tok_reg":
-        return WebhookEventType.TOKEN_CREATED;
-
-      case "adm_xfer":
-      case "adm_prop":
-        // Both admin transfer and admin proposed are admin-related events
-        return null; // No webhook type defined yet, but parse successfully
-
-      default:
-        return null;
-    }
+    return this.kindToWebhookType(kindForTopic(event.topic?.[0] ?? '') ?? '');
   }
 
   /**
@@ -404,17 +391,11 @@ export class StellarEventListener {
   }
 
   /**
-   * Check if event is a stream or vault event
+   * Check if event is a stream or vault event (registry-backed)
    */
   private isStreamOrVaultEvent(event: StellarEvent): boolean {
-    const topic0 = event.topic[0];
-    return [
-      "vlt_cr_v1",
-      "vlt_fd_v1",
-      "vlt_cl_v1",
-      "vlt_cn_v1",
-      "vlt_md_v1"
-    ].includes(topic0);
+    const kind = kindForTopic(event.topic?.[0] ?? '');
+    return kind?.startsWith('vault_') ?? false;
   }
 
   /**
@@ -487,12 +468,11 @@ export class StellarEventListener {
   }
 
   /**
-   * Check if event is a buyback event
+   * Check if event is a campaign/buyback event (registry-backed)
    */
   private isBuybackEvent(event: StellarEvent): boolean {
-    // Implementation for isBuybackEvent should be here
-    // If not found, adding a minimal check
-    return event.topic[0] === "buyback_exec"; 
+    const kind = kindForTopic(event.topic?.[0] ?? '');
+    return kind?.startsWith('campaign_') ?? false;
   }
 
   /**

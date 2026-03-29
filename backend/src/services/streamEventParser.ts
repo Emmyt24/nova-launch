@@ -5,8 +5,9 @@ export class StreamEventParser {
   constructor(private prisma: PrismaClient) {}
 
   async parseCreatedEvent(event: StreamCreatedEvent): Promise<void> {
-    await this.prisma.stream.create({
-      data: {
+    await this.prisma.stream.upsert({
+      where: { streamId: event.streamId },
+      create: {
         streamId: event.streamId,
         creator: event.creator,
         recipient: event.recipient,
@@ -16,6 +17,7 @@ export class StreamEventParser {
         txHash: event.txHash,
         createdAt: event.timestamp,
       },
+      update: {}, // no-op on replay — creation fields are immutable
     });
   }
 

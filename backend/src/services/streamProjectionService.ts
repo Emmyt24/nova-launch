@@ -1,5 +1,4 @@
 import { PrismaClient, StreamStatus } from "@prisma/client";
-import { performance } from "perf_hooks";
 
 const prisma = new PrismaClient();
 
@@ -8,7 +7,7 @@ export interface StreamProjection {
   streamId: number;
   creator: string;
   recipient: string;
-  amount: string;
+  amount: string; // BigInt serialized as string
   metadata?: string;
   status: StreamStatus;
   txHash: string;
@@ -24,63 +23,68 @@ export interface StreamStats {
   cancelledVolume: string;
 }
 
+export interface StreamListOptions {
+  status?: StreamStatus;
+  limit?: number;
+  offset?: number;
+}
+
 export class StreamProjectionService {
   async getStreamById(streamId: number): Promise<StreamProjection | null> {
-    const start = performance.now();
-    const stream = await prisma.stream.findUnique({
-      where: { streamId },
-    });
-    const duration = performance.now() - start;
-    if (duration > 100) {
-      console.warn(`[PERF] getStreamById took ${duration.toFixed(2)}ms`);
-    }
-
-    if (!stream) return null;
-
-    return this.buildProjection(stream);
+    const stream = await prisma.stream.findUnique({ where: { streamId } });
+    return stream ? this.buildProjection(stream) : null;
   }
 
-  async getStreamsByCreator(creator: string): Promise<StreamProjection[]> {
+  async getStreamsByCreator(
+    creator: string,
+    opts: StreamListOptions = {}
+  ): Promise<StreamProjection[]> {
+    const { status, limit = 50, offset = 0 } = opts;
     const streams = await prisma.stream.findMany({
-      where: { creator },
+      where: { creator, ...(status ? { status } : {}) },
       orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
     });
-
     return streams.map((s) => this.buildProjection(s));
   }
 
-  async getStreamsByRecipient(recipient: string): Promise<StreamProjection[]> {
+  async getStreamsByRecipient(
+    recipient: string,
+    opts: StreamListOptions = {}
+  ): Promise<StreamProjection[]> {
+    const { status, limit = 50, offset = 0 } = opts;
     const streams = await prisma.stream.findMany({
-      where: { recipient },
+      where: { recipient, ...(status ? { status } : {}) },
       orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
     });
-
     return streams.map((s) => this.buildProjection(s));
   }
 
   async getStreamStats(address?: string): Promise<StreamStats> {
-    const where: any = address ? { OR: [{ creator: address }, { recipient: address }] } : {};
+    const where: any = address
+      ? { OR: [{ creator: address }, { recipient: address }] }
+      : {};
 
-    const [totalStreams, activeStreams, claimedStreams, cancelledStreams] = await Promise.all([
-      prisma.stream.count({ where }),
-      prisma.stream.count({ where: { ...where, status: StreamStatus.CREATED } }),
-      prisma.stream.findMany({ where: { ...where, status: StreamStatus.CLAIMED } }),
-      prisma.stream.findMany({ where: { ...where, status: StreamStatus.CANCELLED } }),
-    ]);
-
-    const claimedVolume = claimedStreams
-      .reduce((sum, s) => sum + s.amount, BigInt(0))
-      .toString();
-    
-    const cancelledVolume = cancelledStreams
-      .reduce((sum, s) => sum + s.amount, BigInt(0))
-      .toString();
+    const [totalStreams, activeStreams, claimedStreams, cancelledStreams] =
+      await Promise.all([
+        prisma.stream.count({ where }),
+        prisma.stream.count({ where: { ...where, status: StreamStatus.CREATED } }),
+        prisma.stream.findMany({ where: { ...where, status: StreamStatus.CLAIMED } }),
+        prisma.stream.findMany({ where: { ...where, status: StreamStatus.CANCELLED } }),
+      ]);
 
     return {
       totalStreams,
       activeStreams,
-      claimedVolume,
-      cancelledVolume,
+      claimedVolume: claimedStreams
+        .reduce((sum, s) => sum + s.amount, BigInt(0))
+        .toString(),
+      cancelledVolume: cancelledStreams
+        .reduce((sum, s) => sum + s.amount, BigInt(0))
+        .toString(),
     };
   }
 
@@ -91,12 +95,12 @@ export class StreamProjectionService {
       creator: stream.creator,
       recipient: stream.recipient,
       amount: stream.amount.toString(),
-      metadata: stream.metadata || undefined,
+      metadata: stream.metadata ?? undefined,
       status: stream.status,
       txHash: stream.txHash,
       createdAt: stream.createdAt,
-      claimedAt: stream.claimedAt || undefined,
-      cancelledAt: stream.cancelledAt || undefined,
+      claimedAt: stream.claimedAt ?? undefined,
+      cancelledAt: stream.cancelledAt ?? undefined,
     };
   }
 }

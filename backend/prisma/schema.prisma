@@ -175,6 +175,9 @@ model Proposal {
   updatedAt   DateTime @updatedAt
   executedAt  DateTime?
   cancelledAt DateTime?
+  /// Nullable for legacy rows that predate cancellation tracking.
+  canceller   String?
+  cancelReason String?
 
   votes       Vote[]
   executions  ProposalExecution[]
@@ -234,6 +237,7 @@ enum ProposalStatus {
   ACTIVE
   PASSED
   REJECTED
+  QUEUED
   EXECUTED
   CANCELLED
   EXPIRED

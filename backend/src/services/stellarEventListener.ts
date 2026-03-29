@@ -490,9 +490,13 @@ export class StellarEventListener {
    * Check if event is a buyback event
    */
   private isBuybackEvent(event: StellarEvent): boolean {
-    // Implementation for isBuybackEvent should be here
-    // If not found, adding a minimal check
-    return event.topic[0] === "buyback_exec"; 
+    const topic0 = event.topic[0];
+    return [
+      'camp_cr_v1', 'camp_cr',
+      'camp_ex_v1', 'camp_ex',
+      'camp_st_v1', 'camp_st',
+      'buyback_exec',
+    ].includes(topic0);
   }
 
   /**

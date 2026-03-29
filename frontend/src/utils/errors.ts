@@ -7,6 +7,10 @@ import type { ErrorContext } from '../services/logging';
  * Error handling utilities
  */
 
+/**
+ * Error messages aligned with docs/CONTRACT_ERROR_MATRIX.md
+ * These messages must not drift independently from error codes
+ */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
     [ErrorCode.WALLET_NOT_CONNECTED]: 'Please connect your wallet to continue',
     [ErrorCode.INSUFFICIENT_BALANCE]: 'Insufficient XLM balance for transaction fees',
@@ -20,21 +24,30 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
     [ErrorCode.TIMEOUT_ERROR]: 'Transaction confirmation timeout',
     [ErrorCode.ACCOUNT_NOT_FOUND]: 'Account not found on network',
     [ErrorCode.INVALID_SIGNATURE]: 'Invalid transaction signature',
+    [ErrorCode.BURN_FAILED]: 'Token burn operation failed',
+    [ErrorCode.INVALID_AMOUNT]: 'Invalid amount specified',
+    [ErrorCode.UNAUTHORIZED]: 'You are not authorized to perform this action',
 };
 
+/**
+ * Recovery suggestions aligned with docs/CONTRACT_ERROR_MATRIX.md
+ */
 export const ERROR_RECOVERY_SUGGESTIONS: Record<ErrorCode, string> = {
-    [ErrorCode.WALLET_NOT_CONNECTED]: 'Open Freighter and reconnect your wallet.',
-    [ErrorCode.INSUFFICIENT_BALANCE]: 'Fund your wallet with enough XLM, then retry.',
-    [ErrorCode.INVALID_INPUT]: 'Review all fields and fix validation errors.',
-    [ErrorCode.IPFS_UPLOAD_FAILED]: 'Retry upload or use a smaller image file.',
-    [ErrorCode.TRANSACTION_FAILED]: 'Retry in a moment and confirm transaction details.',
-    [ErrorCode.WALLET_REJECTED]: 'Approve the transaction in your wallet prompt.',
-    [ErrorCode.NETWORK_ERROR]: 'Check connectivity and try again.',
-    [ErrorCode.SIMULATION_FAILED]: 'Update token params and retry simulation.',
-    [ErrorCode.CONTRACT_ERROR]: 'Verify contract/network configuration and retry.',
-    [ErrorCode.TIMEOUT_ERROR]: 'Wait briefly and check transaction status again.',
-    [ErrorCode.ACCOUNT_NOT_FOUND]: 'Fund/activate your account on the selected network.',
-    [ErrorCode.INVALID_SIGNATURE]: 'Re-sign with the connected wallet and retry.',
+    [ErrorCode.WALLET_NOT_CONNECTED]: 'Install Freighter extension and connect your wallet',
+    [ErrorCode.INSUFFICIENT_BALANCE]: 'Add more XLM to your wallet and try again',
+    [ErrorCode.INVALID_INPUT]: 'Review all fields and fix validation errors',
+    [ErrorCode.IPFS_UPLOAD_FAILED]: 'Use a smaller image or reduce metadata size',
+    [ErrorCode.TRANSACTION_FAILED]: 'Review transaction details and try again',
+    [ErrorCode.WALLET_REJECTED]: 'Try again and approve the transaction in your wallet',
+    [ErrorCode.NETWORK_ERROR]: 'Check your internet connection and try again',
+    [ErrorCode.SIMULATION_FAILED]: 'Check your parameters and try again',
+    [ErrorCode.CONTRACT_ERROR]: 'Please try again or contact support',
+    [ErrorCode.TIMEOUT_ERROR]: 'The network may be congested. Try again in a few moments',
+    [ErrorCode.ACCOUNT_NOT_FOUND]: 'Ensure your wallet is funded with XLM',
+    [ErrorCode.INVALID_SIGNATURE]: 'Re-sign with the connected wallet and retry',
+    [ErrorCode.BURN_FAILED]: 'Verify burn parameters and try again',
+    [ErrorCode.INVALID_AMOUNT]: 'Enter a valid amount and try again',
+    [ErrorCode.UNAUTHORIZED]: 'You do not have permission for this operation',
 };
 
 export type ErrorSeverity = 'low' | 'medium' | 'high';

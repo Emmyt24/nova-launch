@@ -9,13 +9,131 @@ import {
 } from '../types/governance';
 
 /**
+ * Contract error details structure
+ * Aligned with docs/CONTRACT_ERROR_MATRIX.md
+ */
+export interface ContractErrorDetails {
+  errorCode?: string;
+  message: string;
+  details?: string;
+  retryable: boolean;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  rawError?: string;
+}
+
+/**
+ * Known contract error codes from CONTRACT_ERROR_MATRIX.md
+ */
+const KNOWN_CONTRACT_ERRORS = new Set([
+  // Token errors
+  'TOKEN_ALREADY_EXISTS', 'INVALID_TOKEN_PARAMS', 'TOKEN_NOT_FOUND',
+  'UNAUTHORIZED_BURN', 'BURN_AMOUNT_EXCEEDS_BALANCE', 'ZERO_BURN_AMOUNT',
+  'METADATA_TOO_LARGE', 'INVALID_METADATA_URI',
+  // Campaign errors
+  'CAMPAIGN_NOT_FOUND', 'CAMPAIGN_ALREADY_EXISTS', 'CAMPAIGN_NOT_ACTIVE',
+  'CAMPAIGN_ENDED', 'INSUFFICIENT_BUDGET', 'INVALID_TIME_RANGE',
+  'INVALID_SLIPPAGE', 'UNAUTHORIZED_CREATOR', 'MIN_INTERVAL_NOT_MET',
+  // Governance errors
+  'PROPOSAL_NOT_FOUND', 'VOTING_NOT_STARTED', 'VOTING_ENDED',
+  'ALREADY_VOTED', 'INSUFFICIENT_VOTING_POWER', 'QUORUM_NOT_MET',
+  'UNAUTHORIZED_PROPOSER',
+  // Vault errors
+  'VAULT_NOT_FOUND', 'VAULT_ALREADY_CLAIMED', 'UNAUTHORIZED_CLAIMER',
+  // Stream errors
+  'STREAM_NOT_FOUND', 'STREAM_ALREADY_CLAIMED', 'UNAUTHORIZED_STREAM_CLAIMER',
+  // System errors
+  'CONTRACT_PAUSED',
+]);
+
+/**
  * Governance Event Parser
  * 
  * Parses and persists governance events from the blockchain
  * into the database for analytics and tracking.
+ * 
+ * Preserves structured error details aligned with frontend error semantics.
  */
 export class GovernanceEventParser {
   constructor(private prisma: PrismaClient) {}
+
+  /**
+   * Parse contract error from error response
+   * Aligned with docs/CONTRACT_ERROR_MATRIX.md
+   */
+  private parseContractError(error: any): ContractErrorDetails {
+    // Extract error code from various formats
+    let errorCode: string | undefined;
+    
+    if (error.contractErrorCode) {
+      errorCode = error.contractErrorCode;
+    } else if (error.message) {
+      const match = error.message.match(/Error\(([A-Z_]+)\)/);
+      if (match) {
+        errorCode = match[1];
+      }
+    }
+
+    // Check if it's a known error
+    if (errorCode && KNOWN_CONTRACT_ERRORS.has(errorCode)) {
+      return {
+        errorCode,
+        message: error.message || `Contract error: ${errorCode}`,
+        details: error.details || `Error(${errorCode})`,
+        retryable: this.isRetryableError(errorCode),
+        severity: this.getErrorSeverity(errorCode),
+      };
+    }
+
+    // Unknown error - preserve raw details
+    return {
+      errorCode,
+      message: error.message || 'Unknown contract error',
+      details: error.details || JSON.stringify(error),
+      retryable: true,
+      severity: 'medium',
+      rawError: JSON.stringify(error),
+    };
+  }
+
+  /**
+   * Determine if error is retryable based on error code
+   */
+  private isRetryableError(errorCode: string): boolean {
+    const retryableErrors = new Set([
+      'METADATA_TOO_LARGE',
+      'MIN_INTERVAL_NOT_MET',
+      'CONTRACT_PAUSED',
+    ]);
+    return retryableErrors.has(errorCode);
+  }
+
+  /**
+   * Get error severity based on error code
+   */
+  private getErrorSeverity(errorCode: string): 'low' | 'medium' | 'high' | 'critical' {
+    const highSeverityErrors = new Set([
+      'UNAUTHORIZED_BURN',
+      'INSUFFICIENT_BUDGET',
+      'UNAUTHORIZED_CREATOR',
+      'INSUFFICIENT_VOTING_POWER',
+      'UNAUTHORIZED_PROPOSER',
+      'UNAUTHORIZED_CLAIMER',
+      'UNAUTHORIZED_STREAM_CLAIMER',
+    ]);
+
+    const lowSeverityErrors = new Set([
+      'ZERO_BURN_AMOUNT',
+    ]);
+
+    const criticalErrors = new Set([
+      'CONTRACT_PAUSED',
+    ]);
+
+    if (criticalErrors.has(errorCode)) return 'critical';
+    if (highSeverityErrors.has(errorCode)) return 'high';
+    if (lowSeverityErrors.has(errorCode)) return 'low';
+    return 'medium';
+  }
 
   /**
    * Parse and persist a proposal created event
@@ -94,7 +212,25 @@ export class GovernanceEventParser {
         throw new Error(`Proposal ${event.proposalId} not found`);
       }
 
-      // Create execution record
+      // Parse error details if execution failed
+      let errorDetails: ContractErrorDetails | undefined;
+      if (!event.success && event.returnData) {
+        try {
+          const errorData = JSON.parse(event.returnData);
+          errorDetails = this.parseContractError(errorData);
+        } catch (parseError) {
+          // If parsing fails, preserve raw error
+          errorDetails = {
+            message: 'Execution failed',
+            details: event.returnData,
+            retryable: false,
+            severity: 'high',
+            rawError: event.returnData,
+          };
+        }
+      }
+
+      // Create execution record with structured error details
       await this.prisma.proposalExecution.create({
         data: {
           proposalId: proposal.id,
@@ -104,6 +240,9 @@ export class GovernanceEventParser {
           gasUsed: event.gasUsed ? BigInt(event.gasUsed) : null,
           txHash: event.txHash,
           executedAt: event.timestamp,
+          errorCode: errorDetails?.errorCode,
+          errorMessage: errorDetails?.message,
+          errorDetails: errorDetails?.details,
         },
       });
 
@@ -111,12 +250,16 @@ export class GovernanceEventParser {
       await this.prisma.proposal.update({
         where: { id: proposal.id },
         data: {
-          status: ProposalStatus.EXECUTED,
+          status: event.success ? ProposalStatus.EXECUTED : ProposalStatus.FAILED,
           executedAt: event.timestamp,
         },
       });
 
-      console.log(`Proposal ${event.proposalId} executed successfully`);
+      if (event.success) {
+        console.log(`Proposal ${event.proposalId} executed successfully`);
+      } else {
+        console.log(`Proposal ${event.proposalId} execution failed:`, errorDetails);
+      }
     } catch (error) {
       console.error(`Error parsing proposal executed event:`, error);
       throw error;

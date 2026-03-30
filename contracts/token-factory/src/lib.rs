@@ -2237,6 +2237,9 @@ mod campaign_stateful_fuzz_test;
 mod accounting_property_test;
 
 #[cfg(test)]
+mod stream_status_transition_property_test;
+
+#[cfg(test)]
 mod vault_claim_property_test;
 
 #[cfg(all(test, feature = "legacy-tests"))]

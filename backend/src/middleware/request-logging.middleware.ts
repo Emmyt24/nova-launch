@@ -9,6 +9,8 @@ interface LogEntry {
   userAgent?: string;
   ip?: string;
   requestId?: string;
+  correlationId?: string;
+  txHash?: string;
 }
 
 export const requestLoggingMiddleware = (
@@ -19,13 +21,21 @@ export const requestLoggingMiddleware = (
   const startTime = Date.now();
   const requestId = req.headers['x-request-id'] as string || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-  // Attach request ID
+  // Propagate or generate correlation ID (frontend passes x-correlation-id)
+  const correlationId = (req.headers['x-correlation-id'] as string) || requestId;
+
+  // Attach IDs to request and response headers
   req.headers['x-request-id'] = requestId;
+  req.headers['x-correlation-id'] = correlationId;
   res.setHeader('X-Request-Id', requestId);
+  res.setHeader('X-Correlation-Id', correlationId);
 
   // Capture response
   res.on('finish', () => {
     const responseTime = Date.now() - startTime;
+    // tx hash may be present in body or query (read-only, never log signed XDR)
+    const txHash = (req.body?.txHash as string | undefined) || (req.query?.txHash as string | undefined);
+
     const logEntry: LogEntry = {
       timestamp: new Date().toISOString(),
       method: req.method,
@@ -34,13 +44,13 @@ export const requestLoggingMiddleware = (
       responseTime,
       userAgent: req.headers['user-agent'],
       ip: req.ip || req.socket.remoteAddress,
-      requestId
+      requestId,
+      correlationId,
+      ...(txHash && { txHash }),
     };
 
-    // Format log message
-    const logMessage = formatLogMessage(logEntry);
-    
-    // Log based on status code
+    const logMessage = JSON.stringify(logEntry);
+
     if (res.statusCode >= 500) {
       console.error(logMessage);
     } else if (res.statusCode >= 400) {
@@ -52,13 +62,3 @@ export const requestLoggingMiddleware = (
 
   next();
 };
-
-function formatLogMessage(entry: LogEntry): string {
-  const timestamp = new Date(entry.timestamp).toISOString().replace('T', ' ').substring(0, 19);
-  return `[${timestamp}] ${entry.method} ${entry.path} ${entry.statusCode} ${entry.responseTime}ms`;
-}
-
-export function formatDetailedLog(entry: LogEntry): string {
-  const timestamp = new Date(entry.timestamp).toISOString().replace('T', ' ').substring(0, 19);
-  return `[${timestamp}] ${entry.method} ${entry.path} ${entry.statusCode} ${entry.responseTime}ms | IP: ${entry.ip} | UA: ${entry.userAgent?.substring(0, 50)}`;
-}

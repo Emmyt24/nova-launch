@@ -18,21 +18,23 @@ export class WebhookDeliveryService {
   async triggerEvent(
     event: WebhookEventType,
     data: WebhookEventData,
-    tokenAddress?: string
+    tokenAddress?: string,
+    correlationId?: string
   ): Promise<void> {
     const subscriptions = await webhookService.findMatchingSubscriptions(
       event,
       tokenAddress
     );
 
+    const cid = correlationId || `whk_${Date.now().toString(36)}`;
     console.log(
-      `Found ${subscriptions.length} subscriptions for event ${event}`
+      JSON.stringify({ event: 'webhook.trigger', correlationId: cid, webhookEvent: event, subscriptionCount: subscriptions.length })
     );
 
     // Deliver webhooks in parallel
     await Promise.allSettled(
       subscriptions.map((subscription) =>
-        this.deliverWebhook(subscription, event, data)
+        this.deliverWebhook(subscription, event, data, cid)
       )
     );
   }
@@ -44,13 +46,23 @@ export class WebhookDeliveryService {
   async deliverWebhook(
     subscription: WebhookSubscription,
     event: WebhookEventType,
-    data: WebhookEventData
+    data: WebhookEventData,
+    correlationId?: string
   ): Promise<void> {
     const payload = webhookService.createPayload(
       event,
       data,
       subscription.secret
     );
+
+    const cid = correlationId || `whk_${Date.now().toString(36)}`;
+    // Attach correlation ID to payload headers (not body — body is signed)
+    const extraHeaders: Record<string, string> = {
+      'X-Correlation-Id': cid,
+    };
+    // Include originating tx hash if present in data
+    const txHash = (data as Record<string, unknown>).transactionHash as string | undefined;
+    if (txHash) extraHeaders['X-Tx-Hash'] = txHash;
 
     let lastError: string | null = null;
     let statusCode: number | null = null;
@@ -61,7 +73,7 @@ export class WebhookDeliveryService {
       attempts = attempt;
       try {
         console.log(
-          `Delivering webhook to ${subscription.url} (attempt ${attempt}/${MAX_RETRIES})`
+          JSON.stringify({ event: 'webhook.attempt', correlationId: cid, url: subscription.url, attempt, maxRetries: MAX_RETRIES, ...(txHash && { txHash }) })
         );
 
         const response = await axios.post(subscription.url, payload, {
@@ -71,6 +83,7 @@ export class WebhookDeliveryService {
             "X-Webhook-Signature": payload.signature,
             "X-Webhook-Event": event,
             "User-Agent": "Nova-Launch-Webhook/1.0",
+            ...extraHeaders,
           },
           validateStatus: (status) => status >= 200 && status < 300,
         });
@@ -80,7 +93,7 @@ export class WebhookDeliveryService {
         lastError = null;
 
         console.log(
-          `Webhook delivered successfully to ${subscription.url} (status: ${statusCode})`
+          JSON.stringify({ event: 'webhook.delivered', correlationId: cid, url: subscription.url, statusCode, ...(txHash && { txHash }) })
         );
 
         // Update last triggered timestamp
@@ -93,12 +106,7 @@ export class WebhookDeliveryService {
         lastError = axiosError.message;
 
         console.error(
-          `Webhook delivery failed (attempt ${attempt}/${MAX_RETRIES}):`,
-          {
-            url: subscription.url,
-            error: lastError,
-            statusCode,
-          }
+          JSON.stringify({ event: 'webhook.failed', correlationId: cid, url: subscription.url, attempt, statusCode, error: lastError, ...(txHash && { txHash }) })
         );
 
         // 4xx errors are non-retryable — stop immediately
@@ -124,13 +132,10 @@ export class WebhookDeliveryService {
       lastError
     );
 
-    // Disable subscription after multiple failures
     if (!success) {
       console.warn(
-        `Webhook delivery failed after ${MAX_RETRIES} attempts. Consider disabling subscription ${subscription.id}`
+        JSON.stringify({ event: 'webhook.exhausted', correlationId: cid, subscriptionId: subscription.id, attempts: MAX_RETRIES, ...(txHash && { txHash }) })
       );
-      // Optionally auto-disable after X consecutive failures
-      // await webhookService.updateSubscriptionStatus(subscription.id, false);
     }
   }
 

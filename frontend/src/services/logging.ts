@@ -2,6 +2,55 @@ import * as Sentry from '@sentry/browser';
 
 type Severity = 'low' | 'medium' | 'high';
 
+// ---------------------------------------------------------------------------
+// Correlation ID helpers
+// ---------------------------------------------------------------------------
+
+/** Generate a lightweight correlation ID for a frontend operation. */
+export function generateCorrelationId(): string {
+    return `cid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export interface CorrelationContext {
+    correlationId: string;
+    txHash?: string;
+    walletAddress?: string;
+    network?: string;
+}
+
+/**
+ * Log a structured integration event that can be correlated across
+ * frontend → backend → webhook hops.
+ *
+ * Rules:
+ *  - txHash is the primary chain key after submission; include it whenever available.
+ *  - Never log signed XDR blobs or secrets.
+ */
+export function logIntegrationEvent(
+    event: string,
+    ctx: CorrelationContext,
+    extra?: Record<string, unknown>
+): void {
+    const SENSITIVE = /(secret|xdr|signed|mnemonic|seed|private)/i;
+    const safeExtra: Record<string, unknown> = {};
+    if (extra) {
+        for (const [k, v] of Object.entries(extra)) {
+            safeExtra[k] = SENSITIVE.test(k) ? '[REDACTED]' : v;
+        }
+    }
+
+    const payload = {
+        event,
+        correlationId: ctx.correlationId,
+        ...(ctx.txHash && { txHash: ctx.txHash }),
+        ...(ctx.network && { network: ctx.network }),
+        timestamp: new Date().toISOString(),
+        ...safeExtra,
+    };
+
+    console.info('[Integration]', JSON.stringify(payload));
+}
+
 export interface ErrorContext {
     action?: string;
     feature?: string;

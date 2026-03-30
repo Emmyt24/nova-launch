@@ -188,6 +188,7 @@ export class StructuredLogger {
     contractAddress?: string;
     method?: string;
     transactionHash?: string;
+    correlationId?: string;
     gasUsed?: number;
     success: boolean;
     duration?: number;
@@ -203,6 +204,7 @@ export class StructuredLogger {
       contractAddress: params.contractAddress,
       method: params.method,
       transactionHash: params.transactionHash,
+      correlationId: params.correlationId,
       gasUsed: params.gasUsed,
       success: params.success,
       duration: params.duration,
@@ -247,6 +249,7 @@ export class StructuredLogger {
   logTransaction(params: {
     stage: 'initiated' | 'signed' | 'submitted' | 'confirmed' | 'failed';
     transactionHash?: string;
+    correlationId?: string;
     fromAddress?: string;
     toAddress?: string;
     amount?: string;
@@ -263,6 +266,7 @@ export class StructuredLogger {
       category: 'transaction',
       stage: params.stage,
       transactionHash: params.transactionHash,
+      correlationId: params.correlationId,
       fromAddress: params.fromAddress ? this.hashSensitiveData(params.fromAddress) : undefined,
       toAddress: params.toAddress ? this.hashSensitiveData(params.toAddress) : undefined,
       amount: params.amount,
@@ -513,6 +517,7 @@ export interface ContractInteractionLog {
   contractAddress?: string;
   method?: string;
   transactionHash?: string;
+  correlationId?: string;
   gasUsed?: number;
   success: boolean;
   duration?: number;
@@ -532,6 +537,7 @@ export interface WalletInteractionLog {
 export interface TransactionLog {
   stage: 'initiated' | 'signed' | 'submitted' | 'confirmed' | 'failed';
   transactionHash?: string;
+  correlationId?: string;
   fromAddress?: string;
   toAddress?: string;
   amount?: string;

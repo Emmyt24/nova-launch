@@ -288,4 +288,91 @@ describe('StreamEventParser', () => {
       expect(stream?.claimedAt).toBeNull();
     });
   });
+
+  describe('chronological stream event processing integration', () => {
+    it('should apply out-of-order events by timestamp and final state by temporal ordering', async () => {
+      const streamId = 500;
+      const created = {
+        type: 'created' as const,
+        streamId,
+        creator: 'GCREATOR',
+        recipient: 'GRECIPIENT',
+        amount: '1000',
+        hasMetadata: false,
+        metadata: null,
+        txHash: '0xcreated',
+        timestamp: new Date(1000),
+      };
+
+      const claimed = {
+        type: 'claimed' as const,
+        streamId,
+        recipient: 'GRECIPIENT',
+        amount: '1000',
+        txHash: '0xclaimed',
+        timestamp: new Date(3000),
+      };
+
+      const cancelledLate = {
+        type: 'cancelled' as const,
+        streamId,
+        creator: 'GCREATOR',
+        refundAmount: '0',
+        txHash: '0xcancelled',
+        timestamp: new Date(2000),
+      };
+
+      // Inject in non-chronological order (claimed before cancelled)
+      await parser.processEventsInChronologicalOrder([created, claimed, cancelledLate]);
+
+      const stream = await prisma.stream.findUnique({ where: { streamId } });
+      expect(stream).toBeDefined();
+      expect(stream?.createdAt).toEqual(created.timestamp);
+      expect(stream?.cancelledAt).toEqual(cancelledLate.timestamp);
+      expect(stream?.claimedAt).toEqual(claimed.timestamp);
+      expect(stream?.status).toBe(StreamStatus.CLAIMED);
+    });
+
+    it('should accept a late-arriving historical event and keep final state chronological', async () => {
+      const streamId = 501;
+      const created = {
+        type: 'created' as const,
+        streamId,
+        creator: 'GCREATOR',
+        recipient: 'GRECIPIENT',
+        amount: '1000',
+        hasMetadata: true,
+        metadata: 'ipfs://initial',
+        txHash: '0xcreated2',
+        timestamp: new Date(1000),
+      };
+
+      const claimed = {
+        type: 'claimed' as const,
+        streamId,
+        recipient: 'GRECIPIENT',
+        amount: '1000',
+        txHash: '0xclaimed2',
+        timestamp: new Date(4000),
+      };
+
+      const metadataLate = {
+        type: 'metadata_updated' as const,
+        streamId,
+        updater: 'GCREATOR',
+        hasMetadata: true,
+        metadata: 'ipfs://late',
+        txHash: '0xlate',
+        timestamp: new Date(2000),
+      };
+
+      await parser.processEventsInChronologicalOrder([created, claimed]);
+      await parser.processEventsInChronologicalOrder([metadataLate]);
+
+      const stream = await prisma.stream.findUnique({ where: { streamId } });
+      expect(stream?.metadata).toBe('ipfs://late');
+      expect(stream?.status).toBe(StreamStatus.CLAIMED);
+      expect(stream?.claimedAt).toEqual(claimed.timestamp);
+    });
+  });
 });

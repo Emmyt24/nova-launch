@@ -70,4 +70,21 @@ export class StreamEventParser {
         break;
     }
   }
+
+  /**
+   * Process events in timestamp order for chronological correctness.
+   */
+  async processEventsInChronologicalOrder(
+    events: Array<
+      StreamCreatedEvent | StreamClaimedEvent | StreamCancelledEvent | StreamMetadataUpdatedEvent
+    >
+  ): Promise<void> {
+    const sorted = [...events].sort(
+      (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+    );
+
+    for (const event of sorted) {
+      await this.parseEvent(event);
+    }
+  }
 }

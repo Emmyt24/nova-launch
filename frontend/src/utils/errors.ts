@@ -2,6 +2,24 @@ import type { AppError } from '../types';
 import { ErrorCode } from '../types';
 import { LoggingService } from '../services/logging';
 import type { ErrorContext } from '../services/logging';
+import { decodeSimulationError } from '../services/stellarErrors';
+import type { SimulationDecodeResult } from '../services/stellarErrors';
+
+export type { SimulationDecodeResult };
+
+/**
+ * Convert a Soroban simulation failure into a user-facing AppError.
+ * Preserves raw debug detail separately from the UI message.
+ */
+export function simulationFailureToAppError(simulationResponse: any): AppError & { debugDetail: string } {
+    const decoded = decodeSimulationError(simulationResponse);
+    return {
+        code: decoded.code,
+        message: decoded.userMessage,
+        details: decoded.retrySuggestion,
+        debugDetail: decoded.debugDetail,
+    };
+}
 
 /**
  * Error handling utilities

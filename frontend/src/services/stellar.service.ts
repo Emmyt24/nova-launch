@@ -22,6 +22,7 @@ import { mappers } from '../contracts/mappers';
 import { WalletService } from './wallet';
 import type { ProposalParams, VoteParams } from '../types/governance';
 import type { OnChainBuybackCampaign } from '../types/campaign';
+import { decodeSimulationError } from './stellarErrors';
 
 export interface TransactionDetails {
   hash: string;
@@ -436,6 +437,25 @@ export class StellarService {
     }
   }
 
+  /**
+   * Simulate a transaction before wallet signing.
+   * Throws a user-friendly AppError if simulation fails, so the wallet prompt is never shown.
+   */
+  private async simulateBeforeSigning(tx: Transaction): Promise<void> {
+    const sim = await this.server.simulateTransaction(tx);
+    if (Soroban.Api.isSimulationError(sim)) {
+      const decoded = decodeSimulationError(sim);
+      const err: AppError = {
+        code: decoded.code,
+        message: decoded.userMessage,
+        details: decoded.retrySuggestion,
+      };
+      // Attach debug detail without leaking it into the user-facing message
+      (err as any).debugDetail = decoded.debugDetail;
+      throw err;
+    }
+  }
+
   private async signWithWallet(xdr: string): Promise<string> {
     const signedXdr = await WalletService.signTransaction(xdr, this.networkPassphrase);
     if (!signedXdr) {
@@ -516,6 +536,7 @@ export class StellarService {
         .build();
 
       const prepared = await this.server.prepareTransaction(tx);
+      await this.simulateBeforeSigning(prepared as Transaction);
       const signedXdr = await this.signWithWallet(prepared.toXDR());
       const signedTx = TransactionBuilder.fromXDR(signedXdr, this.networkPassphrase) as Transaction;
 
@@ -650,6 +671,7 @@ export class StellarService {
         .build();
 
       const prepared = await this.server.prepareTransaction(tx);
+      await this.simulateBeforeSigning(prepared as Transaction);
       const signedXdr = await this.signWithWallet(prepared.toXDR());
       const signedTx = TransactionBuilder.fromXDR(signedXdr, this.networkPassphrase) as Transaction;
       
@@ -694,6 +716,7 @@ export class StellarService {
         .build();
 
       const prepared = await this.server.prepareTransaction(tx);
+      await this.simulateBeforeSigning(prepared as Transaction);
       const signedXdr = await this.signWithWallet(prepared.toXDR());
       const signedTx = TransactionBuilder.fromXDR(signedXdr, this.networkPassphrase) as Transaction;
       
@@ -731,6 +754,7 @@ export class StellarService {
         .build();
 
       const prepared = await this.server.prepareTransaction(tx);
+      await this.simulateBeforeSigning(prepared as Transaction);
       const signedXdr = await this.signWithWallet(prepared.toXDR());
       const signedTx = TransactionBuilder.fromXDR(signedXdr, this.networkPassphrase) as Transaction;
       

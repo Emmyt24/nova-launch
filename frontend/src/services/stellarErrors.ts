@@ -32,6 +32,78 @@ export interface ContractErrorMapping {
  */
 export const CONTRACT_ERROR_MAP: Record<string, ContractErrorMapping> = {
     // Token Errors
+    'INSUFFICIENT_FEE': {
+        code: ErrorCode.INSUFFICIENT_BALANCE,
+        message: 'Insufficient fee — please ensure you have enough XLM',
+        details: 'Fee payment is below the required minimum',
+        retryable: true,
+        retrySuggestion: 'Add more XLM to your wallet and try again',
+        severity: 'medium',
+    },
+    'UNAUTHORIZED_ACTION': {
+        code: ErrorCode.UNAUTHORIZED,
+        message: 'You are not authorized to perform this action',
+        details: 'Caller not authorized',
+        retryable: false,
+        retrySuggestion: 'Ensure you are using the correct wallet address',
+        severity: 'high',
+    },
+    'METADATA_ALREADY_SET': {
+        code: ErrorCode.CONTRACT_ERROR,
+        message: 'Metadata has already been set for this token',
+        details: 'Metadata already set',
+        retryable: false,
+        retrySuggestion: 'Metadata can only be set once per token',
+        severity: 'medium',
+    },
+    'ALREADY_INITIALIZED': {
+        code: ErrorCode.CONTRACT_ERROR,
+        message: 'Contract has already been initialized',
+        details: 'Factory already initialized',
+        retryable: false,
+        retrySuggestion: 'Contact support if you believe this is an error',
+        severity: 'high',
+    },
+    'BURN_NOT_ENABLED': {
+        code: ErrorCode.BURN_FAILED,
+        message: 'Burn functionality is not enabled for this token',
+        details: 'Burn not enabled',
+        retryable: false,
+        retrySuggestion: 'This token does not support burning',
+        severity: 'medium',
+    },
+    'VAULT_LOCKED': {
+        code: ErrorCode.CONTRACT_ERROR,
+        message: 'Vault is still locked — unlock conditions have not been met',
+        details: 'Vault unlock time or milestone not reached',
+        retryable: false,
+        retrySuggestion: 'Wait until the unlock time or milestone is reached',
+        severity: 'medium',
+    },
+    'VAULT_CANCELLED': {
+        code: ErrorCode.CONTRACT_ERROR,
+        message: 'This vault has been cancelled',
+        details: 'Vault was cancelled and is immutable',
+        retryable: false,
+        retrySuggestion: 'Cannot interact with a cancelled vault',
+        severity: 'medium',
+    },
+    'INVALID_VAULT_CONFIG': {
+        code: ErrorCode.INVALID_INPUT,
+        message: 'Invalid vault configuration',
+        details: 'Vault parameters failed validation',
+        retryable: false,
+        retrySuggestion: 'Review vault parameters and try again',
+        severity: 'medium',
+    },
+    'NOTHING_TO_CLAIM': {
+        code: ErrorCode.CONTRACT_ERROR,
+        message: 'No claimable balance remains',
+        details: 'Nothing to claim from vault or stream',
+        retryable: false,
+        retrySuggestion: 'All available funds have already been claimed',
+        severity: 'low',
+    },
     'TOKEN_ALREADY_EXISTS': {
         code: ErrorCode.CONTRACT_ERROR,
         message: 'This token symbol is already in use',
@@ -309,6 +381,106 @@ export class StellarError extends Error implements AppError {
         this.retrySuggestion = errorDetails.retrySuggestion;
         this.transactionFailure = transactionFailure;
     }
+}
+
+export interface SimulationDecodeResult {
+    /** Human-readable message safe to show in the UI */
+    userMessage: string;
+    /** Raw detail preserved for debugging */
+    debugDetail: string;
+    /** Mapped ErrorCode */
+    code: ErrorCode;
+    retryable: boolean;
+    retrySuggestion?: string;
+}
+
+/**
+ * Numeric contract error codes emitted by the Soroban contract.
+ * Aligned with the error table in the README / CONTRACT_ERROR_MATRIX.md.
+ */
+const NUMERIC_CONTRACT_ERROR_MAP: Record<number, string> = {
+    1: 'INSUFFICIENT_FEE',
+    2: 'UNAUTHORIZED_ACTION',
+    3: 'INVALID_TOKEN_PARAMS',
+    4: 'TOKEN_NOT_FOUND',
+    5: 'METADATA_ALREADY_SET',
+    6: 'ALREADY_INITIALIZED',
+    7: 'BURN_AMOUNT_EXCEEDS_BALANCE',
+    8: 'BURN_NOT_ENABLED',
+    9: 'ZERO_BURN_AMOUNT',
+    60: 'VAULT_NOT_FOUND',
+    61: 'VAULT_LOCKED',
+    62: 'VAULT_ALREADY_CLAIMED',
+    63: 'VAULT_CANCELLED',
+    64: 'INVALID_VAULT_CONFIG',
+    65: 'NOTHING_TO_CLAIM',
+};
+
+/**
+ * Decode a Soroban RPC simulation failure response into a user-facing message.
+ * Call this BEFORE prompting the wallet so users see actionable feedback early.
+ */
+export function decodeSimulationError(simulationResponse: any): SimulationDecodeResult {
+    const rawDetail = JSON.stringify(simulationResponse);
+
+    // 1. Try to extract a symbolic error key from the error string
+    const errorStr: string =
+        simulationResponse?.error ??
+        simulationResponse?.result?.error ??
+        simulationResponse?.message ??
+        '';
+
+    // Match symbolic names like "Error(Contract, #7)" or "Error(TOKEN_NOT_FOUND)"
+    const numericMatch = errorStr.match(/Error\s*\(\s*Contract\s*,\s*#(\d+)\s*\)/i);
+    if (numericMatch) {
+        const numCode = parseInt(numericMatch[1], 10);
+        const symbolicKey = NUMERIC_CONTRACT_ERROR_MAP[numCode];
+        if (symbolicKey && CONTRACT_ERROR_MAP[symbolicKey]) {
+            const mapping = CONTRACT_ERROR_MAP[symbolicKey];
+            return {
+                userMessage: mapping.message,
+                debugDetail: rawDetail,
+                code: mapping.code,
+                retryable: mapping.retryable,
+                retrySuggestion: mapping.retrySuggestion,
+            };
+        }
+    }
+
+    const symbolicMatch = errorStr.match(/Error\(([A-Z_]+)\)/);
+    if (symbolicMatch) {
+        const key = symbolicMatch[1];
+        if (CONTRACT_ERROR_MAP[key]) {
+            const mapping = CONTRACT_ERROR_MAP[key];
+            return {
+                userMessage: mapping.message,
+                debugDetail: rawDetail,
+                code: mapping.code,
+                retryable: mapping.retryable,
+                retrySuggestion: mapping.retrySuggestion,
+            };
+        }
+    }
+
+    // 2. Insufficient fee heuristic
+    if (/insufficient.*fee|fee.*insufficient/i.test(errorStr)) {
+        return {
+            userMessage: 'Insufficient fee — please ensure you have enough XLM',
+            debugDetail: rawDetail,
+            code: ErrorCode.INSUFFICIENT_BALANCE,
+            retryable: true,
+            retrySuggestion: 'Add more XLM to your wallet and try again',
+        };
+    }
+
+    // 3. Fallback — unknown simulation error, preserve raw detail
+    return {
+        userMessage: 'Transaction simulation failed. Please check your inputs and try again.',
+        debugDetail: rawDetail,
+        code: ErrorCode.SIMULATION_FAILED,
+        retryable: true,
+        retrySuggestion: 'Review your parameters or contact support if the issue persists',
+    };
 }
 
 /**

@@ -57,7 +57,7 @@
     "@types/nock": "^11.1.0",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.16.0",
-    "@types/supertest": "^6.0.3",
+    "@types/supertest": "^7.2.0",
     "@types/swagger-ui-express": "^4.1.8",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",

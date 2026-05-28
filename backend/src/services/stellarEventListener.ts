@@ -10,12 +10,11 @@ import { EventCursorStore } from "./eventCursorStore";
 import { StreamEventParser } from "./streamEventParser";
 import { parseVaultCreatedEvent, parseVaultClaimedEvent, parseVaultCancelledEvent, parseVaultMetadataUpdatedEvent } from "./vaultEventParser";
 import { decodeEvent, kindForTopic } from "./eventVersioning/decoderRegistry";
-import { 
-  BACKGROUND_RETRY_CONFIG,
-  calculateBackoffDelay,
+import {
   isRetryableError,
   sleep
 } from "../stellar-service-integration/rate-limiter";
+import { ListenerBackoffState, LISTENER_RECONNECT_CONFIG } from "./listenerBackoff";
 import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
 import {
   PROJECTION_LAG_THRESHOLDS,
@@ -129,53 +128,44 @@ export class StellarEventListener {
   }
 
   /**
-   * Poll for new events
+   * Poll for new events with bounded exponential backoff and jitter on failure.
+   *
+   * Backoff resets after LISTENER_RECONNECT_CONFIG.healthResetThreshold consecutive
+   * successful polls to avoid permanently elevated delays after transient outages.
    */
   private async pollEvents(): Promise<void> {
-    let consecutiveFailures = 0;
-    const maxConsecutiveFailures = 5;
+    const backoff = new ListenerBackoffState(LISTENER_RECONNECT_CONFIG);
 
     while (this.isRunning) {
       try {
         await this.fetchAndProcessEvents();
-        consecutiveFailures = 0; // Reset on success
+        backoff.recordSuccess();
+        await this.delay(POLL_INTERVAL_MS);
       } catch (error) {
-        consecutiveFailures++;
-        
         const isTransient = isRetryableError(error);
-        
+
+        console.warn(
+          `[StellarEventListener] poll error (transient=${isTransient}):`,
+          error instanceof Error ? error.message : String(error),
+        );
+
         if (isTransient) {
-          console.warn(
-            `Transient error polling events (failure ${consecutiveFailures}/${maxConsecutiveFailures}):`,
-            error instanceof Error ? error.message : String(error)
-          );
-          
-          // Use exponential backoff for transient errors
-          const backoffDelay = calculateBackoffDelay(
-            Math.min(consecutiveFailures, BACKGROUND_RETRY_CONFIG.maxAttempts),
-            BACKGROUND_RETRY_CONFIG
-          );
-          
-          console.log(`Backing off for ${Math.round(backoffDelay)}ms before next poll`);
-          await sleep(backoffDelay);
-          
-          // If too many consecutive failures, alert but continue
-          if (consecutiveFailures >= maxConsecutiveFailures) {
+          const { delayMs, attempt } = backoff.recordFailure();
+
+          if (attempt > 5) {
             console.error(
-              `Event listener has failed ${consecutiveFailures} times consecutively. ` +
-              `Continuing with extended backoff.`
+              `[StellarEventListener] ${attempt} consecutive failures — continuing with extended backoff`,
             );
           }
-        } else {
-          // Terminal error - log and continue with normal polling
-          console.error("Terminal error polling events (will continue):", error);
-          consecutiveFailures = 0; // Reset since it's not a transient issue
-        }
-      }
 
-      // Wait before next poll (normal interval or already backed off above)
-      if (consecutiveFailures === 0) {
-        await this.delay(POLL_INTERVAL_MS);
+          IntegrationMetrics.recordEventProcessed('reconnect', 'error');
+          await sleep(delayMs);
+        } else {
+          // Non-transient error: log and resume normal cadence without backoff
+          console.error("[StellarEventListener] non-retryable error (will continue):", error);
+          backoff.recordSuccess();
+          await this.delay(POLL_INTERVAL_MS);
+        }
       }
     }
   }

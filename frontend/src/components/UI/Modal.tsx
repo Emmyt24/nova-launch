@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 interface ModalProps {
     isOpen: boolean;
@@ -20,6 +20,9 @@ export function Modal({
     size = 'md',
     hideHeader = false,
 }: ModalProps) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLElement | null>(null);
+
     useEffect(() => {
         if (isOpen) {
             document.body.style.overflow = 'hidden';
@@ -30,6 +33,17 @@ export function Modal({
         return () => {
             document.body.style.overflow = 'unset';
         };
+    }, [isOpen]);
+
+    // Store the element that opened the modal; restore focus on close.
+    useEffect(() => {
+        if (isOpen) {
+            triggerRef.current = document.activeElement as HTMLElement;
+            dialogRef.current?.focus();
+        } else {
+            triggerRef.current?.focus();
+            triggerRef.current = null;
+        }
     }, [isOpen]);
 
     useEffect(() => {
@@ -48,6 +62,35 @@ export function Modal({
         };
     }, [isOpen, onClose]);
 
+    // Focus trap: Tab / Shift+Tab cycle stays within the dialog.
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleFocusTrap = (e: KeyboardEvent) => {
+            if (e.key !== 'Tab' || !dialogRef.current) return;
+            const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+                'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+            );
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey) {
+                if (document.activeElement === first || document.activeElement === dialogRef.current) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else {
+                if (document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleFocusTrap);
+        return () => document.removeEventListener('keydown', handleFocusTrap);
+    }, [isOpen]);
+
     if (!isOpen) return null;
 
     const sizeStyles = {
@@ -59,6 +102,8 @@ export function Modal({
 
     return (
         <div
+            ref={dialogRef}
+            tabIndex={-1}
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50"
             onClick={onClose}
             role="dialog"

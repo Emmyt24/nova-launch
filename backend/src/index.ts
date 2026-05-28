@@ -25,6 +25,7 @@ import { Database } from "./config/database";
 import { successResponse, errorResponse } from "./utils/response";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
 import { createTimeoutMiddleware } from "./middleware/timeout";
+import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
 import stellarEventListener from "./services/stellarEventListener";
 import websocketService from "./services/websocket";
@@ -43,6 +44,9 @@ app.use(requestLoggingMiddleware);
 
 // Request timeout — responds 503 if a handler takes too long
 app.use(createTimeoutMiddleware());
+
+// Attach default DB query timeout to res.locals for downstream handlers
+app.use(createQueryTimeoutMiddleware());
 
 // Prometheus metrics middleware — records HTTP request duration and counts
 app.use(createMetricsMiddleware());

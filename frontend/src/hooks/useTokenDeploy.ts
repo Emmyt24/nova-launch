@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AppError, DeploymentResult, DeploymentStatus, TokenDeployParams, TokenInfo, WalletState } from '../types';
 import { ErrorCode } from '../types';
 import { createError, ErrorHandler, getErrorMessage } from '../utils/errors';

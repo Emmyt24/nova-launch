@@ -135,7 +135,7 @@ jobs:
           echo "✅ Coverage ${coverage_percent}% meets 90% threshold"
       
       - name: Upload Coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           file: contracts/token-factory/coverage/cobertura.xml
           fail_ci_if_error: true

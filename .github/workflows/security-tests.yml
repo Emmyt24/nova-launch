@@ -74,7 +74,7 @@ jobs:
           NODE_ENV: test
 
       - name: Upload Coverage Reports
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: ./backend/coverage/coverage-final.json
           flags: security-tests

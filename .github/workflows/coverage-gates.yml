@@ -550,7 +550,7 @@ jobs:
           EOF
 
       - name: Upload Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: coverage-artifacts/lcov-report/lcov.info
           flags: contracts

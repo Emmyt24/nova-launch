@@ -15,7 +15,7 @@
     "crypto": "^1.0.1"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "tsx": "^4.19.2",
     "typescript": "~6.0.3",

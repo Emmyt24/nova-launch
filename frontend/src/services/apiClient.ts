@@ -30,6 +30,26 @@
 import { getTransactionId, TXN_ID_HEADER } from '../utils/transactionId';
 
 const CORRELATION_ID_HEADER = 'X-Correlation-Id' as const;
+const NETWORK_HEADER = 'X-Network' as const;
+
+type ApiNetwork = 'testnet' | 'mainnet';
+
+let currentNetwork: ApiNetwork = 'testnet';
+
+/**
+ * Set the network (testnet/mainnet) that should be attached to every
+ * outbound request via the X-Network header. Called by `useNetwork` whenever
+ * the user switches networks so the backend can route to the correct
+ * Horizon endpoint.
+ */
+export function setApiNetwork(network: ApiNetwork): void {
+  currentNetwork = network;
+}
+
+/** Get the network currently attached to outbound requests. */
+export function getApiNetwork(): ApiNetwork {
+  return currentNetwork;
+}
 
 /** Generate a UUID-v4-like correlation ID (no external deps). */
 function generateCorrelationId(): string {
@@ -61,6 +81,11 @@ export function buildRequestHeaders(extra?: HeadersInit): Headers {
   // Correlation ID — unique per request, used to correlate log lines for one call
   if (!headers.has(CORRELATION_ID_HEADER)) {
     headers.set(CORRELATION_ID_HEADER, generateCorrelationId());
+  }
+
+  // Network — selects which Horizon endpoint the backend should use
+  if (!headers.has(NETWORK_HEADER)) {
+    headers.set(NETWORK_HEADER, currentNetwork);
   }
 
   return headers;

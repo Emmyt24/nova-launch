@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import Redis from "ioredis";
+import { Counter } from "prom-client";
+import { register } from "../lib/metrics";
 
 /**
  * Configuration for a rate limit rule.
@@ -120,6 +122,115 @@ export function resolveKey(req: Request, prefix: string): string {
   return `${prefix}:ip:${ip}`;
 }
 
+// ---------------------------------------------------------------------------
+// Max-min fairness scheduler (issue #1378)
+//
+// The Redis sliding window above caps each key's own budget, but it doesn't
+// protect keys from each other: under burst traffic, a single high-volume IP
+// can still get every one of its requests serviced before a quiet IP sharing
+// the same worker gets a turn, since both are simply allowed through as fast
+// as Redis confirms they're under budget.
+//
+// This governor tracks aggregate request volume across all keys in a short
+// rolling window. Once that aggregate exceeds configured capacity, any key
+// consuming more than an equal (max-min) share of that capacity is delayed
+// by a small, fixed penalty before being passed to `next()` — giving quieter
+// keys a chance to be serviced first. A key is never delayed more than
+// `MAX_CONSECUTIVE_PENALTIES` times in a row, so a persistently noisy key
+// still can't starve itself out indefinitely once it backs off.
+// ---------------------------------------------------------------------------
+
+/** Rolling window (ms) used to measure aggregate load and per-key share. */
+const FAIRNESS_WINDOW_MS = parseInt(
+  process.env.RATE_LIMITER_FAIRNESS_WINDOW_MS || "1000"
+);
+
+/** Aggregate requests/window above which fairness enforcement kicks in. */
+const FAIRNESS_CAPACITY = parseInt(
+  process.env.RATE_LIMITER_FAIRNESS_CAPACITY || "50"
+);
+
+/** Delay (ms) applied to a request exceeding its fair share. Kept small so
+ *  the median request — which is rarely over-share — sees ~0ms impact,
+ *  comfortably under the 10ms median-latency budget. */
+const FAIRNESS_PENALTY_MS = parseInt(
+  process.env.RATE_LIMITER_FAIRNESS_PENALTY_MS || "5"
+);
+
+/** A key is never penalized more than this many times in a row. */
+const MAX_CONSECUTIVE_PENALTIES = 3;
+
+export const fairnessPenaltyCounter = new Counter({
+  name: "rate_limiter_fairness_penalty_applied_total",
+  help: "Requests delayed by the rate limiter's max-min fairness scheduler (rateLimiter.fairness_penalty_applied)",
+  labelNames: ["key_prefix"],
+  registers: [register],
+});
+
+interface FairnessWindow {
+  windowStart: number;
+  /** Requests observed this window, per key. */
+  counts: Map<string, number>;
+}
+
+let fairnessWindow: FairnessWindow = { windowStart: Date.now(), counts: new Map() };
+
+/** Consecutive times a key has been penalized; reset once it gets a pass. */
+const consecutivePenalties = new Map<string, number>();
+
+function rotateFairnessWindow(now: number): void {
+  if (now - fairnessWindow.windowStart >= FAIRNESS_WINDOW_MS) {
+    fairnessWindow = { windowStart: now, counts: new Map() };
+  }
+}
+
+/**
+ * Record this request against the current fairness window and decide
+ * whether it should be delayed to protect other keys' fair share.
+ *
+ * Max-min fairness target: once aggregate load exceeds capacity, each active
+ * key is entitled to at least `capacity / activeKeyCount` of it. A key over
+ * that share is delayed — unless it's already been delayed
+ * `MAX_CONSECUTIVE_PENALTIES` times in a row, in which case it gets a pass.
+ */
+export function applyFairness(key: string): { delayed: boolean; delayMs: number } {
+  const now = Date.now();
+  rotateFairnessWindow(now);
+
+  const keyCount = (fairnessWindow.counts.get(key) ?? 0) + 1;
+  fairnessWindow.counts.set(key, keyCount);
+
+  const aggregate = Array.from(fairnessWindow.counts.values()).reduce(
+    (sum, c) => sum + c,
+    0
+  );
+  if (aggregate <= FAIRNESS_CAPACITY) {
+    consecutivePenalties.delete(key);
+    return { delayed: false, delayMs: 0 };
+  }
+
+  const fairShare = FAIRNESS_CAPACITY / fairnessWindow.counts.size;
+  const priorPenalties = consecutivePenalties.get(key) ?? 0;
+
+  if (keyCount > fairShare && priorPenalties < MAX_CONSECUTIVE_PENALTIES) {
+    consecutivePenalties.set(key, priorPenalties + 1);
+    return { delayed: true, delayMs: FAIRNESS_PENALTY_MS };
+  }
+
+  consecutivePenalties.delete(key);
+  return { delayed: false, delayMs: 0 };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Test-only: reset fairness state so tests don't leak between files. */
+export function resetFairnessStateForTests(): void {
+  fairnessWindow = { windowStart: Date.now(), counts: new Map() };
+  consecutivePenalties.clear();
+}
+
 /**
  * Creates an Express rate-limiting middleware backed by Redis.
  *
@@ -169,6 +280,12 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
       res.setHeader("Retry-After", resetAt - Math.floor(Date.now() / 1000));
       res.status(429).json({ error: message });
       return;
+    }
+
+    const fairness = applyFairness(key);
+    if (fairness.delayed) {
+      fairnessPenaltyCounter.inc({ key_prefix: keyPrefix });
+      await delay(fairness.delayMs);
     }
 
     next();

@@ -6,3 +6,8 @@ export {
   type PaginationState,
   type TokenHistoryFilters,
 } from './useTransactionHistory';
+export {
+  useLeaderboardSubscription,
+  type UseLeaderboardSubscriptionOptions,
+  type UseLeaderboardSubscriptionResult,
+} from './useLeaderboardSubscription';

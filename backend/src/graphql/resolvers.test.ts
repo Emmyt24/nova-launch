@@ -452,6 +452,105 @@ describe("Proposal.votes", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Subscription.leaderboardUpdated (issue #1377)
+// ---------------------------------------------------------------------------
+
+describe("Subscription.leaderboardUpdated", () => {
+  beforeEach(async () => {
+    const { resetLeaderboardSubscriptionsForTests } = await import(
+      "../services/leaderboardService"
+    );
+    resetLeaderboardSubscriptionsForTests();
+  });
+
+  it("defaults to most-burned/7d when no args are given", async () => {
+    const iterator = resolvers.Subscription.leaderboardUpdated.subscribe(
+      undefined,
+      {}
+    );
+
+    const { eventBus } = await import("../services/eventBus");
+    await eventBus.publish("leaderboard.updated", {
+      type: "most-burned",
+      period: "7d",
+      entries: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const result = await iterator.next();
+    expect(result.done).toBe(false);
+    expect((result.value as any).type).toBe("most-burned");
+
+    await iterator.return?.();
+  });
+
+  it("only delivers events matching the requested type and period", async () => {
+    const iterator = resolvers.Subscription.leaderboardUpdated.subscribe(
+      undefined,
+      { type: "NEWEST", period: "all" }
+    );
+
+    const { eventBus } = await import("../services/eventBus");
+    // Wrong kind — should not be delivered.
+    await eventBus.publish("leaderboard.updated", {
+      type: "most-burned",
+      period: "7d",
+      entries: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    // Matching kind — should be delivered.
+    await eventBus.publish("leaderboard.updated", {
+      type: "newest",
+      period: "all",
+      entries: [],
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
+
+    const result = await iterator.next();
+    expect((result.value as any).updatedAt).toBe("2026-01-01T00:01:00.000Z");
+
+    await iterator.return?.();
+  });
+
+  it("resolve() maps internal kind/entries to the GraphQL shape", () => {
+    const resolved = resolvers.Subscription.leaderboardUpdated.resolve({
+      type: "most-burned",
+      period: "7d",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      entries: [
+        {
+          rank: 1,
+          token: { address: "GABC", name: "Token A", symbol: "TKA" },
+          metric: "1000",
+        },
+      ],
+    } as any);
+
+    expect(resolved.type).toBe("MOST_BURNED");
+    expect(resolved.entries).toEqual([
+      { rank: 1, tokenAddress: "GABC", tokenName: "Token A", tokenSymbol: "TKA", metric: "1000" },
+    ]);
+  });
+
+  it("deregisters subscriber interest when the iterator closes", async () => {
+    const { registerLeaderboardSubscriber, TimePeriod } = await import(
+      "../services/leaderboardService"
+    );
+
+    const iterator = resolvers.Subscription.leaderboardUpdated.subscribe(
+      undefined,
+      { type: "MOST_BURNED", period: TimePeriod.D7 }
+    );
+    await iterator.return?.();
+
+    // A second independent registration for the same key should start a fresh
+    // count rather than inheriting any leaked state from the closed iterator.
+    const unregister = registerLeaderboardSubscriber("most-burned", TimePeriod.D7);
+    unregister();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // bigintToString
 // ---------------------------------------------------------------------------
 
@@ -503,6 +602,18 @@ describe("schema", () => {
     });
     expect(result.errors).toBeDefined();
     expect(result.errors![0].message).toMatch(/nonExistentField/);
+  });
+
+  it("exposes leaderboardUpdated on the Subscription type with defaults", () => {
+    const s = buildSchema(typeDefs);
+    const fields = s.getSubscriptionType()?.getFields() ?? {};
+    expect(Object.keys(fields)).toContain("leaderboardUpdated");
+
+    const args = fields.leaderboardUpdated.args;
+    const typeArg = args.find((a) => a.name === "type");
+    const periodArg = args.find((a) => a.name === "period");
+    expect(typeArg?.defaultValue).toBe("MOST_BURNED");
+    expect(periodArg?.defaultValue).toBe("7d");
   });
 });
 

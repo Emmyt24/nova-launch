@@ -237,10 +237,36 @@ export const typeDefs = /* GraphQL */ `
     timestamp: DateTime!
   }
 
+  # ── Leaderboard ──────────────────────────────────────────────────────────────
+
+  enum LeaderboardType {
+    MOST_BURNED
+    MOST_ACTIVE
+    NEWEST
+    LARGEST_SUPPLY
+    MOST_BURNERS
+  }
+
+  type LeaderboardEntry {
+    rank: Int!
+    tokenAddress: String!
+    tokenName: String!
+    tokenSymbol: String!
+    metric: String!
+  }
+
+  type LeaderboardUpdatedEvent {
+    type: LeaderboardType!
+    period: String!
+    entries: [LeaderboardEntry!]!
+    updatedAt: DateTime!
+  }
+
   # ── Root Subscription ───────────────────────────────────────────────────────
   #
-  # All subscriptions are tenant scoped via the connection JWT. The optional
-  # arguments below narrow the stream further within the tenant's own data.
+  # All subscriptions are tenant scoped via the connection JWT, EXCEPT
+  # leaderboardUpdated — the leaderboard ranks tokens across every tenant, so
+  # it is broadcast publicly the same way the REST leaderboard routes are.
 
   type Subscription {
     # Emitted when a new token finishes deploying. Optionally filter to a
@@ -256,5 +282,13 @@ export const typeDefs = /* GraphQL */ `
 
     # Emitted when a vesting vault matures. Optionally filter to a recipient.
     vaultMatured(recipientAddress: String): VaultMaturedEvent!
+
+    # Emitted when the top-100 ranking for a leaderboard changes (new burns
+    # or deployments). Debounced to at most one emission every 5 seconds per
+    # (type, period) so rapid bursts of activity batch into a single update.
+    leaderboardUpdated(
+      type: LeaderboardType = MOST_BURNED
+      period: String = "7d"
+    ): LeaderboardUpdatedEvent!
   }
 `;

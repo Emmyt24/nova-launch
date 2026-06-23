@@ -91,24 +91,155 @@ function invalidateCacheByType(type: string): void {
 
 /**
  * Leaderboard event names published by other services:
- *   "burn.created"  — a BurnRecord was inserted  (payload: { tokenId })
- *   "token.created" — a Token was created         (payload: { tokenId })
+ *   "burn.created"   — a BurnRecord was inserted  (payload: { tokenId })
+ *   "burn.executed"  — a burn transaction confirmed on-chain
+ *   "token.created"  — a Token was created         (payload: { tokenId })
+ *   "token.deployed" — a batch token deploy confirmed on-chain
  *
  * Call `eventBus.publish("burn.created", { tokenId })` from the burn handler,
  * and `eventBus.publish("token.created", { tokenId })` from the token handler.
  */
-eventBus.subscribe<{ tokenId?: string }>("burn.created", () => {
+function onBurnEvent(): void {
   // A burn affects burn-volume, burn-count, and unique-burner leaderboards.
   invalidateCacheByType("most-burned");
   invalidateCacheByType("most-active");
   invalidateCacheByType("most-burners");
-});
+  scheduleLeaderboardBroadcast(["most-burned", "most-active", "most-burners"]);
+}
 
-eventBus.subscribe<{ tokenId?: string }>("token.created", () => {
+function onTokenCreatedEvent(): void {
   // A new token affects the newest and largest-supply leaderboards.
   invalidateCacheByType("newest");
   invalidateCacheByType("largest-supply");
-});
+  scheduleLeaderboardBroadcast(["newest", "largest-supply"]);
+}
+
+eventBus.subscribe<{ tokenId?: string }>("burn.created", onBurnEvent);
+eventBus.subscribe("burn.executed", onBurnEvent);
+eventBus.subscribe<{ tokenId?: string }>("token.created", onTokenCreatedEvent);
+eventBus.subscribe("token.deployed", onTokenCreatedEvent);
+
+// ---------------------------------------------------------------------------
+// Real-time leaderboard subscription support (issue #1377)
+//
+// The GraphQL `leaderboardUpdated` subscription is a thin eventBus consumer
+// (see graphql/resolvers.ts) over this topic. Re-computing and publishing the
+// full top-100 ranking on every single burn would be wasteful under burst
+// traffic, so updates are debounced to at most one push per (type, period)
+// every DEBOUNCE_MS, and only for combinations that currently have a
+// connected subscriber.
+// ---------------------------------------------------------------------------
+
+export const LEADERBOARD_UPDATED_TOPIC = "leaderboard.updated";
+
+export type LeaderboardKind =
+  | "most-burned"
+  | "most-active"
+  | "most-burners"
+  | "newest"
+  | "largest-supply";
+
+export interface LeaderboardUpdatedPayload {
+  type: LeaderboardKind;
+  period: TimePeriod;
+  entries: LeaderboardToken[];
+  updatedAt: string;
+}
+
+const DEBOUNCE_MS = 5000;
+const TOP_N = 100;
+
+const LEADERBOARD_FETCHERS: Record<
+  LeaderboardKind,
+  (period: TimePeriod) => Promise<LeaderboardResponse>
+> = {
+  "most-burned": (period) => getMostBurnedLeaderboard(period, 1, TOP_N),
+  "most-active": (period) => getMostActiveLeaderboard(period, 1, TOP_N),
+  "most-burners": (period) => getMostBurnersLeaderboard(period, 1, TOP_N),
+  newest: () => getNewestTokensLeaderboard(1, TOP_N),
+  "largest-supply": () => getLargestSupplyLeaderboard(1, TOP_N),
+};
+
+/** Active (type, period) combinations with at least one connected GraphQL subscriber. */
+const activeSubscriptions = new Map<string, number>();
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function subscriptionKey(type: LeaderboardKind, period: TimePeriod): string {
+  return `${type}:${period}`;
+}
+
+/**
+ * Register a connected `leaderboardUpdated` subscriber so burst events know
+ * which (type, period) combinations are worth recomputing. Returns an
+ * unsubscribe callback to call when the client disconnects.
+ */
+export function registerLeaderboardSubscriber(
+  type: LeaderboardKind,
+  period: TimePeriod
+): () => void {
+  const key = subscriptionKey(type, period);
+  activeSubscriptions.set(key, (activeSubscriptions.get(key) ?? 0) + 1);
+
+  return () => {
+    const count = activeSubscriptions.get(key) ?? 0;
+    if (count <= 1) {
+      activeSubscriptions.delete(key);
+    } else {
+      activeSubscriptions.set(key, count - 1);
+    }
+  };
+}
+
+function broadcastLeaderboard(type: LeaderboardKind, period: TimePeriod): void {
+  LEADERBOARD_FETCHERS[type](period)
+    .then((response) => {
+      const payload: LeaderboardUpdatedPayload = {
+        type,
+        period,
+        entries: response.data,
+        updatedAt: response.updatedAt,
+      };
+      return eventBus.publish(LEADERBOARD_UPDATED_TOPIC, payload);
+    })
+    .catch((err) =>
+      console.error(
+        `[leaderboard] real-time broadcast failed for ${type}:${period}:`,
+        err
+      )
+    );
+}
+
+/** Debounce a broadcast for one (type, period) key — coalesces bursts into a single push. */
+function scheduleBroadcast(type: LeaderboardKind, period: TimePeriod): void {
+  const key = subscriptionKey(type, period);
+  if (debounceTimers.has(key)) return; // already scheduled within this window
+
+  const timer = setTimeout(() => {
+    debounceTimers.delete(key);
+    broadcastLeaderboard(type, period);
+  }, DEBOUNCE_MS);
+
+  debounceTimers.set(key, timer);
+}
+
+/** Schedule a debounced broadcast for every actively-subscribed (type, period) pair of the given kinds. */
+function scheduleLeaderboardBroadcast(affectedTypes: LeaderboardKind[]): void {
+  for (const key of activeSubscriptions.keys()) {
+    const separatorIndex = key.lastIndexOf(":");
+    const type = key.slice(0, separatorIndex) as LeaderboardKind;
+    const period = key.slice(separatorIndex + 1) as TimePeriod;
+    if (affectedTypes.includes(type)) {
+      scheduleBroadcast(type, period);
+    }
+  }
+}
+
+/** Test-only: clear pending subscriptions/timers so tests don't leak state across files. */
+export function resetLeaderboardSubscriptionsForTests(): void {
+  activeSubscriptions.clear();
+  for (const timer of debounceTimers.values()) clearTimeout(timer);
+  debounceTimers.clear();
+}
 
 function getDateFilter(period: TimePeriod): Date | null {
   if (period === TimePeriod.ALL) return null;

@@ -9,6 +9,13 @@
 
 import { prisma } from "../lib/prisma";
 import { eventBus, EventBus } from "../services/eventBus";
+import {
+  LEADERBOARD_UPDATED_TOPIC,
+  TimePeriod,
+  registerLeaderboardSubscriber,
+  type LeaderboardKind,
+  type LeaderboardUpdatedPayload,
+} from "../services/leaderboardService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,7 +61,25 @@ export const SUBSCRIPTION_TOPICS = {
   burnExecuted: "burn.executed",
   proposalStatusChanged: "governance.proposal.statusChanged",
   vaultMatured: "vault.matured",
+  leaderboardUpdated: LEADERBOARD_UPDATED_TOPIC,
 } as const;
+
+/** GraphQL `LeaderboardType` enum value <-> the leaderboardService's internal kind string. */
+const LEADERBOARD_TYPE_TO_KIND: Record<string, LeaderboardKind> = {
+  MOST_BURNED: "most-burned",
+  MOST_ACTIVE: "most-active",
+  NEWEST: "newest",
+  LARGEST_SUPPLY: "largest-supply",
+  MOST_BURNERS: "most-burners",
+};
+
+const KIND_TO_LEADERBOARD_TYPE: Record<LeaderboardKind, string> =
+  Object.fromEntries(
+    Object.entries(LEADERBOARD_TYPE_TO_KIND).map(([gqlType, kind]) => [
+      kind,
+      gqlType,
+    ])
+  ) as Record<LeaderboardKind, string>;
 
 /**
  * Context attached to a subscription operation. `tenant` is resolved from the
@@ -131,11 +156,15 @@ function tenantOwnsEvent(
  * or `unsubscribe`), preventing handler leaks.
  *
  * `bus` is injectable so resolvers can be unit tested against a fresh EventBus.
+ * `onClose` runs once when the consumer disconnects — used by subscriptions
+ * that need extra teardown beyond the bus subscription itself (e.g.
+ * `leaderboardUpdated` deregistering its (type, period) interest).
  */
 export function eventBusAsyncIterator<T>(
   topic: string,
   filter: (payload: T) => boolean,
-  bus: EventBus = eventBus
+  bus: EventBus = eventBus,
+  onClose?: () => void
 ): AsyncIterableIterator<T> {
   const queue: T[] = [];
   const pending: Array<(result: IteratorResult<T>) => void> = [];
@@ -156,6 +185,7 @@ export function eventBusAsyncIterator<T>(
     if (closed) return;
     closed = true;
     subscription.unsubscribe();
+    onClose?.();
     while (pending.length) {
       pending.shift()!({ value: undefined as never, done: true });
     }
@@ -389,6 +419,39 @@ export const resolvers = {
               p.recipientAddress === args.recipientAddress)
         ),
       resolve: (payload: VaultMaturedPayload) => bigintToString(payload),
+    },
+
+    // Leaderboard ranking is global, not tenant-scoped — every connected
+    // client sees the same top-100 list, debounced upstream by
+    // leaderboardService (see scheduleLeaderboardBroadcast).
+    leaderboardUpdated: {
+      subscribe: (
+        _root: unknown,
+        args: { type?: string | null; period?: string | null }
+      ) => {
+        const kind = LEADERBOARD_TYPE_TO_KIND[args.type ?? "MOST_BURNED"];
+        const period = (args.period ?? "7d") as TimePeriod;
+        const unregister = registerLeaderboardSubscriber(kind, period);
+
+        return eventBusAsyncIterator<LeaderboardUpdatedPayload>(
+          SUBSCRIPTION_TOPICS.leaderboardUpdated,
+          (p) => p.type === kind && p.period === period,
+          eventBus,
+          unregister
+        );
+      },
+      resolve: (payload: LeaderboardUpdatedPayload) => ({
+        type: KIND_TO_LEADERBOARD_TYPE[payload.type],
+        period: payload.period,
+        updatedAt: payload.updatedAt,
+        entries: payload.entries.map((entry) => ({
+          rank: entry.rank,
+          tokenAddress: entry.token.address,
+          tokenName: entry.token.name,
+          tokenSymbol: entry.token.symbol,
+          metric: entry.metric,
+        })),
+      }),
     },
   },
 

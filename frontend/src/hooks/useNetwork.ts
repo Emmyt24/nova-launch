@@ -1,4 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
+import { setApiNetwork } from '../services/apiClient';
+import { invalidateLeaderboardCache } from '../services/leaderboardApi';
+import { transactionHistoryStorage } from '../services/TransactionHistoryStorage';
 
 type Network = 'testnet' | 'mainnet';
 
@@ -16,6 +19,16 @@ function getStoredNetwork(): Network {
     return 'testnet';
 }
 
+/**
+ * Clear every cache that holds data scoped to a specific network, so
+ * switching testnet/mainnet never leaks the previous network's token list,
+ * leaderboard rankings, or transaction history into the new network's UI.
+ */
+function clearNetworkScopedCaches(): void {
+    invalidateLeaderboardCache();
+    transactionHistoryStorage.clearAll();
+}
+
 export function useNetwork() {
     const [network, setNetworkState] = useState<Network>(getStoredNetwork);
     const [isChanging, setIsChanging] = useState(false);
@@ -26,11 +39,17 @@ export function useNetwork() {
         } catch {
             // localStorage may be unavailable
         }
+        setApiNetwork(network);
     }, [network]);
 
     const setNetwork = useCallback((newNetwork: Network) => {
         setIsChanging(true);
-        setNetworkState(newNetwork);
+        setNetworkState((prev) => {
+            if (prev !== newNetwork) {
+                clearNetworkScopedCaches();
+            }
+            return newNetwork;
+        });
         setTimeout(() => setIsChanging(false), 300);
     }, []);
 

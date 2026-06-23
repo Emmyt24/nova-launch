@@ -21,7 +21,7 @@ import {
   transactionIdHeaders,
   TXN_ID_HEADER,
 } from '../../utils/transactionId';
-import { buildRequestHeaders, ApiError } from '../apiClient';
+import { buildRequestHeaders, ApiError, setApiNetwork, getApiNetwork } from '../apiClient';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,6 +159,37 @@ describe('buildRequestHeaders()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// apiClient — X-Network header (issue #1375)
+// ---------------------------------------------------------------------------
+
+describe('setApiNetwork() / getApiNetwork()', () => {
+  afterEach(() => {
+    setApiNetwork('testnet');
+  });
+
+  it('defaults to testnet', () => {
+    expect(getApiNetwork()).toBe('testnet');
+  });
+
+  it('updates the network used for outbound requests', () => {
+    setApiNetwork('mainnet');
+    expect(getApiNetwork()).toBe('mainnet');
+  });
+
+  it('adds an X-Network header matching the current network', () => {
+    setApiNetwork('mainnet');
+    const headers = buildRequestHeaders();
+    expect(headers.get('X-Network')).toBe('mainnet');
+  });
+
+  it('does NOT replace an X-Network header the caller already set', () => {
+    setApiNetwork('mainnet');
+    const headers = buildRequestHeaders({ 'X-Network': 'testnet' });
+    expect(headers.get('X-Network')).toBe('testnet');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // apiClient — full fetch integration (mocked fetch)
 // ---------------------------------------------------------------------------
 
@@ -220,6 +251,15 @@ describe('apiClient — header injection on outbound fetch', () => {
     const c1 = (fetchSpy.mock.calls[0][1] as { headers: Headers }).headers.get('X-Correlation-Id');
     const c2 = (fetchSpy.mock.calls[1][1] as { headers: Headers }).headers.get('X-Correlation-Id');
     expect(c1).not.toBe(c2);
+  });
+
+  it('attaches X-Network matching the currently selected network', async () => {
+    const { apiClient, setApiNetwork: setNetwork } = await import('../apiClient');
+    setNetwork('mainnet');
+    await apiClient.get('/api/test').catch(() => {});
+    const [, init] = fetchSpy.mock.calls[0] as [string, { headers: Headers }];
+    expect(init.headers.get('X-Network')).toBe('mainnet');
+    setNetwork('testnet');
   });
 });
 

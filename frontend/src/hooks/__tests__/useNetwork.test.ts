@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
+import * as leaderboardApi from '../../services/leaderboardApi';
 import { useNetwork } from '../useNetwork';
+import { getApiNetwork } from '../../services/apiClient';
+import { transactionHistoryStorage } from '../../services/TransactionHistoryStorage';
 
 describe('useNetwork', () => {
     beforeEach(() => {
@@ -195,6 +198,76 @@ describe('useNetwork', () => {
 
             expect(result.current.isTestnet).toBe(false);
             expect(result.current.isMainnet).toBe(true);
+        });
+    });
+
+    describe('network-scoped state isolation (issue #1375)', () => {
+        it('propagates the initial network to the shared apiClient', () => {
+            localStorage.setItem('nova_network_preference', 'mainnet');
+            renderHook(() => useNetwork());
+
+            expect(getApiNetwork()).toBe('mainnet');
+        });
+
+        it('updates the apiClient X-Network header when the network changes', () => {
+            const { result } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setNetwork('mainnet');
+            });
+
+            expect(getApiNetwork()).toBe('mainnet');
+        });
+
+        it('clears network-scoped caches when switching networks', () => {
+            const tokenSpy = vi.spyOn(transactionHistoryStorage, 'clearAll');
+            const { result } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setNetwork('mainnet');
+            });
+
+            expect(tokenSpy).toHaveBeenCalledTimes(1);
+            tokenSpy.mockRestore();
+        });
+
+        it('clears the leaderboard cache when switching networks', () => {
+            const leaderboardSpy = vi.spyOn(leaderboardApi, 'invalidateLeaderboardCache');
+            const { result } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setNetwork('mainnet');
+            });
+
+            expect(leaderboardSpy).toHaveBeenCalledTimes(1);
+            leaderboardSpy.mockRestore();
+        });
+
+        it('does not clear caches when setNetwork is called with the same network', () => {
+            const tokenSpy = vi.spyOn(transactionHistoryStorage, 'clearAll');
+            const { result } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setNetwork('testnet');
+            });
+
+            expect(tokenSpy).not.toHaveBeenCalled();
+            tokenSpy.mockRestore();
+        });
+
+        it('restores the persisted network and re-applies it to apiClient after a reload', () => {
+            const { result, unmount } = renderHook(() => useNetwork());
+
+            act(() => {
+                result.current.setNetwork('mainnet');
+            });
+            unmount();
+
+            // Simulate a page reload by mounting a fresh hook instance
+            const { result: reloaded } = renderHook(() => useNetwork());
+
+            expect(reloaded.current.network).toBe('mainnet');
+            expect(getApiNetwork()).toBe('mainnet');
         });
     });
 

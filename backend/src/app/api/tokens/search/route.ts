@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { searchTokensSchema, type SearchTokensQuery } from "./schema";
-import { buildTokenSearchQuery } from "./query-builder";
-import { cacheSearchResults, getCachedSearchResults } from "./cache";
-import type { TokenSearchResponse, TokenSearchErrorResponse } from "./types";
+import {
+  cacheSearchResults,
+  getCachedSearchResults,
+  recordQueryFrequency,
+} from "./cache";
+import { executeTokenSearch } from "./searchTokens";
+import type { TokenSearchErrorResponse } from "./types";
+import "./cacheInvalidation";
 
 export async function GET(request: NextRequest) {
   try {
@@ -46,72 +50,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(cached);
     }
 
-    // Build query
-    const { where, orderBy } = buildTokenSearchQuery(validatedParams);
+    recordQueryFrequency(validatedParams.q);
 
-    // Calculate pagination
-    const page = parseInt(validatedParams.page);
-    const limit = parseInt(validatedParams.limit);
-    const skip = (page - 1) * limit;
+    const response = await executeTokenSearch(validatedParams);
 
-    // Execute queries in parallel
-    const [tokens, total] = await Promise.all([
-      prisma.token.findMany({
-        where,
-        orderBy,
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          address: true,
-          creator: true,
-          name: true,
-          symbol: true,
-          decimals: true,
-          totalSupply: true,
-          initialSupply: true,
-          totalBurned: true,
-          burnCount: true,
-          metadataUri: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      prisma.token.count({ where }),
-    ]);
-
-    // Format response
-    const response: TokenSearchResponse = {
-      success: true,
-      data: tokens.map((token): any => ({
-        ...token,
-        totalSupply: token.totalSupply.toString(),
-        initialSupply: token.initialSupply.toString(),
-        totalBurned: token.totalBurned.toString(),
-      })),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNext: page < Math.ceil(total / limit),
-        hasPrev: page > 1,
-      },
-      filters: {
-        q: validatedParams.q,
-        creator: validatedParams.creator,
-        startDate: validatedParams.startDate,
-        endDate: validatedParams.endDate,
-        minSupply: validatedParams.minSupply,
-        maxSupply: validatedParams.maxSupply,
-        hasBurns: validatedParams.hasBurns,
-        sortBy: validatedParams.sortBy,
-        sortOrder: validatedParams.sortOrder,
-      },
-    };
-
-    // Cache the results
-    await cacheSearchResults(cacheKey, response);
+    // Cache the results, tagged by search term so a new token deployment
+    // only needs to invalidate the buckets it could actually affect.
+    await cacheSearchResults(cacheKey, response, validatedParams.q);
 
     return NextResponse.json(response);
   } catch (error) {

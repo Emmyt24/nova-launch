@@ -3,6 +3,9 @@ import {
   getCachedSearchResults,
   cacheSearchResults,
   clearSearchCache,
+  recordQueryFrequency,
+  getTopQueryTerms,
+  invalidateTagsForToken,
 } from "./cache";
 
 describe("Search Cache", () => {
@@ -63,5 +66,88 @@ describe("Search Cache", () => {
 
     const lastCached = await getCachedSearchResults("key-9");
     expect(lastCached).toEqual({ data: 9 });
+  });
+});
+
+describe("Search cache — tag-based invalidation (issue #1376)", () => {
+  beforeEach(() => {
+    clearSearchCache();
+  });
+
+  it("invalidates only the bucket for a search term matching the new token", async () => {
+    await cacheSearchResults('{"q":"nova"}', { data: "nova-results" }, "nova");
+    await cacheSearchResults('{"q":"comet"}', { data: "comet-results" }, "comet");
+
+    const invalidated = invalidateTagsForToken({ name: "Nova Token", symbol: "NOVA" });
+
+    expect(invalidated).toEqual(["nova"]);
+    expect(await getCachedSearchResults('{"q":"nova"}')).toBeNull();
+    expect(await getCachedSearchResults('{"q":"comet"}')).toEqual({ data: "comet-results" });
+  });
+
+  it("matches the search term against either name or symbol, case-insensitively", async () => {
+    await cacheSearchResults('{"q":"NVA"}', { data: "by-symbol" }, "NVA");
+
+    const invalidated = invalidateTagsForToken({ name: "Some Token", symbol: "nvaCoin" });
+
+    expect(invalidated).toEqual(["nva"]);
+    expect(await getCachedSearchResults('{"q":"NVA"}')).toBeNull();
+  });
+
+  it("always invalidates the unfiltered (no search term) bucket", async () => {
+    await cacheSearchResults('{}', { data: "all-tokens" }, undefined);
+
+    const invalidated = invalidateTagsForToken({ name: "Anything", symbol: "ANY" });
+
+    expect(invalidated).toContain("");
+    expect(await getCachedSearchResults('{}')).toBeNull();
+  });
+
+  it("does not invalidate unrelated search-term buckets", async () => {
+    await cacheSearchResults('{"q":"alpha"}', { data: "alpha-results" }, "alpha");
+    await cacheSearchResults('{"q":"beta"}', { data: "beta-results" }, "beta");
+
+    invalidateTagsForToken({ name: "Gamma Token", symbol: "GAMMA" });
+
+    expect(await getCachedSearchResults('{"q":"alpha"}')).toEqual({ data: "alpha-results" });
+    expect(await getCachedSearchResults('{"q":"beta"}')).toEqual({ data: "beta-results" });
+  });
+
+  it("does not flush the entire cache on a deployment", async () => {
+    await cacheSearchResults('{"q":"nova"}', { data: 1 }, "nova");
+    await cacheSearchResults('{"q":"unrelated"}', { data: 2 }, "unrelated");
+
+    invalidateTagsForToken({ name: "Nova Token", symbol: "NOVA" });
+
+    expect(await getCachedSearchResults('{"q":"unrelated"}')).toEqual({ data: 2 });
+  });
+});
+
+describe("Search cache — query frequency tracking (issue #1376)", () => {
+  beforeEach(() => {
+    clearSearchCache();
+  });
+
+  it("ranks search terms by how often they were queried", () => {
+    recordQueryFrequency("nova");
+    recordQueryFrequency("nova");
+    recordQueryFrequency("comet");
+
+    expect(getTopQueryTerms(2)).toEqual(["nova", "comet"]);
+  });
+
+  it("normalizes case and whitespace when counting frequency", () => {
+    recordQueryFrequency("Nova");
+    recordQueryFrequency(" nova ");
+
+    expect(getTopQueryTerms(1)).toEqual(["nova"]);
+  });
+
+  it("respects the requested limit", () => {
+    recordQueryFrequency("a");
+    recordQueryFrequency("b");
+    recordQueryFrequency("c");
+
+    expect(getTopQueryTerms(1)).toHaveLength(1);
   });
 });

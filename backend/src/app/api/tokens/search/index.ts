@@ -13,7 +13,11 @@ export {
   getCachedSearchResults,
   cacheSearchResults,
   clearSearchCache,
+  recordQueryFrequency,
+  getTopQueryTerms,
+  invalidateTagsForToken,
 } from "./cache";
+export { executeTokenSearch } from "./searchTokens";
 
 export type { SearchTokensQuery, ValidatedSearchTokensQuery } from "./schema";
 

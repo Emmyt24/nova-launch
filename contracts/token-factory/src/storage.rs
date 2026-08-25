@@ -2408,3 +2408,74 @@ mod storage_getter_uninit_tests {
         });
     }
 }
+
+// ── AMM constant-product pool storage ────────────────────────────────────────
+
+/// Normalise a token-pair key so that the lower index is always `a`.
+/// Returns `(min, max)`.
+pub fn amm_canonical_pair(a: u32, b: u32) -> (u32, u32) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Fetch an AMM pool by its canonical pair key, or `None` if it does not exist.
+pub fn get_amm_pool(env: &Env, token_a: u32, token_b: u32) -> Option<crate::types::AmmPool> {
+    let (ka, kb) = amm_canonical_pair(token_a, token_b);
+    let key = DataKey::AmmPool(ka, kb);
+    let pool = env.storage().persistent().get(&key)?;
+    bump_persistent(env, &key);
+    Some(pool)
+}
+
+/// Persist an AMM pool.
+pub fn set_amm_pool(env: &Env, pool: &crate::types::AmmPool) {
+    let key = DataKey::AmmPool(pool.token_index_a, pool.token_index_b);
+    env.storage().persistent().set(&key, pool);
+    bump_persistent(env, &key);
+}
+
+/// Return the total number of AMM pools created.
+pub fn get_amm_pool_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::AmmPoolCount)
+        .unwrap_or(0u64)
+}
+
+/// Increment the AMM pool counter and return the new count.
+pub fn increment_amm_pool_count(env: &Env) -> Result<u64, Error> {
+    let count = get_amm_pool_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage().instance().set(&DataKey::AmmPoolCount, &count);
+    Ok(count)
+}
+
+/// Fetch a provider's LP share balance in a pool.
+pub fn get_amm_shares(env: &Env, token_a: u32, token_b: u32, provider: &Address) -> i128 {
+    let (ka, kb) = amm_canonical_pair(token_a, token_b);
+    let key = DataKey::AmmShares(ka, kb, provider.clone());
+    env.storage().persistent().get(&key).unwrap_or(0i128)
+}
+
+/// Persist a provider's LP share balance.
+pub fn set_amm_shares(env: &Env, token_a: u32, token_b: u32, provider: &Address, shares: i128) {
+    let (ka, kb) = amm_canonical_pair(token_a, token_b);
+    let key = DataKey::AmmShares(ka, kb, provider.clone());
+    env.storage().persistent().set(&key, &shares);
+    bump_persistent(env, &key);
+}
+
+/// Fetch the total LP shares outstanding for a pool.
+pub fn get_amm_total_shares(env: &Env, token_a: u32, token_b: u32) -> i128 {
+    let (ka, kb) = amm_canonical_pair(token_a, token_b);
+    let key = DataKey::AmmTotalShares(ka, kb);
+    env.storage().persistent().get(&key).unwrap_or(0i128)
+}
+
+/// Persist the total LP shares for a pool.
+pub fn set_amm_total_shares(env: &Env, token_a: u32, token_b: u32, total: i128) {
+    let (ka, kb) = amm_canonical_pair(token_a, token_b);
+    let key = DataKey::AmmTotalShares(ka, kb);
+    env.storage().persistent().set(&key, &total);
+    bump_persistent(env, &key);
+}

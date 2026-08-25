@@ -2023,3 +2023,92 @@ pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128
     env.events()
         .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
 }
+
+// ── AMM constant-product pool events ─────────────────────────────────────────
+
+/// Emitted when a new AMM pool is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_crt1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), creator (Address)
+pub fn emit_amm_pool_created(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    creator: &Address,
+) {
+    env.events().publish(
+        (symbol_short!("amm_crt1"), token_index_a),
+        (token_index_b, creator.clone()),
+    );
+}
+
+/// Emitted when liquidity is added to a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_add1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), provider (Address), amount_a (i128),
+///              amount_b (i128), shares_minted (i128)
+pub fn emit_amm_liquidity_added(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    provider: &Address,
+    amount_a: i128,
+    amount_b: i128,
+    shares_minted: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_add1"), token_index_a),
+        (token_index_b, provider.clone(), amount_a, amount_b, shares_minted),
+    );
+}
+
+/// Emitted when liquidity is removed from a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_rem1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), provider (Address), amount_a (i128),
+///              amount_b (i128), shares_burned (i128)
+pub fn emit_amm_liquidity_removed(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    provider: &Address,
+    amount_a: i128,
+    amount_b: i128,
+    shares_burned: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_rem1"), token_index_a),
+        (token_index_b, provider.clone(), amount_a, amount_b, shares_burned),
+    );
+}
+
+/// Emitted when a swap is executed.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_swp1
+///
+/// **Topics**: event name, token_index_in (u32)
+/// **Payload**: token_index_out (u32), caller (Address), amount_in (i128),
+///              amount_out (i128)
+pub fn emit_amm_swap(
+    env: &Env,
+    token_index_in: u32,
+    token_index_out: u32,
+    caller: &Address,
+    amount_in: i128,
+    amount_out: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_swp1"), token_index_in),
+        (token_index_out, caller.clone(), amount_in, amount_out),
+    );
+}

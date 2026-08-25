@@ -1003,6 +1003,16 @@ pub enum DataKey {
     NextStakingPoolId,
     /// A user's stake within a pool: (pool_id, staker) → StakeInfo
     UserStake(u64, Address),
+    // ── AMM constant-product pools ────────────────────────────────────────
+    /// AMM pool state keyed by (token_index_a, token_index_b) — indices always
+    /// stored in ascending order so the key is canonical regardless of swap direction.
+    AmmPool(u32, u32),
+    /// Total number of AMM pools created (instance counter).
+    AmmPoolCount,
+    /// LP share balance for a provider in a pool: (token_a, token_b, provider).
+    AmmShares(u32, u32, Address),
+    /// Total LP shares outstanding for a pool: (token_a, token_b).
+    AmmTotalShares(u32, u32),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1356,6 +1366,25 @@ impl Error {
     pub const StakingNotActive: Self = Self(134);
     pub const InvalidRewardRate: Self = Self(135);
     pub const InsufficientStake: Self = Self(136);
+    // AMM constant-product pool errors (#AMM)
+    /// Pool for this token pair already exists.
+    pub const PoolAlreadyExists: Self = Self(137);
+    /// No pool found for this token pair.
+    pub const PoolNotFound: Self = Self(138);
+    /// Both token indices in a pair must be distinct.
+    pub const IdenticalTokens: Self = Self(139);
+    /// Liquidity amounts must both be greater than zero.
+    pub const ZeroLiquidity: Self = Self(140);
+    /// Swap input amount must be greater than zero.
+    pub const ZeroAmountIn: Self = Self(141);
+    /// Computed swap output is zero (dust input).
+    pub const ZeroAmountOut: Self = Self(142);
+    /// Caller holds no LP shares in this pool.
+    pub const ZeroShares: Self = Self(143);
+    /// One or both reserves are zero; pool has no liquidity.
+    pub const InsufficientReserves: Self = Self(144);
+    /// LP share burn amount exceeds the caller's balance.
+    pub const SharesExceedBalance: Self = Self(145);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1383,6 +1412,15 @@ impl Error {
             134 => "StakingNotActive",
             135 => "InvalidRewardRate",
             136 => "InsufficientStake",
+            137 => "PoolAlreadyExists",
+            138 => "PoolNotFound",
+            139 => "IdenticalTokens",
+            140 => "ZeroLiquidity",
+            141 => "ZeroAmountIn",
+            142 => "ZeroAmountOut",
+            143 => "ZeroShares",
+            144 => "InsufficientReserves",
+            145 => "SharesExceedBalance",
             _ => "UnknownError",
         }
     }
@@ -2189,4 +2227,61 @@ pub struct DistributionRecord {
     pub claim_deadline_ledger: u32,
     pub reclaimed: bool,
     pub created_at: u64,
+}
+
+// ── AMM constant-product pool types ─────────────────────────────────────────
+
+/// State of a constant-product AMM pool for a pair of factory-registered tokens.
+///
+/// The invariant `reserve_a * reserve_b = k` is maintained across all swaps.
+/// LP shares are simple integers stored in contract persistent storage; no
+/// separate LP-token contract is deployed.
+///
+/// # Fields
+/// * `token_index_a` – Factory index of token A (always the lower index)
+/// * `token_index_b` – Factory index of token B (always the higher index)
+/// * `reserve_a`     – Current reserve of token A
+/// * `reserve_b`     – Current reserve of token B
+/// * `total_shares`  – Total outstanding LP shares across all providers
+/// * `created_at`    – Ledger timestamp when the pool was created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmmPool {
+    /// Factory token index for the *lower-index* token of the pair.
+    pub token_index_a: u32,
+    /// Factory token index for the *higher-index* token of the pair.
+    pub token_index_b: u32,
+    /// Current reserve of token A held by the pool.
+    pub reserve_a: i128,
+    /// Current reserve of token B held by the pool.
+    pub reserve_b: i128,
+    /// Total LP shares outstanding.
+    pub total_shares: i128,
+    /// Ledger timestamp when the pool was created.
+    pub created_at: u64,
+}
+
+/// Quote result returned by `amm_quote_swap`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapQuote {
+    /// Amount of output token the caller would receive.
+    pub amount_out: i128,
+    /// Reserve of the input token after the swap (informational).
+    pub new_reserve_in: i128,
+    /// Reserve of the output token after the swap (informational).
+    pub new_reserve_out: i128,
+}
+
+/// Result returned by `amm_add_liquidity`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddLiquidityResult {
+    /// LP shares minted to the provider.
+    pub shares_minted: i128,
+    /// Amount of token A actually deposited (may be less than requested on
+    /// subsequent deposits when the pool already has reserves).
+    pub amount_a: i128,
+    /// Amount of token B actually deposited.
+    pub amount_b: i128,
 }

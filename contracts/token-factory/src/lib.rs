@@ -16,6 +16,7 @@ mod governance;
 mod game_history;
 mod ipfs_pinning;
 
+mod amm;
 mod batch_operations;
 mod batch_scheduler;
 mod bridge;
@@ -64,6 +65,8 @@ mod proposal_queue_test;
 mod event_versions_test;
 #[cfg(test)]
 mod staking_integration_test;
+#[cfg(test)]
+mod amm_test;
 mod timelock;
 mod token_creation;
 mod treasury;
@@ -178,10 +181,10 @@ mod vault_balance_invariant_proptest;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
-    AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
+    AddLiquidityResult, AmmPool, AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign,
+    CampaignStatus, ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
     PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo, StreamPage,
-    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    StreamParams, SwapQuote, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -4473,6 +4476,95 @@ impl TokenFactory {
     /// mutating any state.
     pub fn pending_rewards(env: Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
         staking::pending_rewards(&env, caller, pool_id)
+    }
+
+    // ── AMM constant-product pools (#559) ────────────────────────────────
+
+    /// Create a new constant-product AMM pool for a pair of factory-registered
+    /// tokens. The pool starts empty; call `amm_add_liquidity` to seed it.
+    ///
+    /// Caller must be the factory admin or the creator of one of the tokens.
+    pub fn amm_create_pool(
+        env: Env,
+        creator: Address,
+        token_index_a: u32,
+        token_index_b: u32,
+    ) -> Result<(), Error> {
+        amm::create_pool(&env, creator, token_index_a, token_index_b)
+    }
+
+    /// Add liquidity to an existing AMM pool and receive LP shares.
+    ///
+    /// Returns [`AddLiquidityResult`] with the actual amounts deposited and
+    /// LP shares minted.
+    pub fn amm_add_liquidity(
+        env: Env,
+        provider: Address,
+        token_index_a: u32,
+        token_index_b: u32,
+        amount_a: i128,
+        amount_b: i128,
+    ) -> Result<AddLiquidityResult, Error> {
+        amm::add_liquidity(&env, provider, token_index_a, token_index_b, amount_a, amount_b)
+    }
+
+    /// Remove liquidity from an AMM pool by burning LP shares.
+    ///
+    /// Returns `(amount_a, amount_b)` credited back to the provider.
+    pub fn amm_remove_liquidity(
+        env: Env,
+        provider: Address,
+        token_index_a: u32,
+        token_index_b: u32,
+        shares: i128,
+    ) -> Result<(i128, i128), Error> {
+        amm::remove_liquidity(&env, provider, token_index_a, token_index_b, shares)
+    }
+
+    /// Swap an exact amount of one token for the other via a constant-product
+    /// pool (0.3 % fee). `min_amount_out` acts as a slippage guard.
+    ///
+    /// Returns the amount of `token_index_out` received.
+    pub fn amm_swap(
+        env: Env,
+        caller: Address,
+        token_index_in: u32,
+        token_index_out: u32,
+        amount_in: i128,
+        min_amount_out: i128,
+    ) -> Result<i128, Error> {
+        amm::swap(&env, caller, token_index_in, token_index_out, amount_in, min_amount_out)
+    }
+
+    /// Quote a swap without modifying any state.
+    ///
+    /// Returns a [`SwapQuote`] with the expected output and resulting reserves.
+    pub fn amm_quote_swap(
+        env: Env,
+        token_index_in: u32,
+        token_index_out: u32,
+        amount_in: i128,
+    ) -> Result<SwapQuote, Error> {
+        amm::quote_swap(&env, token_index_in, token_index_out, amount_in)
+    }
+
+    /// Fetch an AMM pool's current state, or `None` if it does not exist.
+    pub fn amm_get_pool(
+        env: Env,
+        token_index_a: u32,
+        token_index_b: u32,
+    ) -> Option<AmmPool> {
+        amm::get_pool(&env, token_index_a, token_index_b)
+    }
+
+    /// Fetch a provider's LP share balance in a pool (0 if they have none).
+    pub fn amm_get_shares(
+        env: Env,
+        token_index_a: u32,
+        token_index_b: u32,
+        provider: Address,
+    ) -> i128 {
+        amm::get_shares(&env, token_index_a, token_index_b, &provider)
     }
 
 }

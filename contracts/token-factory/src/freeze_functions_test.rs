@@ -11,9 +11,7 @@ mod freeze_functions_test {
     use crate::test_helpers::TestEnv;
     use crate::token_creation;
     use crate::types::{Error, TokenInfo};
-    use soroban_sdk::{
-        testutils::Address as _, Address, Env, String,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
     fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
@@ -76,7 +74,10 @@ mod freeze_functions_test {
             assert!(result.is_ok(), "Authorized admin freeze must succeed");
 
             let is_frozen = freeze_functions::is_frozen(&env, &token, &target);
-            assert!(is_frozen, "Target address must be frozen after freeze_address");
+            assert!(
+                is_frozen,
+                "Target address must be frozen after freeze_address"
+            );
         });
     }
 
@@ -96,7 +97,10 @@ mod freeze_functions_test {
             assert!(result.is_ok(), "Authorized admin unfreeze must succeed");
 
             let is_frozen = freeze_functions::is_frozen(&env, &token, &target);
-            assert!(!is_frozen, "Target address must be unfrozen after unfreeze_address");
+            assert!(
+                !is_frozen,
+                "Target address must be unfrozen after unfreeze_address"
+            );
         });
     }
 
@@ -228,14 +232,20 @@ mod freeze_functions_test {
             assert!(result.is_ok(), "Creator must be able to enable freeze");
 
             let info = storage::get_token_info_by_address(&env, &token).unwrap();
-            assert!(info.freeze_enabled, "Freeze must be enabled after set_freeze_enabled(true)");
+            assert!(
+                info.freeze_enabled,
+                "Freeze must be enabled after set_freeze_enabled(true)"
+            );
 
             // Disable freeze
             let result = freeze_functions::set_freeze_enabled(&env, &token, &admin, false);
             assert!(result.is_ok(), "Creator must be able to disable freeze");
 
             let info = storage::get_token_info_by_address(&env, &token).unwrap();
-            assert!(!info.freeze_enabled, "Freeze must be disabled after set_freeze_enabled(false)");
+            assert!(
+                !info.freeze_enabled,
+                "Freeze must be disabled after set_freeze_enabled(false)"
+            );
         });
     }
 
@@ -293,7 +303,8 @@ mod freeze_functions_test {
         let target = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            let result = freeze_functions::freeze_address(&env, &nonexistent_token, &admin, &target);
+            let result =
+                freeze_functions::freeze_address(&env, &nonexistent_token, &admin, &target);
             assert_eq!(
                 result,
                 Err(Error::TokenNotFound),

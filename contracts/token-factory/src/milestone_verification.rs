@@ -1,7 +1,7 @@
 use soroban_sdk::{Bytes, BytesN, Env};
 
-use crate::types;
 use crate::storage;
+use crate::types;
 use types::Error;
 
 const PROOF_SIGNATURE_OFFSET: u32 = 0;
@@ -77,10 +77,15 @@ impl OracleMilestoneVerifier {
             return Err(Error::InvalidProof);
         }
 
-        let signature = proof.slice(PROOF_SIGNATURE_OFFSET..PROOF_SIGNATURE_OFFSET + PROOF_SIGNATURE_LEN);
-        let milestone_hash = proof.slice(PROOF_MILESTONE_HASH_OFFSET..PROOF_MILESTONE_HASH_OFFSET + PROOF_MILESTONE_HASH_LEN);
-        let timestamp_bytes = proof.slice(PROOF_TIMESTAMP_OFFSET..PROOF_TIMESTAMP_OFFSET + PROOF_TIMESTAMP_LEN);
-        let oracle_id = proof.slice(PROOF_ORACLE_ID_OFFSET..PROOF_ORACLE_ID_OFFSET + PROOF_ORACLE_ID_LEN);
+        let signature =
+            proof.slice(PROOF_SIGNATURE_OFFSET..PROOF_SIGNATURE_OFFSET + PROOF_SIGNATURE_LEN);
+        let milestone_hash = proof.slice(
+            PROOF_MILESTONE_HASH_OFFSET..PROOF_MILESTONE_HASH_OFFSET + PROOF_MILESTONE_HASH_LEN,
+        );
+        let timestamp_bytes =
+            proof.slice(PROOF_TIMESTAMP_OFFSET..PROOF_TIMESTAMP_OFFSET + PROOF_TIMESTAMP_LEN);
+        let oracle_id =
+            proof.slice(PROOF_ORACLE_ID_OFFSET..PROOF_ORACLE_ID_OFFSET + PROOF_ORACLE_ID_LEN);
 
         let mut ts_array = [0u8; 8];
         for i in 0..8 {
@@ -119,7 +124,11 @@ impl OracleMilestoneVerifier {
     }
 
     /// Verify milestone hash matches the one in proof
-    fn verify_milestone_hash_match(&self, proof_hash: &Bytes, expected_hash: &BytesN<32>) -> Result<(), Error> {
+    fn verify_milestone_hash_match(
+        &self,
+        proof_hash: &Bytes,
+        expected_hash: &BytesN<32>,
+    ) -> Result<(), Error> {
         if proof_hash.len() != 32 {
             return Err(Error::InvalidProof);
         }

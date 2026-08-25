@@ -197,7 +197,14 @@ fn generate_report_windowed(
         .set(&ComplianceKey::Report(report_id), &report);
 
     // ── Emit event ───────────────────────────────────────────────────────────
-    emit_report_generated(env, report_id, admin, token_count, total_supply, total_burned);
+    emit_report_generated(
+        env,
+        report_id,
+        admin,
+        token_count,
+        total_supply,
+        total_burned,
+    );
 
     Ok(report)
 }
@@ -256,9 +263,10 @@ pub fn add_compliance_rule(
         jurisdiction: jurisdiction.clone(),
         rule_type: rule_type.clone(),
     });
-    env.storage()
-        .persistent()
-        .set(&ComplianceKey::JurisdictionRules(jurisdiction.clone()), &rules);
+    env.storage().persistent().set(
+        &ComplianceKey::JurisdictionRules(jurisdiction.clone()),
+        &rules,
+    );
 
     emit_rule_added(env, admin, &jurisdiction);
     Ok(())
@@ -459,10 +467,8 @@ fn emit_report_generated(
 /// **Payload** (non-indexed):
 /// - `admin: Address`
 fn emit_rule_added(env: &Env, admin: &Address, jurisdiction: &String) {
-    env.events().publish(
-        (symbol_short!("cmp_add"), jurisdiction.clone()),
-        admin,
-    );
+    env.events()
+        .publish((symbol_short!("cmp_add"), jurisdiction.clone()), admin);
 }
 
 /// Emit event when a compliance rule is removed.
@@ -476,10 +482,8 @@ fn emit_rule_added(env: &Env, admin: &Address, jurisdiction: &String) {
 /// **Payload** (non-indexed):
 /// - `admin: Address`
 fn emit_rule_removed(env: &Env, admin: &Address, jurisdiction: &String) {
-    env.events().publish(
-        (symbol_short!("cmp_del"), jurisdiction.clone()),
-        admin,
-    );
+    env.events()
+        .publish((symbol_short!("cmp_del"), jurisdiction.clone()), admin);
 }
 
 /// Emit a compliance check result event.
@@ -495,15 +499,14 @@ fn emit_rule_removed(env: &Env, admin: &Address, jurisdiction: &String) {
 /// - `token_address: Address`
 /// - `from: Address`
 /// - `amount: i128`
-fn emit_compliance_check(
-    env: &Env,
-    jurisdiction: &String,
-    params: &TransferParams,
-    passed: bool,
-) {
+fn emit_compliance_check(env: &Env, jurisdiction: &String, params: &TransferParams, passed: bool) {
     env.events().publish(
         (symbol_short!("cmp_chk"), jurisdiction.clone(), passed),
-        (params.token_address.clone(), params.from.clone(), params.amount),
+        (
+            params.token_address.clone(),
+            params.from.clone(),
+            params.amount,
+        ),
     );
 }
 
@@ -534,9 +537,7 @@ mod tests {
         env.mock_all_auths();
         let (_, admin, contract_id) = setup(&env);
 
-        let report = env.as_contract(&contract_id, || {
-            generate_report(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
 
         assert_eq!(report.report_id, 0);
         assert_eq!(report.generated_by, admin);
@@ -697,8 +698,7 @@ mod tests {
         let (_, admin, contract_id) = setup(&env);
 
         for expected_id in 0u64..5 {
-            let report =
-                env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
+            let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
             assert_eq!(report.report_id, expected_id);
         }
 
@@ -706,7 +706,9 @@ mod tests {
 
         // All reports retrievable
         for id in 0u64..5 {
-            assert!(env.as_contract(&contract_id, || get_report(&env, id)).is_some());
+            assert!(env
+                .as_contract(&contract_id, || get_report(&env, id))
+                .is_some());
         }
     }
 
@@ -742,7 +744,12 @@ mod tests {
         let token = Address::generate(&env);
         let jurisdiction = soroban_sdk::String::from_str(&env, "EU");
 
-        let params = TransferParams { token_address: token, from, to, amount: 500 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 500,
+        };
 
         let result = env.as_contract(&contract_id, || {
             check_compliance(&env, jurisdiction, params)
@@ -764,9 +771,7 @@ mod tests {
             add_compliance_rule(&env, &admin, jurisdiction.clone(), rule_type.clone()).unwrap();
         });
 
-        let rules = env.as_contract(&contract_id, || {
-            get_jurisdiction_rules(&env, &jurisdiction)
-        });
+        let rules = env.as_contract(&contract_id, || get_jurisdiction_rules(&env, &jurisdiction));
         assert_eq!(rules.len(), 1);
         assert_eq!(rules.get(0).unwrap().rule_type, rule_type);
     }
@@ -825,7 +830,12 @@ mod tests {
         let token = Address::generate(&env);
         let from = Address::generate(&env);
         let to = Address::generate(&env);
-        let params = TransferParams { token_address: token, from, to, amount: 100 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 100,
+        };
 
         // Add then verify it blocks
         env.as_contract(&contract_id, || {
@@ -894,7 +904,12 @@ mod tests {
             check_compliance(
                 &env,
                 jurisdiction.clone(),
-                TransferParams { token_address: token.clone(), from: from.clone(), to: to.clone(), amount: 500 },
+                TransferParams {
+                    token_address: token.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    amount: 500,
+                },
             )
         });
         assert!(ok.is_ok());
@@ -904,7 +919,12 @@ mod tests {
             check_compliance(
                 &env,
                 jurisdiction,
-                TransferParams { token_address: token, from, to, amount: 501 },
+                TransferParams {
+                    token_address: token,
+                    from,
+                    to,
+                    amount: 501,
+                },
             )
         });
         assert_eq!(err, Err(Error::ComplianceCheckFailed));
@@ -921,7 +941,12 @@ mod tests {
         let token = Address::generate(&env);
         let from = Address::generate(&env);
         let to = Address::generate(&env);
-        let params = TransferParams { token_address: token, from, to, amount: 100 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 100,
+        };
 
         let before = env.events().all().len();
         env.as_contract(&contract_id, || {
@@ -990,9 +1015,7 @@ mod compliance_reporting_bounded_tests {
         });
 
         // Bounded report should succeed without exceeding any budget.
-        let report = env.as_contract(&contract_id, || {
-            generate_report(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
 
         // token_count in the report reflects the real count.
         assert_eq!(report.token_count, large_count);
@@ -1041,9 +1064,7 @@ mod compliance_reporting_bounded_tests {
                 .set(&crate::types::DataKey::TokenCount, &token_count);
         });
 
-        let report = env.as_contract(&contract_id, || {
-            generate_report_full(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report_full(&env, &admin).unwrap());
 
         assert_eq!(report.total_supply, token_count as i128 * 500);
     }

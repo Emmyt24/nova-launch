@@ -353,7 +353,9 @@ fn test_mint_interleaved_with_different_recipients() {
 
     // Interleave mints to different recipients.
     for i in 0..100usize {
-        let recipient = recipients.get((i % recipients.len() as usize) as u32).unwrap();
+        let recipient = recipients
+            .get((i % recipients.len() as usize) as u32)
+            .unwrap();
         let amount = ((i as i128 + 1) * 1_000) % 100_000 + 1_000;
         client.mint(&creator, &token_index, &recipient, &amount);
         total_minted += amount;

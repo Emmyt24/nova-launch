@@ -73,7 +73,12 @@ pub fn freeze_address(
 
     // Freeze the address
     storage::set_address_frozen(env, token_address, address_to_freeze, true);
-    storage::set_freeze_timestamp(env, token_address, address_to_freeze, env.ledger().timestamp());
+    storage::set_freeze_timestamp(
+        env,
+        token_address,
+        address_to_freeze,
+        env.ledger().timestamp(),
+    );
 
     // Emit freeze event
     env.events().publish(
@@ -258,8 +263,8 @@ pub fn set_freeze_cooldown(
         return Err(Error::ContractPaused);
     }
     admin.require_auth();
-    let token_info = storage::get_token_info_by_address(env, token_address)
-        .ok_or(Error::TokenNotFound)?;
+    let token_info =
+        storage::get_token_info_by_address(env, token_address).ok_or(Error::TokenNotFound)?;
     let governance = storage::get_governance(env);
     if let Some(gov_addr) = governance {
         if *admin != gov_addr {

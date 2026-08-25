@@ -347,7 +347,10 @@ mod burn_reentrancy_tests {
         assert_eq!(info.total_supply, 1_000_000 - 100);
         assert_eq!(info.total_burned, 100);
         assert_eq!(info.burn_count, 1);
-        assert_eq!(storage::get_balance(&env, token_index, &holder), 1_000_000 - 100);
+        assert_eq!(
+            storage::get_balance(&env, token_index, &holder),
+            1_000_000 - 100
+        );
     }
 
     /// Reentrancy lock is released after a successful burn.
@@ -398,4 +401,3 @@ mod burn_reentrancy_tests {
         );
     }
 }
-

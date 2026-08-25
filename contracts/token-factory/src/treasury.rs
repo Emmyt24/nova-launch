@@ -362,7 +362,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -371,7 +373,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 150_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 150_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
     }
 
@@ -380,7 +384,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 100_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 100_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -403,7 +409,9 @@ mod tests {
         let recipient = Address::generate(&env);
 
         // Should fail - not in allowlist
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert_eq!(result, Err(Error::RecipientNotAllowed));
 
         // Add to allowlist
@@ -412,7 +420,9 @@ mod tests {
         });
 
         // Should succeed now
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -447,7 +457,9 @@ mod tests {
         });
 
         // Try to withdraw 30 more - should fail
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 30_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 30_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
 
         // Advance time by 24 hours + 1 second
@@ -456,7 +468,9 @@ mod tests {
         });
 
         // Should succeed now (new period)
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 30_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 30_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -465,19 +479,28 @@ mod tests {
         let (env, _admin, contract_id) = setup();
 
         // Initially full capacity
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 100_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            100_0000000
+        );
 
         // Withdraw 30 XLM
         env.as_contract(&contract_id, || {
             record_withdrawal(&env, 30_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 70_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            70_0000000
+        );
 
         // Withdraw 50 more
         env.as_contract(&contract_id, || {
             record_withdrawal(&env, 50_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 20_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            20_0000000
+        );
     }
 
     #[test]
@@ -531,17 +554,24 @@ mod tests {
         env.as_contract(&contract_id, || {
             withdraw_fees(&env, &admin, &recipient, 40_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 60_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            60_0000000
+        );
 
         // Second withdrawal
         env.as_contract(&contract_id, || {
             withdraw_fees(&env, &admin, &recipient, 30_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 30_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            30_0000000
+        );
 
         // Third withdrawal should fail (would exceed cap)
-        let result =
-            env.as_contract(&contract_id, || withdraw_fees(&env, &admin, &recipient, 40_0000000));
+        let result = env.as_contract(&contract_id, || {
+            withdraw_fees(&env, &admin, &recipient, 40_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
     }
 

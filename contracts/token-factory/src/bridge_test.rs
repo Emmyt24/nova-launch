@@ -24,7 +24,9 @@ fn setup() -> (Env, Address, Address, Address) {
     client.initialize(&admin, &treasury, &1_000_000, &500_000);
 
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
 
     (env, contract_id, admin, token)
 }
@@ -101,7 +103,11 @@ fn test_lock_tokens_nonces_increment_monotonically() {
         &destination_address,
     );
 
-    assert_eq!(nonce_b, nonce_a + 1, "nonces must be assigned monotonically");
+    assert_eq!(
+        nonce_b,
+        nonce_a + 1,
+        "nonces must be assigned monotonically"
+    );
 }
 
 #[test]
@@ -157,7 +163,10 @@ fn test_lock_tokens_rejects_empty_destination() {
         &destination_chain,
         &empty_address,
     );
-    assert!(result.is_err(), "empty destination address must be rejected");
+    assert!(
+        result.is_err(),
+        "empty destination address must be rejected"
+    );
 }
 
 #[test]
@@ -176,7 +185,10 @@ fn test_lock_tokens_rejects_when_contract_paused() {
         &destination_chain,
         &destination_address,
     );
-    assert!(result.is_err(), "locking must be rejected while the contract is paused");
+    assert!(
+        result.is_err(),
+        "locking must be rejected while the contract is paused"
+    );
 }
 
 #[test]
@@ -233,7 +245,10 @@ fn test_double_release_rejected() {
     client.release_tokens(&admin, &nonce, &token, &recipient, &amount);
 
     let result = client.try_release_tokens(&admin, &nonce, &token, &recipient, &amount);
-    assert!(result.is_err(), "double release of the same nonce must fail");
+    assert!(
+        result.is_err(),
+        "double release of the same nonce must fail"
+    );
 
     // Recipient balance must reflect exactly one release, not two.
     let token_client = TokenClient::new(&env, &token);
@@ -261,7 +276,10 @@ fn test_release_tokens_unauthorized_rejected() {
     );
 
     let result = client.try_release_tokens(&attacker, &nonce, &token, &recipient, &amount);
-    assert!(result.is_err(), "a non-admin caller must not be able to release");
+    assert!(
+        result.is_err(),
+        "a non-admin caller must not be able to release"
+    );
     assert!(
         !client.is_bridge_nonce_released(&nonce),
         "an unauthorized attempt must not consume the nonce"

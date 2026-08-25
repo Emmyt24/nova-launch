@@ -22,6 +22,10 @@ serde_json = "1"
 name = "contract_replay_regression_test"
 path = "tests/contract_replay_regression_test.rs"
 
+[[test]]
+name = "dividend_distribution_multi_epoch_test"
+path = "tests/dividend_distribution_multi_epoch_test.rs"
+
 [features]
 legacy-tests = []
 

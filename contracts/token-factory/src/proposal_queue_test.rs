@@ -8,9 +8,9 @@
 mod proposal_queue_test {
     use crate::proposal_queue;
     use crate::storage;
+    use crate::test_helpers::fee_change_payload;
     use crate::timelock::{self, create_proposal, queue_proposal, vote_proposal};
     use crate::types::{ActionType, Error, ProposalPriority, ProposalState, VoteChoice};
-    use crate::test_helpers::fee_change_payload;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         Address, Env,
@@ -129,13 +129,22 @@ mod proposal_queue_test {
 
             // Verify FIFO order by dequeuing sequentially
             let entry1 = proposal_queue::dequeue_next(&env).expect("Should dequeue first entry");
-            assert_eq!(entry1.proposal_id, id1, "First dequeued should be id1 (FIFO)");
+            assert_eq!(
+                entry1.proposal_id, id1,
+                "First dequeued should be id1 (FIFO)"
+            );
 
             let entry2 = proposal_queue::dequeue_next(&env).expect("Should dequeue second entry");
-            assert_eq!(entry2.proposal_id, id2, "Second dequeued should be id2 (FIFO)");
+            assert_eq!(
+                entry2.proposal_id, id2,
+                "Second dequeued should be id2 (FIFO)"
+            );
 
             let entry3 = proposal_queue::dequeue_next(&env).expect("Should dequeue third entry");
-            assert_eq!(entry3.proposal_id, id3, "Third dequeued should be id3 (FIFO)");
+            assert_eq!(
+                entry3.proposal_id, id3,
+                "Third dequeued should be id3 (FIFO)"
+            );
 
             // Queue should now be empty
             let result = proposal_queue::dequeue_next(&env);
@@ -173,7 +182,10 @@ mod proposal_queue_test {
 
             // Peek should return the first proposal (oldest ETA that's ready)
             let next = proposal_queue::peek_next(&env).expect("Should have an entry");
-            assert_eq!(next.proposal_id, id1, "Should return id1 (earliest ready ETA)");
+            assert_eq!(
+                next.proposal_id, id1,
+                "Should return id1 (earliest ready ETA)"
+            );
 
             // Advance past both ETAs
             env.ledger().with_mut(|l| l.timestamp = eta2 + 1);
@@ -316,7 +328,10 @@ mod proposal_queue_test {
 
             // Dequeue and verify
             let entry = proposal_queue::dequeue_next(&env).expect("Should dequeue");
-            assert_eq!(entry.proposal_id, id_high, "Should dequeue high priority first");
+            assert_eq!(
+                entry.proposal_id, id_high,
+                "Should dequeue high priority first"
+            );
 
             // Now low priority should be next
             let next = proposal_queue::peek_next(&env).expect("Should have an entry");

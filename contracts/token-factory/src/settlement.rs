@@ -41,7 +41,11 @@ fn assert_governance_caller(env: &Env, caller: &Address) -> Result<(), Error> {
 
 fn release_hold(env: &Env, reservation: &Reservation) {
     let current = storage::get_reserved_total(env, reservation.token_index);
-    storage::set_reserved_total(env, reservation.token_index, current.saturating_sub(reservation.amount));
+    storage::set_reserved_total(
+        env,
+        reservation.token_index,
+        current.saturating_sub(reservation.amount),
+    );
 }
 
 /// Phase 1: reserve `amount` of `token_index` for `proposal_id`, without
@@ -107,7 +111,9 @@ pub fn prepare(
     storage::set_reserved_total(
         env,
         token_index,
-        reserved_total.checked_add(amount).ok_or(Error::ArithmeticError)?,
+        reserved_total
+            .checked_add(amount)
+            .ok_or(Error::ArithmeticError)?,
     );
 
     events::emit_settlement_prepared(env, id, proposal_id, token_index, &recipient, amount);
@@ -137,7 +143,12 @@ pub fn commit(env: &Env, governance: Address, reservation_id: u64) -> Result<(),
         return Err(Error::ReservationNotPending);
     }
 
-    crate::mint::mint(env, reservation.token_index, &reservation.recipient, reservation.amount)?;
+    crate::mint::mint(
+        env,
+        reservation.token_index,
+        &reservation.recipient,
+        reservation.amount,
+    )?;
 
     // The hold is only released once real supply has taken its place —
     // never before the mint has actually succeeded.

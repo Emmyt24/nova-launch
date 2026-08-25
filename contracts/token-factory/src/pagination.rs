@@ -185,7 +185,7 @@ mod tests {
                     total_burned: 0,
                     burn_count: 0,
                     metadata_uri: None,
-        metadata_version: 0,
+                    metadata_version: 0,
                     created_at: env.ledger().timestamp(),
                     clawback_enabled: false,
                     is_paused: false,
@@ -207,7 +207,9 @@ mod tests {
     fn test_get_tokens_first_page() {
         let (env, creator, contract_id) = setup_with_tokens(50);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 20);
         assert!(result.has_more);
@@ -217,17 +219,23 @@ mod tests {
     fn test_get_tokens_pagination() {
         let (env, creator, contract_id) = setup_with_tokens(50);
         let page1 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(page1.tokens.len(), 20);
         assert!(page1.has_more);
         let page2 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, page1.cursor, Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, page1.cursor, Some(20))
+            })
             .unwrap();
         assert_eq!(page2.tokens.len(), 20);
         assert!(page2.has_more);
         let page3 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, page2.cursor, Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, page2.cursor, Some(20))
+            })
             .unwrap();
         assert_eq!(page3.tokens.len(), 10);
         assert!(!page3.has_more);
@@ -239,7 +247,9 @@ mod tests {
         let creator = Address::generate(&env);
         let contract_id = install_contract(&env);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 0);
         assert!(!result.has_more);
@@ -249,7 +259,9 @@ mod tests {
     fn test_get_tokens_single_token() {
         let (env, creator, contract_id) = setup_with_tokens(1);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 1);
         assert!(!result.has_more);
@@ -259,7 +271,9 @@ mod tests {
     fn test_get_tokens_exact_page_size() {
         let (env, creator, contract_id) = setup_with_tokens(20);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 20);
         assert!(!result.has_more);
@@ -269,7 +283,9 @@ mod tests {
     fn test_get_tokens_max_limit_enforced() {
         let (env, creator, contract_id) = setup_with_tokens(200);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(150)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(150))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 100);
         assert!(result.has_more);
@@ -279,7 +295,9 @@ mod tests {
     fn test_get_tokens_default_limit() {
         let (env, creator, contract_id) = setup_with_tokens(50);
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), None))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), None)
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 20);
         assert!(result.has_more);
@@ -290,7 +308,9 @@ mod tests {
         let (env, creator, contract_id) = setup_with_tokens(10);
         let invalid_cursor = PaginationCursor { next_index: 100 };
         let result = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, invalid_cursor, Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, invalid_cursor, Some(20))
+            })
             .unwrap();
         assert_eq!(result.tokens.len(), 0);
         assert!(!result.has_more);
@@ -300,10 +320,14 @@ mod tests {
     fn test_get_tokens_deterministic_ordering() {
         let (env, creator, contract_id) = setup_with_tokens(30);
         let result1 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(10)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(10))
+            })
             .unwrap();
         let result2 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(10)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(10))
+            })
             .unwrap();
         assert_eq!(result1.tokens.len(), result2.tokens.len());
         for i in 0..result1.tokens.len() {
@@ -338,12 +362,16 @@ mod tests {
     fn test_pagination_boundary_conditions() {
         let (env, creator, contract_id) = setup_with_tokens(21);
         let page1 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(page1.tokens.len(), 20);
         assert!(page1.has_more);
         let page2 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator, page1.cursor, Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator, page1.cursor, Some(20))
+            })
             .unwrap();
         assert_eq!(page2.tokens.len(), 1);
         assert!(!page2.has_more);
@@ -369,7 +397,7 @@ mod tests {
                     total_burned: 0,
                     burn_count: 0,
                     metadata_uri: None,
-        metadata_version: 0,
+                    metadata_version: 0,
                     created_at: env.ledger().timestamp(),
                     clawback_enabled: false,
                     is_paused: false,
@@ -390,7 +418,7 @@ mod tests {
                     total_burned: 0,
                     burn_count: 0,
                     metadata_uri: None,
-        metadata_version: 0,
+                    metadata_version: 0,
                     created_at: env.ledger().timestamp(),
                     clawback_enabled: false,
                     is_paused: false,
@@ -400,11 +428,15 @@ mod tests {
             }
         });
         let result1 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator1, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator1, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result1.tokens.len(), 10);
         let result2 = env
-            .as_contract(&contract_id, || get_tokens_by_creator(&env, &creator2, no_cursor(), Some(20)))
+            .as_contract(&contract_id, || {
+                get_tokens_by_creator(&env, &creator2, no_cursor(), Some(20))
+            })
             .unwrap();
         assert_eq!(result2.tokens.len(), 5);
     }

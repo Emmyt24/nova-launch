@@ -1383,6 +1383,12 @@ impl Error {
             134 => "StakingNotActive",
             135 => "InvalidRewardRate",
             136 => "InsufficientStake",
+            100 => "DistributionNotFound",
+            101 => "DistributionWindowClosed",
+            102 => "DistributionWindowOpen",
+            103 => "DistributionAlreadyClaimed",
+            104 => "DistributionAlreadyReclaimed",
+            105 => "DistributionZeroSupply",
             _ => "UnknownError",
         }
     }
@@ -1841,7 +1847,7 @@ mod tests {
     #[test]
     fn test_campaign_field_ordering_deterministic() {
         let (env, contract_id) = setup();
-        
+
         // Create two identical campaigns
         let campaign1 = super::BuybackCampaign {
             id: 1,
@@ -1886,12 +1892,24 @@ mod tests {
 
         // Verify serialization produces identical results
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(1), &campaign1);
-            env.storage().instance().set(&DataKey::BuybackCampaign(2), &campaign2);
-            
-            let decoded1: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(1)).unwrap();
-            let decoded2: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(2)).unwrap();
-            
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(1), &campaign1);
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(2), &campaign2);
+
+            let decoded1: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(1))
+                .unwrap();
+            let decoded2: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(2))
+                .unwrap();
+
             assert_eq!(decoded1, decoded2);
         });
     }
@@ -1899,7 +1917,7 @@ mod tests {
     #[test]
     fn test_campaign_storage_retrieval_by_id() {
         let (env, contract_id) = setup();
-        
+
         let campaigns = vec![
             super::BuybackCampaign {
                 id: 0,
@@ -1942,13 +1960,18 @@ mod tests {
         env.as_contract(&contract_id, || {
             // Store campaigns
             for campaign in &campaigns {
-                env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), campaign);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::BuybackCampaign(campaign.id), campaign);
             }
 
             // Retrieve and verify each campaign
             for campaign in &campaigns {
-                let retrieved: super::BuybackCampaign = 
-                    env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+                let retrieved: super::BuybackCampaign = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::BuybackCampaign(campaign.id))
+                    .unwrap();
                 assert_eq!(retrieved, *campaign);
             }
         });
@@ -1961,14 +1984,32 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             // Store campaign indexes for creator
-            env.storage().instance().set(&DataKey::CampaignByCreator(creator.clone(), 0), &10u64);
-            env.storage().instance().set(&DataKey::CampaignByCreator(creator.clone(), 1), &20u64);
-            env.storage().instance().set(&DataKey::CreatorCampaignCount(creator.clone()), &2u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByCreator(creator.clone(), 0), &10u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByCreator(creator.clone(), 1), &20u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CreatorCampaignCount(creator.clone()), &2u32);
 
             // Retrieve and verify
-            let campaign_id_0: u64 = env.storage().instance().get(&DataKey::CampaignByCreator(creator.clone(), 0)).unwrap();
-            let campaign_id_1: u64 = env.storage().instance().get(&DataKey::CampaignByCreator(creator.clone(), 1)).unwrap();
-            let count: u32 = env.storage().instance().get(&DataKey::CreatorCampaignCount(creator.clone())).unwrap();
+            let campaign_id_0: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByCreator(creator.clone(), 0))
+                .unwrap();
+            let campaign_id_1: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByCreator(creator.clone(), 1))
+                .unwrap();
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CreatorCampaignCount(creator.clone()))
+                .unwrap();
 
             assert_eq!(campaign_id_0, 10);
             assert_eq!(campaign_id_1, 20);
@@ -1983,14 +2024,32 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             // Store campaign indexes for token
-            env.storage().instance().set(&DataKey::CampaignByToken(token_index, 0), &100u64);
-            env.storage().instance().set(&DataKey::CampaignByToken(token_index, 1), &200u64);
-            env.storage().instance().set(&DataKey::TokenCampaignCount(token_index), &2u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByToken(token_index, 0), &100u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByToken(token_index, 1), &200u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::TokenCampaignCount(token_index), &2u32);
 
             // Retrieve and verify
-            let campaign_id_0: u64 = env.storage().instance().get(&DataKey::CampaignByToken(token_index, 0)).unwrap();
-            let campaign_id_1: u64 = env.storage().instance().get(&DataKey::CampaignByToken(token_index, 1)).unwrap();
-            let count: u32 = env.storage().instance().get(&DataKey::TokenCampaignCount(token_index)).unwrap();
+            let campaign_id_0: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByToken(token_index, 0))
+                .unwrap();
+            let campaign_id_1: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByToken(token_index, 1))
+                .unwrap();
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenCampaignCount(token_index))
+                .unwrap();
 
             assert_eq!(campaign_id_0, 100);
             assert_eq!(campaign_id_1, 200);
@@ -2001,7 +2060,7 @@ mod tests {
     #[test]
     fn test_campaign_status_all_variants() {
         let (env, contract_id) = setup();
-        
+
         let statuses = [
             (super::CampaignStatus::Active, "Active"),
             (super::CampaignStatus::Paused, "Paused"),
@@ -2022,7 +2081,7 @@ mod tests {
     #[test]
     fn test_campaign_with_max_values() {
         let (env, contract_id) = setup();
-        
+
         let campaign = super::BuybackCampaign {
             id: u64::MAX,
             token_index: u32::MAX,
@@ -2043,8 +2102,14 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), &campaign);
-            let decoded: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(campaign.id), &campaign);
+            let decoded: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(campaign.id))
+                .unwrap();
             assert_eq!(decoded, campaign);
         });
     }
@@ -2052,7 +2117,7 @@ mod tests {
     #[test]
     fn test_campaign_with_min_values() {
         let (env, contract_id) = setup();
-        
+
         let campaign = super::BuybackCampaign {
             id: 0,
             token_index: 0,
@@ -2073,8 +2138,14 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), &campaign);
-            let decoded: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(campaign.id), &campaign);
+            let decoded: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(campaign.id))
+                .unwrap();
             assert_eq!(decoded, campaign);
         });
     }

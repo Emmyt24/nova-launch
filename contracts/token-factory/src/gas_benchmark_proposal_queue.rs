@@ -61,14 +61,16 @@ fn bench_enqueue_small_queue() {
     // Create a proposal first
     let client = TokenFactoryClient::new(&setup.env, &setup.contract_id);
     let proposal_id = setup.env.as_contract(&setup.contract_id, || {
-        let id: u64 = client.create_proposal(
-            &proposer,
-            &types::ActionType::FeeChange,
-            &soroban_sdk::Bytes::default(&setup.env),
-            &String::from_str(&setup.env, "Test proposal"),
-            &100u64,
-            &200u64,
-        ).unwrap();
+        let id: u64 = client
+            .create_proposal(
+                &proposer,
+                &types::ActionType::FeeChange,
+                &soroban_sdk::Bytes::default(&setup.env),
+                &String::from_str(&setup.env, "Test proposal"),
+                &100u64,
+                &200u64,
+            )
+            .unwrap();
         id
     });
 
@@ -104,14 +106,16 @@ fn bench_dequeue_small_queue() {
 
     // Create and queue a proposal
     let proposal_id = setup.env.as_contract(&setup.contract_id, || {
-        let id: u64 = client.create_proposal(
-            &proposer,
-            &types::ActionType::FeeChange,
-            &soroban_sdk::Bytes::default(&setup.env),
-            &String::from_str(&setup.env, "Test proposal"),
-            &100u64,
-            &200u64,
-        ).unwrap();
+        let id: u64 = client
+            .create_proposal(
+                &proposer,
+                &types::ActionType::FeeChange,
+                &soroban_sdk::Bytes::default(&setup.env),
+                &String::from_str(&setup.env, "Test proposal"),
+                &100u64,
+                &200u64,
+            )
+            .unwrap();
 
         client.queue_proposal(&setup.admin, &id).ok();
         proposal_queue::enqueue_proposal(&setup.env, id, types::ProposalPriority::Normal).ok();
@@ -144,14 +148,16 @@ fn bench_peek_small_queue() {
 
     // Create and queue a proposal
     setup.env.as_contract(&setup.contract_id, || {
-        let id: u64 = client.create_proposal(
-            &proposer,
-            &types::ActionType::FeeChange,
-            &soroban_sdk::Bytes::default(&setup.env),
-            &String::from_str(&setup.env, "Test proposal"),
-            &100u64,
-            &200u64,
-        ).unwrap();
+        let id: u64 = client
+            .create_proposal(
+                &proposer,
+                &types::ActionType::FeeChange,
+                &soroban_sdk::Bytes::default(&setup.env),
+                &String::from_str(&setup.env, "Test proposal"),
+                &100u64,
+                &200u64,
+            )
+            .unwrap();
 
         client.queue_proposal(&setup.admin, &id).ok();
         proposal_queue::enqueue_proposal(&setup.env, id, types::ProposalPriority::Normal).ok();
@@ -179,14 +185,16 @@ fn bench_proposal_queue_baseline() {
 
     // Measure enqueue
     let proposal_id_1 = setup.env.as_contract(&setup.contract_id, || {
-        let id: u64 = client.create_proposal(
-            &proposer,
-            &types::ActionType::FeeChange,
-            &soroban_sdk::Bytes::default(&setup.env),
-            &String::from_str(&setup.env, "Test proposal 1"),
-            &100u64,
-            &200u64,
-        ).unwrap();
+        let id: u64 = client
+            .create_proposal(
+                &proposer,
+                &types::ActionType::FeeChange,
+                &soroban_sdk::Bytes::default(&setup.env),
+                &String::from_str(&setup.env, "Test proposal 1"),
+                &100u64,
+                &200u64,
+            )
+            .unwrap();
 
         client.queue_proposal(&setup.admin, &id).ok();
         id
@@ -212,9 +220,15 @@ fn bench_proposal_queue_baseline() {
     println!();
     println!("Proposal Queue Gas Benchmark Baseline");
     println!();
-    println!("{:<25} {:>18} {:>14}", "Operation", "CPU Instructions", "Memory Bytes");
+    println!(
+        "{:<25} {:>18} {:>14}",
+        "Operation", "CPU Instructions", "Memory Bytes"
+    );
     println!("{}", "-".repeat(60));
-    println!("{:<25} {:>18} {:>14}", "enqueue (1 entry)", cpu_enqueue, mem_enqueue);
+    println!(
+        "{:<25} {:>18} {:>14}",
+        "enqueue (1 entry)", cpu_enqueue, mem_enqueue
+    );
     println!("{:<25} {:>18} {:>14}", "peek (1 entry)", cpu_peek, mem_peek);
     println!("{}", "-".repeat(60));
     println!();

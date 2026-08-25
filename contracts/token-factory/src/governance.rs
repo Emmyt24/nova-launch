@@ -296,7 +296,9 @@ fn compute_adjusted_quorum(
     let avg_percent = avg_bps / 100;
 
     // Clamp to configured bounds.
-    let adjusted = avg_percent.max(config.min_quorum_percent).min(config.max_quorum_percent);
+    let adjusted = avg_percent
+        .max(config.min_quorum_percent)
+        .min(config.max_quorum_percent);
     Ok(adjusted)
 }
 
@@ -555,7 +557,9 @@ mod tests {
     fn test_initialize_governance_invalid_quorum() {
         let (env, _, contract_id) = setup();
 
-        let result = env.as_contract(&contract_id, || initialize_governance(&env, Some(101), Some(50)));
+        let result = env.as_contract(&contract_id, || {
+            initialize_governance(&env, Some(101), Some(50))
+        });
         assert_eq!(result, Err(Error::InvalidParameters));
     }
 
@@ -563,7 +567,9 @@ mod tests {
     fn test_initialize_governance_invalid_approval() {
         let (env, _, contract_id) = setup();
 
-        let result = env.as_contract(&contract_id, || initialize_governance(&env, Some(50), Some(101)));
+        let result = env.as_contract(&contract_id, || {
+            initialize_governance(&env, Some(50), Some(101))
+        });
         assert_eq!(result, Err(Error::InvalidParameters));
     }
 

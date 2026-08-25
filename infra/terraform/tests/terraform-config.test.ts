@@ -59,6 +59,8 @@ describe("Required file structure", () => {
     "alb",
     "ecs",
     "secrets",
+    "waf",
+    "ecs-blue-green",
   ];
 
   const MODULE_FILES = ["main.tf", "variables.tf", "outputs.tf"];
@@ -553,6 +555,70 @@ describe("Module security properties", () => {
 
     it("uses lifecycle ignore_changes to prevent overwriting rotated secrets", () => {
       expect(secretsMain).toContain("ignore_changes = [secret_string]");
+    });
+  });
+
+  describe("WAF module", () => {
+    let wafMain: string | null;
+
+    beforeAll(() => {
+      wafMain = readFile(tfRoot("modules", "waf", "main.tf"));
+    });
+
+    it("uses REGIONAL scope for ALB association", () => {
+      expect(wafMain).toContain('scope       = "REGIONAL"');
+    });
+
+    it("includes AWSManagedRulesCommonRuleSet", () => {
+      expect(wafMain).toContain('name        = "AWSManagedRulesCommonRuleSet"');
+    });
+
+    it("includes AWSManagedRulesKnownBadInputsRuleSet", () => {
+      expect(wafMain).toContain('name        = "AWSManagedRulesKnownBadInputsRuleSet"');
+    });
+
+    it("includes AWSManagedRulesSQLiRuleSet", () => {
+      expect(wafMain).toContain('name        = "AWSManagedRulesSQLiRuleSet"');
+    });
+
+    it("includes AWSManagedRulesAmazonIpReputationList", () => {
+      expect(wafMain).toContain('name        = "AWSManagedRulesAmazonIpReputationList"');
+    });
+
+    it("redacts authorization header from WAF logs", () => {
+      expect(wafMain).toContain('name = "authorization"');
+    });
+
+    it("redacts cookie header from WAF logs", () => {
+      expect(wafMain).toContain('name = "cookie"');
+    });
+
+    it("rate-limit rule uses IP aggregate key", () => {
+      expect(wafMain).toContain('aggregate_key_type = "IP"');
+    });
+  });
+
+  describe("ECS blue-green module", () => {
+    let ecsBgMain: string | null;
+
+    beforeAll(() => {
+      ecsBgMain = readFile(tfRoot("modules", "ecs-blue-green", "main.tf"));
+    });
+
+    it("backend container runs as non-root user 1001", () => {
+      expect(ecsBgMain).toContain('user = "1001"');
+    });
+
+    it("blue service has deployment circuit breaker with rollback", () => {
+      expect(ecsBgMain).toContain("deployment_circuit_breaker { enable = true; rollback = true }");
+    });
+
+    it("green service has deployment circuit breaker with rollback", () => {
+      expect(ecsBgMain).toContain("deployment_circuit_breaker { enable = true; rollback = true }");
+    });
+
+    it("green slot starts with desired_count = 0", () => {
+      expect(ecsBgMain).toContain("desired_count   = 0   # Inactive at creation; activated by deploy script");
     });
   });
 

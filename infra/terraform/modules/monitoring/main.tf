@@ -28,7 +28,12 @@ terraform {
 }
 
 locals {
-  name_prefix = "${var.project}-${var.environment}"
+  name_prefix      = "${var.project}-${var.environment}"
+  alarm_email_list = flatten([
+    var.alarm_email != "" ? [var.alarm_email] : [],
+    var.alarm_emails,
+  ])
+  unique_alarm_emails = toset(local.alarm_email_list)
 }
 
 # ---------------------------------------------------------------------------
@@ -63,13 +68,13 @@ resource "aws_sns_topic_policy" "alarms" {
   })
 }
 
-# Email subscription (optional — only created when email is provided)
+# Email subscription (optional — only created when email(s) are provided)
 resource "aws_sns_topic_subscription" "email" {
-  count = var.alarm_email != "" ? 1 : 0
+  for_each = local.unique_alarm_emails
 
   topic_arn = aws_sns_topic.alarms.arn
   protocol  = "email"
-  endpoint  = var.alarm_email
+  endpoint  = each.value
 }
 
 # ---------------------------------------------------------------------------

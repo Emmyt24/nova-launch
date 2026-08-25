@@ -29,6 +29,12 @@ variable "alarm_email" {
   default     = ""
 }
 
+variable "alarm_emails" {
+  description = "List of email addresses to receive CloudWatch alarm notifications. Use this for multiple subscribers."
+  type        = list(string)
+  default     = []
+}
+
 variable "alb_arn_suffix" {
   description = "ALB ARN suffix (the part after 'app/') used in CloudWatch dimensions"
   type        = string

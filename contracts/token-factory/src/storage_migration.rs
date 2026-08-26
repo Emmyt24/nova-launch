@@ -94,10 +94,19 @@ pub fn migrate(env: &Env, admin: Address) -> Result<(), Error> {
         return Err(Error::StorageMigrationAlreadyRun);
     }
 
-    // Perform migration from v1 to v2
-    // Add your migration logic here based on what changed in the schema
-    // Example: migrate_token_data_format(env);
-    //          migrate_governance_data(env);
+    // v1 to v2 migration: version-marker-only bump
+    //
+    // No persistent data transformations are required for this migration.
+    // This contract has not undergone any schema changes between v1 and v2 —
+    // v1 was the initial schema version, and all subsequent features have
+    // been added as new storage keys (DataKey enum variants), not by changing
+    // existing key layouts. As a result, existing v1 data remains valid as-is
+    // in v2, and no row-by-row transformation is necessary.
+    //
+    // If a future version *does* require schema changes (e.g. renaming, retyping,
+    // or restructuring a DataKey or its value), implement the transformation
+    // logic here and add unit tests (`test_v1_to_v2_data_preservation`) to ensure
+    // the transformation preserves data integrity across specific field changes.
 
     // Update version marker
     set_storage_version(env, CURRENT_SCHEMA_VERSION);
@@ -138,13 +147,10 @@ pub fn migrate_dry_run(env: &Env, admin: Address) -> Result<DryRunDiff, Error> {
     }
 
     // Compute migration changes (in dry-run mode, no writes)
-    // This would be the same logic as migrate(), but we collect changes into a report
-    // and return them without persisting to storage.
-
-    // For v1->v2, we would analyze what changes would occur
-    // Add your dry-run logic here that mirrors the actual migration logic
-    // but collects results in a summary instead of writing to storage
-    let summary = soroban_sdk::Bytes::new(env);
+    // v1->v2 is a version-marker-only bump with no data transformation required.
+    // All existing storage keys remain valid and unchanged.
+    let summary_text = "v1-to-v2: version bump only, no data transformation required";
+    let summary = soroban_sdk::Bytes::from_slice(env, summary_text.as_bytes());
 
     Ok(DryRunDiff {
         old_version,

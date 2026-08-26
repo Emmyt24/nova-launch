@@ -280,5 +280,11 @@ resource "aws_cloudwatch_metric_alarm" "waf_blocked_requests" {
     Rule   = "ALL"
   }
 
+  # Wire the alarm into the shared SNS alerting path when a topic ARN is
+  # supplied. An empty value disables notifications so the module still works
+  # standalone (e.g. isolated terraform plan runs).
+  alarm_actions = var.sns_topic_arn != "" ? [var.sns_topic_arn] : []
+  ok_actions    = var.sns_topic_arn != "" ? [var.sns_topic_arn] : []
+
   tags = var.tags
 }

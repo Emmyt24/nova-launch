@@ -29,6 +29,12 @@ npm run deploy
 # Deploy to mainnet
 npm run deploy -- --network mainnet
 
+# Deploy to multiple regions (testnet)
+npm run deploy:multi-region
+
+# Deploy to multiple regions (mainnet)
+npm run deploy:multi-region -- --network mainnet
+
 # Verify deployment
 npm run verify
 ```
@@ -87,6 +93,18 @@ Options:
   --help, -h                   Show help message
 ```
 
+#### Multi-Region Deploy Command
+
+```bash
+npm run deploy:multi-region -- [options]
+
+Options:
+  --network <testnet|mainnet>  Target network (default: testnet)
+  --sequential                 Deploy regions sequentially (default: parallel)
+  --regions <id,id,...>        Comma-separated region IDs to include
+  --help, -h                   Show help message
+```
+
 ## Advanced Usage
 
 ### Custom Fee Configuration
@@ -118,6 +136,103 @@ npm run deploy -- --network mainnet
 npm run verify -- \
   --contract-id CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
   --network testnet
+```
+
+## Multi-Region Deployment
+
+Nova Launch supports geo-distributed deployments across multiple Stellar endpoint regions. A "region" corresponds to a specific Horizon REST and Soroban RPC endpoint pair. Deploying across multiple regions enables geo-distributed read traffic and redundancy while sharing the same underlying ledger state.
+
+The multi-region deployment workflow is driven by `deployMultiRegion.ts` (`npm run deploy:multi-region`) and orchestrated by `multiRegionOrchestrator.ts`.
+
+### Relationship to Single-Region Deployment
+
+While the single-region `npm run deploy` command deploys to a single endpoint configured via local `.env`, `npm run deploy:multi-region`:
+1. **Reuses Orchestrator Core**: Reuses `DeploymentOrchestrator` under the hood for each configured region, ensuring consistent deployment, initialization, and verification logic.
+2. **Parallel or Sequential Execution**: Supports deploying across all regions concurrently in parallel (default) or sequentially (`--sequential`).
+3. **Partial Failure Resilience**: Employs a fail-partial strategy where a failure in one region does not abort deployments to other regions.
+4. **Incremental Registry Updates**: Atomically updates the centralized `multi-region-deployments.json` registry after each successful region deployment.
+5. **WASM Hash Consistency**: Verifies WASM hash consistency across all successful region deployments to detect any race conditions or mismatched build artifacts.
+
+### Built-in Region Presets
+
+Predefined presets are defined in `scripts/deployment/multiRegionTypes.ts`:
+
+#### Testnet Regions (`TESTNET_REGIONS`)
+- **`testnet-primary`**: Testnet Primary (SDF)
+  - Horizon URL: `https://horizon-testnet.stellar.org`
+  - Soroban RPC URL: `https://soroban-testnet.stellar.org`
+  - Admin / Treasury Keys: `admin` / `treasury`
+  - Base / Metadata Fees: `70000000` / `30000000` stroops
+  - Environment File: `../../.env.testnet`
+
+#### Mainnet Regions (`MAINNET_REGIONS`)
+- **`mainnet-us-east`**: Mainnet US-East (SDF)
+  - Horizon URL: `https://horizon.stellar.org`
+  - Soroban RPC URL: `https://soroban-mainnet.stellar.org`
+  - Admin / Treasury Keys: `admin-mainnet` / `treasury-mainnet`
+  - Environment File: `../../.env.mainnet`
+- **`mainnet-eu-west`**: Mainnet EU-West (Lobstr)
+  - Horizon URL: `https://horizon.stellar.lobstr.co`
+  - Soroban RPC URL: `https://rpc.stellar.lobstr.co`
+  - Admin / Treasury Keys: `admin-mainnet` / `treasury-mainnet`
+  - Environment File: `../../.env.mainnet.eu`
+- **`mainnet-ap-south`**: Mainnet AP-South (SatoshiPay)
+  - Horizon URL: `https://stellar-horizon.satoshipay.io`
+  - Soroban RPC URL: `https://soroban-mainnet.stellar.org`
+  - Admin / Treasury Keys: `admin-mainnet` / `treasury-mainnet`
+  - Environment File: `../../.env.mainnet.ap`
+
+### Adding a New Region (`RegionConfig`)
+
+To configure additional deployment regions, contributors can define objects implementing the `RegionConfig` interface:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Unique region identifier (e.g. `"mainnet-us-east"`, `"eu-west"`). |
+| `label` | `string` | Human-readable label (e.g. `"Mainnet US-East (SDF)"`). |
+| `network` | `'testnet' \| 'mainnet'` | Stellar network this region belongs to. |
+| `horizonUrl` | `string` | Horizon REST API URL for this region. |
+| `sorobanRpcUrl` | `string` | Soroban RPC URL for this region. |
+| `adminKeyName` | `string` | Admin key name in the local Soroban keystore. |
+| `treasuryKeyName` | `string` | Treasury key name in the local Soroban keystore. |
+| `baseFee` | `number` | Base fee in stroops. |
+| `metadataFee` | `number` | Metadata fee in stroops. |
+| `wasmPath` | `string` | Path to the compiled contract WASM file. |
+| `envFile` | `string` | Path to the `.env` file to update after deployment. |
+
+### Deployment Registry (`multi-region-deployments.json`)
+
+Successful multi-region deployments are written to `multi-region-deployments.json` in the root repository directory.
+
+#### Purpose and Downstream Consumers
+- **Frontend & API Gateway**: Downstream consumers (frontend client applications, routing gateways, indexers) read `multi-region-deployments.json` to discover contract IDs, Horizon URLs, and RPC endpoints to route user traffic to the nearest healthy region.
+- **Atomic Persistence**: Entries are written per-region immediately upon deployment success (`writeRegistryEntry`), ensuring partial progress is preserved.
+
+#### Registry Format (`MultiRegionRegistry`)
+
+The registry maps region IDs to `RegionRegistry` entries:
+
+```json
+{
+  "mainnet-us-east": {
+    "deployedAt": "2026-01-01T00:00:00.000Z",
+    "regionId": "mainnet-us-east",
+    "network": "mainnet",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "horizonUrl": "https://horizon.stellar.org",
+    "sorobanRpcUrl": "https://soroban-mainnet.stellar.org",
+    "wasmHash": "mock-wasm-hash"
+  },
+  "mainnet-eu-west": {
+    "deployedAt": "2026-01-01T00:00:00.000Z",
+    "regionId": "mainnet-eu-west",
+    "network": "mainnet",
+    "contractId": "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "horizonUrl": "https://horizon.stellar.lobstr.co",
+    "sorobanRpcUrl": "https://rpc.stellar.lobstr.co",
+    "wasmHash": "mock-wasm-hash"
+  }
+}
 ```
 
 ## Deployment Process

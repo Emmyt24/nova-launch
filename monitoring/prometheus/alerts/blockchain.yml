@@ -25,6 +25,7 @@ groups:
           description: >
             RPC error rate is {{ $value | humanizePercentage }} on endpoint
             {{ $labels.endpoint }}. Stellar network may be degraded.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/blockchain-rpc-errors.md"
           dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
@@ -81,6 +82,7 @@ groups:
           description: >
             P95 ingestion lag exceeds 2 minutes for {{ $labels.event_type }}.
             Blockchain event pipeline may be stalled.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/blockchain-event-pipeline.md"
           dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
@@ -102,6 +104,7 @@ groups:
           description: >
             Token deployment failure rate is {{ $value | humanizePercentage }}
             on {{ $labels.network }}. Contract or network issue suspected.
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/blockchain-event-pipeline.md"
           dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------

@@ -67,6 +67,8 @@ Operational runbooks backing Prometheus alert rules:
 - **[slo-availability.md](./runbooks/slo-availability.md)** — Handling API Availability SLO fast and slow burn rate alerts (`SLOAvailabilityFastBurn`, `SLOAvailabilitySlowBurn`).
 - **[slo-latency.md](./runbooks/slo-latency.md)** — Investigating and mitigating API p95 latency SLO burn rate alerts (`SLOLatencyFastBurn`, `SLOLatencySlowBurn`).
 - **[slo-webhooks.md](./runbooks/slo-webhooks.md)** — Resolving webhook delivery success rate SLO burn rate alerts (`SLOWebhookDeliveryFastBurn`, `SLOWebhookDeliverySlowBurn`).
+- **[blockchain-rpc-errors.md](./runbooks/blockchain-rpc-errors.md)** — Investigating and resolving high Stellar/Soroban RPC error rates (`HighRPCErrorRate`).
+- **[blockchain-event-pipeline.md](./runbooks/blockchain-event-pipeline.md)** — Mitigating event ingestion lag and token deployment failures (`CriticalEventIngestionLag`, `TokenDeploymentFailures`).
 
 ---
 

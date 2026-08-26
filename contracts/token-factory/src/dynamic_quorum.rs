@@ -288,11 +288,12 @@ pub fn check_and_trigger_reactive_recalculation(
     let pct_change = ((supply_changed as u128 * 100) / last_supply.unsigned_abs() as u128) as u32;
 
     if pct_change >= threshold_pct {
-        // Trigger immediate recalculation by recording a fresh participation snapshot
-        // that uses the current governance config as the new baseline
-        let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
-        let _ = record_participation(env, &admin, env.ledger().sequence() as u64, 50, 100)?;
-
+        // A large supply movement is not a real voting-participation
+        // observation, so it must never be fed into `record_participation`
+        // (that would inject a fabricated data point into the average
+        // `compute_effective_quorum` blends over). Just emit the trigger
+        // signal — `compute_effective_quorum` still recalculates against
+        // the existing, untouched snapshot history on every call.
         emit_reactive_recalculation_triggered(env, event_id, pct_change);
     }
 
@@ -386,7 +387,7 @@ mod tests {
     use super::*;
     use crate::{TokenFactory, TokenFactoryClient};
     use proptest::prelude::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::Address as _, Address, Env, FromVal, Symbol};
 
     fn setup(env: &Env) -> (TokenFactoryClient, Address, Address) {
         let contract_id = env.register_contract(None, TokenFactory);
@@ -731,13 +732,52 @@ mod tests {
         let new_supply = (initial_supply as f64 * 1.15) as i128;
         let before_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
 
+        let events_before = env.events().all().len();
         env.as_contract(&contract_id, || {
             check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
         });
 
         let after_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
-        // Should have recorded a new participation snapshot due to reactive trigger
-        assert!(after_count > before_count);
+        // The reactive trigger must NOT fabricate a participation snapshot (#1852).
+        assert_eq!(after_count, before_count);
+
+        // It still emits a distinct signal event for observers.
+        let events = env.events().all();
+        assert_eq!(events.len(), events_before + 1);
+        let (_contract, topics, _data) = events.get(events.len() - 1).unwrap();
+        let event_name = Symbol::from_val(&env, &topics.get(0).unwrap());
+        assert_eq!(event_name, symbol_short!("qrm_trig"));
+    }
+
+    #[test]
+    fn test_reactive_recalculation_does_not_skew_effective_quorum() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let initial_supply = 100_000_000i128;
+        env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, 10).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 1, initial_supply).unwrap()
+        });
+
+        // No real participation snapshots exist yet, so the effective quorum
+        // is just the clamped base quorum.
+        let before = env.as_contract(&contract_id, || compute_effective_quorum(&env));
+
+        // Trigger a large (>10%) supply change.
+        let new_supply = (initial_supply as f64 * 1.5) as i128;
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
+        });
+
+        // The fabricated 50% participation point must not have been injected:
+        // the effective quorum is unaffected by the trigger.
+        let after = env.as_contract(&contract_id, || compute_effective_quorum(&env));
+        assert_eq!(before, after);
+        assert_eq!(env.as_contract(&contract_id, || get_snapshot_count(&env)), 0);
     }
 
     #[test]

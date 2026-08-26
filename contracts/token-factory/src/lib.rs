@@ -977,6 +977,12 @@ impl TokenFactory {
         game_history::history_count(&env)
     }
 
+    /// Return the index of the oldest unpruned deployment history record.
+    /// Every index below this has been pruned.
+    pub fn history_first_live_index(env: Env) -> u64 {
+        game_history::history_first_live_index(&env)
+    }
+
     /// Retrieve a single deployment history record by its history index.
     ///
     /// Returns `None` if the index is out of range or has been pruned.

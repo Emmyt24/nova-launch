@@ -900,6 +900,9 @@ pub enum DataKey {
     // Game / deployment history
     HistoryCount,
     HistoryRecord(u64),
+    /// Index of the oldest unpruned history record. Query functions start
+    /// scanning here instead of 0 so they never rescan pruned indices.
+    HistoryFirstLiveIndex,
     // Referral system
     ReferralInfo(Address),
     ReferralCommissionRate,

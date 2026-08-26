@@ -50,7 +50,7 @@ export class AuthService {
       throw new BadRequestException("Invalid Stellar public key");
     }
 
-    const nonceValid = this.nonceService.consumeNonce(nonce, publicKey);
+    const nonceValid = await this.nonceService.consumeNonce(nonce, publicKey);
     if (!nonceValid) {
       throw new UnauthorizedException("Invalid or expired nonce");
     }

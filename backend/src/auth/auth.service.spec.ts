@@ -1,9 +1,9 @@
-import { Test, TestingModule } from "@nestjs/testing";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { UnauthorizedException, BadRequestException } from "@nestjs/common";
-import { AuthService } from "../auth.service";
-import { StellarSignatureService } from "../stellar-signature.service";
-import { NonceService } from "../nonce.service";
-import { TokenService } from "../token.service";
+import { AuthService } from "./auth.service";
+import { StellarSignatureService } from "./stellar-signature.service";
+import { NonceService } from "./nonce.service";
+import { TokenService } from "./token.service";
 
 const mockTokenPair = {
   accessToken: "access-token",
@@ -15,45 +15,39 @@ const mockTokenPair = {
 
 describe("AuthService", () => {
   let service: AuthService;
-  let stellarSig: jest.Mocked<StellarSignatureService>;
-  let nonceService: jest.Mocked<NonceService>;
-  let tokenService: jest.Mocked<TokenService>;
+  let stellarSig: {
+    isValidPublicKey: ReturnType<typeof vi.fn>;
+    verifySignature: ReturnType<typeof vi.fn>;
+  };
+  let nonceService: {
+    generateNonce: ReturnType<typeof vi.fn>;
+    consumeNonce: ReturnType<typeof vi.fn>;
+  };
+  let tokenService: {
+    generateTokenPair: ReturnType<typeof vi.fn>;
+    verifyRefreshToken: ReturnType<typeof vi.fn>;
+    revokeToken: ReturnType<typeof vi.fn>;
+  };
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        AuthService,
-        {
-          provide: StellarSignatureService,
-          useValue: {
-            isValidPublicKey: jest.fn(),
-            verifySignature: jest.fn(),
-          },
-        },
-        {
-          provide: NonceService,
-          useValue: {
-            generateNonce: jest.fn(),
-            consumeNonce: jest.fn(),
-          },
-        },
-        {
-          provide: TokenService,
-          useValue: {
-            generateTokenPair: jest.fn(),
-            verifyRefreshToken: jest.fn(),
-            revokeToken: jest.fn(),
-          },
-        },
-      ],
-    }).compile();
-
-    service = module.get(AuthService);
-    stellarSig = module.get(
-      StellarSignatureService
-    ) as jest.Mocked<StellarSignatureService>;
-    nonceService = module.get(NonceService) as jest.Mocked<NonceService>;
-    tokenService = module.get(TokenService) as jest.Mocked<TokenService>;
+  beforeEach(() => {
+    stellarSig = {
+      isValidPublicKey: vi.fn(),
+      verifySignature: vi.fn(),
+    };
+    nonceService = {
+      generateNonce: vi.fn(),
+      consumeNonce: vi.fn(),
+    };
+    tokenService = {
+      generateTokenPair: vi.fn(),
+      verifyRefreshToken: vi.fn(),
+      revokeToken: vi.fn(),
+    };
+    service = new AuthService(
+      stellarSig as unknown as StellarSignatureService,
+      nonceService as unknown as NonceService,
+      tokenService as unknown as TokenService
+    );
   });
 
   describe("requestNonce", () => {
@@ -92,7 +86,7 @@ describe("AuthService", () => {
 
     it("should return token pair on valid authentication", async () => {
       stellarSig.isValidPublicKey.mockReturnValue(true);
-      nonceService.consumeNonce.mockReturnValue(true);
+      nonceService.consumeNonce.mockResolvedValue(true);
       stellarSig.verifySignature.mockReturnValue({
         valid: true,
         publicKey: "GTEST",
@@ -115,7 +109,7 @@ describe("AuthService", () => {
 
     it("should throw UnauthorizedException for invalid nonce", async () => {
       stellarSig.isValidPublicKey.mockReturnValue(true);
-      nonceService.consumeNonce.mockReturnValue(false);
+      nonceService.consumeNonce.mockResolvedValue(false);
 
       await expect(service.authenticateWithWallet(validDto)).rejects.toThrow(
         UnauthorizedException
@@ -125,7 +119,7 @@ describe("AuthService", () => {
 
     it("should throw UnauthorizedException for invalid signature", async () => {
       stellarSig.isValidPublicKey.mockReturnValue(true);
-      nonceService.consumeNonce.mockReturnValue(true);
+      nonceService.consumeNonce.mockResolvedValue(true);
       stellarSig.verifySignature.mockReturnValue({
         valid: false,
         publicKey: "GTEST",
@@ -147,7 +141,7 @@ describe("AuthService", () => {
   });
 
   describe("refreshTokens", () => {
-    it("should generate new token pair and revoke old refresh token", () => {
+    it("should generate new token pair and revoke old refresh token", async () => {
       const refreshPayload = {
         sub: "GTEST",
         walletAddress: "GTEST",
@@ -157,7 +151,7 @@ describe("AuthService", () => {
       tokenService.verifyRefreshToken.mockReturnValue(refreshPayload);
       tokenService.generateTokenPair.mockReturnValue(mockTokenPair);
 
-      const result = service.refreshTokens({ refreshToken: "old-token" });
+      const result = await service.refreshTokens({ refreshToken: "old-token" });
 
       expect(tokenService.revokeToken).toHaveBeenCalledWith("old-jti");
       expect(tokenService.generateTokenPair).toHaveBeenCalledWith("GTEST");

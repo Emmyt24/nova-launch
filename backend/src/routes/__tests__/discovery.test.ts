@@ -333,6 +333,16 @@ describe("GET /api/discover/tokens", () => {
       delete process.env.DISCOVERY_AGGREGATION_TIMEOUT_MS;
     }
   });
+
+  it("rejects crafted category/network values with SQL metacharacters via validation", async () => {
+    // The Zod enum schema must reject values containing SQL metacharacters
+    // before they ever reach the query layer.
+    const res = await request(app).get(
+      '/api/discover/tokens?q=test&category=\'OR%201=1--'
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
 });
 
 // ---------------------------------------------------------------------------

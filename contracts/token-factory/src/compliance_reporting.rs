@@ -319,6 +319,41 @@ pub fn get_jurisdiction_rules(env: &Env, jurisdiction: &String) -> Vec<Complianc
         .unwrap_or_else(|| Vec::new(env))
 }
 
+/// Assign the compliance jurisdiction that `mint`/`burn`/`admin_burn` enforce
+/// rules against for `token_address` (admin only).
+///
+/// This is the sole way a token's jurisdiction is set — it is never left to
+/// the caller of a balance-mutating operation to supply arbitrarily.
+///
+/// # Errors
+/// * `Error::Unauthorized` – Caller is not the admin.
+/// * `Error::TokenNotFound` – `token_address` is not a registered token.
+pub fn set_token_jurisdiction(
+    env: &Env,
+    admin: &Address,
+    token_address: Address,
+    jurisdiction: String,
+) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
+        return Err(Error::Unauthorized);
+    }
+
+    if storage::get_token_info_by_address(env, &token_address).is_none() {
+        return Err(Error::TokenNotFound);
+    }
+
+    storage::set_token_jurisdiction(env, &token_address, &jurisdiction);
+    Ok(())
+}
+
+/// Return the compliance jurisdiction currently assigned to `token_address`
+/// (the default jurisdiction if none has been explicitly assigned).
+pub fn get_token_jurisdiction(env: &Env, token_address: &Address) -> String {
+    storage::get_token_jurisdiction(env, token_address)
+}
+
 /// Evaluate every compliance rule registered for `jurisdiction` against
 /// `params`, emitting a `ComplianceCheckPassed`/`ComplianceCheckFailed` event
 /// and rejecting the transfer if any rule fails.
@@ -928,6 +963,115 @@ mod tests {
             check_compliance(&env, jurisdiction, params).unwrap();
         });
         assert_eq!(env.events().all().len(), before + 1);
+    }
+
+    // ── Enforcement on real token operations (#1853) ──────────────────────────
+
+    fn create_test_token(env: &Env, client: &TokenFactoryClient, creator: &Address) -> Address {
+        client.create_token(
+            creator,
+            &soroban_sdk::String::from_str(env, "Test"),
+            &soroban_sdk::String::from_str(env, "TST"),
+            &7u32,
+            &1_000_000i128,
+            &None,
+            &1_000_000i128,
+        )
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `mint`, not just the standalone `check_compliance` query.
+    #[test]
+    fn test_transfers_suspended_blocks_mint() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        let token_address = create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+        let recipient = Address::generate(&env);
+
+        let jurisdiction =
+            soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION);
+        client.add_compliance_rule(&admin, &jurisdiction, &ComplianceRuleType::TransfersSuspended);
+
+        let balance_before = storage::get_balance(&env, token_index, &recipient);
+        let result = client.try_mint(&admin, &token_index, &recipient, &1_000i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+
+        // No value moved: the rejected mint must not have mutated balances.
+        assert_eq!(storage::get_balance(&env, token_index, &recipient), balance_before);
+        let _ = token_address;
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `burn`, not just the standalone `check_compliance` query.
+    #[test]
+    fn test_transfers_suspended_blocks_burn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+
+        let jurisdiction =
+            soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION);
+        client.add_compliance_rule(&admin, &jurisdiction, &ComplianceRuleType::TransfersSuspended);
+
+        let balance_before = storage::get_balance(&env, token_index, &admin);
+        let result = client.try_burn(&admin, &token_index, &100i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+
+        // No value moved: the rejected burn must not have mutated balances/supply.
+        assert_eq!(storage::get_balance(&env, token_index, &admin), balance_before);
+    }
+
+    /// Mint succeeds normally once the blocking rule is removed, and a rule
+    /// registered under a *different* jurisdiction never affects this token.
+    #[test]
+    fn test_mint_unaffected_by_other_jurisdiction_rule() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+        let recipient = Address::generate(&env);
+
+        // A TransfersSuspended rule for an unrelated jurisdiction must not
+        // affect this token, which is assigned the default jurisdiction.
+        client.add_compliance_rule(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "EU"),
+            &ComplianceRuleType::TransfersSuspended,
+        );
+
+        client.mint(&admin, &token_index, &recipient, &1_000i128);
+        assert_eq!(storage::get_balance(&env, token_index, &recipient), 1_000i128);
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `admin_burn` as well.
+    #[test]
+    fn test_transfers_suspended_blocks_admin_burn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+
+        client.add_compliance_rule(
+            &admin,
+            &soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION),
+            &ComplianceRuleType::TransfersSuspended,
+        );
+
+        let balance_before = storage::get_balance(&env, token_index, &admin);
+        let result = client.try_admin_burn(&admin, &token_index, &admin, &100i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+        assert_eq!(storage::get_balance(&env, token_index, &admin), balance_before);
     }
 }
 

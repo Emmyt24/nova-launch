@@ -1003,6 +1003,9 @@ pub enum DataKey {
     NextStakingPoolId,
     /// A user's stake within a pool: (pool_id, staker) → StakeInfo
     UserStake(u64, Address),
+    /// Compliance jurisdiction assigned to a token, keyed by token address.
+    /// Falls back to a default jurisdiction when unset (#1853).
+    TokenJurisdiction(Address),
 }
 
 /// A point-in-time record of a token holder's balance.

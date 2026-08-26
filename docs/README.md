@@ -58,6 +58,18 @@
 
 ---
 
+## Incident Response & Runbooks
+
+Operational runbooks backing Prometheus alert rules:
+
+- **[high-error-rate.md](./runbooks/high-error-rate.md)** — Diagnostic and recovery steps for elevated HTTP 5xx error rates (`HighErrorRate`).
+- **[backend-down.md](./runbooks/backend-down.md)** — Recovery procedures when the backend service is unreachable (`BackendDown`).
+- **[slo-availability.md](./runbooks/slo-availability.md)** — Handling API Availability SLO fast and slow burn rate alerts (`SLOAvailabilityFastBurn`, `SLOAvailabilitySlowBurn`).
+- **[slo-latency.md](./runbooks/slo-latency.md)** — Investigating and mitigating API p95 latency SLO burn rate alerts (`SLOLatencyFastBurn`, `SLOLatencySlowBurn`).
+- **[slo-webhooks.md](./runbooks/slo-webhooks.md)** — Resolving webhook delivery success rate SLO burn rate alerts (`SLOWebhookDeliveryFastBurn`, `SLOWebhookDeliverySlowBurn`).
+
+---
+
 ## Quick Links
 
 ### For Developers

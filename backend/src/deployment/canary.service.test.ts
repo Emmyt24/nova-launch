@@ -247,4 +247,48 @@ describe('CanaryDeploymentService', () => {
     expect(svc.getWeight()).toBe(0);
     expect(rollbackListener).toHaveBeenCalledOnce();
   });
+
+  // ── race condition: auto-promote vs rollback ──────────────────────────────
+
+  it('prevents stage-transition race: metrics rollback during auto-promote', async () => {
+    await svc.start('v2', 'v1');
+
+    const rollbackListener = vi.fn();
+    svc.on('deployment.canary.rolled_back', rollbackListener);
+
+    // Simulate the race: metrics evaluation triggers rollback while observation timer
+    // is simultaneously firing (bake time elapsed, attempting auto-promote).
+    // Both methods check stage and transitioning guard; only one should succeed.
+
+    // Advance to near the end of bake time
+    vi.advanceTimersByTime(59_500);
+
+    // Start evaluateMetrics task (will attempt rollback)
+    const metricsTask = svc.evaluateMetrics({
+      ...healthyMetrics(),
+      errorRate: 10, // exceeds threshold
+    });
+
+    // Immediately advance past bake time to trigger auto-promote
+    vi.advanceTimersByTime(1_500);
+    await vi.runAllTimersAsync();
+
+    // Wait for metrics evaluation to complete
+    await metricsTask;
+
+    // One transition should have succeeded; the other should have bailed out.
+    // Either outcome is acceptable as long as stage is consistent.
+    const state = svc.getState();
+    expect(['rolled_back', 'complete']).toContain(state.stage);
+
+    if (state.stage === 'rolled_back') {
+      expect(state.rollbackReason).toContain('error rate');
+      expect(svc.getWeight()).toBe(0);
+      expect(rollbackListener).toHaveBeenCalledOnce();
+    } else {
+      // If promote won, make sure it completed cleanly (no partial state)
+      expect(state.stage).toBe('complete');
+      expect(rollbackListener).not.toHaveBeenCalled();
+    }
+  });
 });

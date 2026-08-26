@@ -310,15 +310,18 @@ describe("edge cases", () => {
     delete process.env.JWT_SECRET;
   });
 
-  it("falls back to dev-secret-key when no secret is configured", () => {
+  it("throws when no JWT secret is configured (no fallback to hardcoded value)", () => {
     const saved = process.env.JWT_SECRET;
     delete process.env.JWT_SECRET;
-    // Token signed with the hardcoded fallback
-    const token = jwt.sign({ tenantId: "fallback-tenant" }, "dev-secret-key");
-    const req = mockReq({ headers: { authorization: `Bearer ${token}` } });
-    const next = vi.fn();
-    tenantMiddleware()(req, mockRes(), next);
-    expect(req.tenant?.id).toBe("fallback-tenant");
+    expect(() => tenantMiddleware()).toThrow(
+      /JWT secret is required/i
+    );
     if (saved !== undefined) process.env.JWT_SECRET = saved;
+  });
+
+  it("throws immediately during middleware construction when jwtSecret is missing", () => {
+    expect(() => tenantMiddleware({})).toThrow(
+      /JWT secret is required/i
+    );
   });
 });

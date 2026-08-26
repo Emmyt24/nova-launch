@@ -31,8 +31,9 @@ const REPLAY_TOLERANCE_SECONDS = 300;
  * Returns an Express middleware that verifies the inbound HMAC signature.
  *
  * @param getSecret  Async function that receives the request and returns the
- *                   shared secret to verify against, or null/undefined to skip
- *                   verification (e.g. when the subscription is not found).
+ *                   shared secret to verify against. If null/undefined is returned
+ *                   (e.g., subscription not found), verification still fails and
+ *                   the middleware returns 401 — secrets are always required.
  * @param replayToleranceSeconds Optional custom replay window; defaults to 300s (5 min)
  */
 export function verifyInboundWebhookSignature(
@@ -40,37 +41,49 @@ export function verifyInboundWebhookSignature(
   replayToleranceSeconds: number = REPLAY_TOLERANCE_SECONDS
 ): (req: Request, res: Response, next: NextFunction) => Promise<void> {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const signatureHeader =
-      req.headers[WEBHOOK_SIGNATURE_HEADER] as string | undefined;
+    try {
+      const signatureHeader =
+        req.headers[WEBHOOK_SIGNATURE_HEADER] as string | undefined;
 
-    // Raw body must be available (set by express.raw() or similar)
-    const rawBody: string =
-      (req as any).rawBody ??
-      (typeof req.body === "string"
-        ? req.body
-        : JSON.stringify(req.body));
+      // Raw body must be available (set by express.raw() or similar)
+      const rawBody: string =
+        (req as any).rawBody ??
+        (Buffer.isBuffer(req.body)
+          ? req.body.toString('utf-8')
+          : typeof req.body === "string"
+          ? req.body
+          : JSON.stringify(req.body));
 
-    const secret = await getSecret(req);
+      const secret = await getSecret(req);
 
-    // Perform all checks (including a dummy verify with empty secret if secret is missing)
-    // so timing is consistent regardless of which check fails. This prevents attackers
-    // from using response time to learn whether the header was missing/malformed vs. secret
-    // was wrong vs. signature was invalid.
-    const valid = verifyWebhookSignature(
-      rawBody,
-      signatureHeader ?? "",
-      secret ?? "",
-      replayToleranceSeconds
-    );
+      // Always require a secret: if getSecret returns null/undefined (e.g., subscription not found),
+      // verification fails. We never skip verification based on missing secrets because:
+      // 1. It prevents confusion about the intended behavior (skip verification is risky)
+      // 2. Missing subscription should be handled upstream (404 from a route handler)
+      // 3. We still perform a constant-time dummy verify with an empty secret to maintain
+      //    timing consistency, preventing attackers from learning whether the failure is due
+      //    to a missing secret vs. an invalid signature.
+      const valid = verifyWebhookSignature(
+        rawBody,
+        signatureHeader ?? "",
+        secret ?? "",
+        replayToleranceSeconds
+      );
 
-    if (!valid) {
-      res.status(401).json({
+      if (!valid) {
+        res.status(401).json({
+          success: false,
+          error: "Unauthorized",
+        });
+        return;
+      }
+
+      next();
+    } catch (err) {
+      res.status(500).json({
         success: false,
-        error: "Unauthorized",
+        error: "Internal server error",
       });
-      return;
     }
-
-    next();
   };
 }

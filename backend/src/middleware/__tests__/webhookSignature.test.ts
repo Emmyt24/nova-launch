@@ -47,7 +47,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
       expect(res.body.success).toBe(true);
     });
 
-    it("allows requests when secret lookup returns null (no verification needed)", async () => {
+    it("rejects requests when secret lookup returns null (subscription not found)", async () => {
       const payload = JSON.stringify({ test: "data" });
 
       app.post(
@@ -62,8 +62,9 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .set("Content-Type", "application/json")
         .send(payload);
 
-      // null secret results in unauthorized
+      // null secret (missing subscription) always results in 401
       expect(res.status).toBe(401);
+      expect(res.body.error).toBe("Unauthorized");
     });
   });
 

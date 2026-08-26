@@ -23,7 +23,7 @@ export interface IIdempotencyStore {
   get(key: string): StoredResult | undefined | Promise<StoredResult | undefined>;
   complete(key: string, statusCode: number, body: unknown): void | Promise<void>;
   isInFlight(key: string): boolean | Promise<boolean>;
-  markInFlight(key: string): void | Promise<void>;
+  markInFlight(key: string): boolean | Promise<boolean>;
   clearInFlight(key: string): void | Promise<void>;
   delete(key: string): void | Promise<void>;
   purgeExpired(): void | Promise<void>;
@@ -65,8 +65,10 @@ export class IdempotencyStore implements IIdempotencyStore {
     return this.inFlight.has(key);
   }
 
-  markInFlight(key: string): void {
+  markInFlight(key: string): boolean {
+    if (this.inFlight.has(key)) return false;
     this.inFlight.add(key);
+    return true;
   }
 
   clearInFlight(key: string): void {
@@ -134,15 +136,17 @@ export class RedisIdempotencyStore implements IIdempotencyStore {
    * Atomically acquires an in-flight lock using SETNX.
    * Returns true if the lock was acquired (key was not already in-flight).
    */
-  async markInFlight(key: string): Promise<void> {
+  async markInFlight(key: string): Promise<boolean> {
     // SETNX: set if not exists; EX for safety expiry (same as result window)
-    await this.redis.set(
+    const result = await this.redis.set(
       this.IN_FLIGHT_PREFIX + key,
       "1",
       "EX",
       this.ttlSeconds,
       "NX",
     );
+    // SET with NX returns "OK" on success, null if key already existed
+    return result === "OK";
   }
 
   async clearInFlight(key: string): Promise<void> {
@@ -223,17 +227,14 @@ export function createIdempotencyMiddleware(
         return;
       }
 
-      // Check if the key is in-flight
-      const inFlight = await store.isInFlight(key);
-      if (inFlight) {
+      // Atomically mark as in-flight; returns true if lock acquired, false if already in-flight
+      const acquired = await store.markInFlight(key);
+      if (!acquired) {
         res.setHeader(IDEMPOTENCY_HEADER, key);
         res.setHeader("Idempotency-Status", "processing");
         res.status(409).json({ status: "PROCESSING", requestId: key });
         return;
       }
-
-      // Mark as in-flight before handing off to the handler
-      await store.markInFlight(key);
 
       // Intercept res.json to capture the response for future replays
       const originalJson = res.json.bind(res) as (body: unknown) => Response;

@@ -1472,6 +1472,21 @@ pub fn emit_asset_redeemed(
     env.events().publish(topics, data);
 }
 
+/// Emit fractional shares transferred event
+pub fn emit_shares_transferred(
+    env: &Env,
+    vault_id: u64,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    let topics = (symbol_short!("frac_xfr"), vault_id, from.clone());
+
+    let data = (to.clone(), amount);
+
+    env.events().publish(topics, data);
+}
+
 /// Emit batch settle (batch mint) event.
 ///
 /// Published when `batch_settle` successfully mints tokens to multiple recipients.
@@ -2022,4 +2037,61 @@ pub fn emit_unstaked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
 pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128) {
     env.events()
         .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
+}
+
+// ── Oracle price feed events ────────────────────────────────────────────────
+
+/// Emitted when the admin (re)configures the oracle's max staleness window.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_cfg1
+pub fn emit_oracle_configured(env: &Env, admin: &Address, max_age_seconds: u64) {
+    env.events().publish(
+        (symbol_short!("orc_cfg1"),),
+        (admin.clone(), max_age_seconds),
+    );
+}
+
+/// Emitted when the admin authorizes or deauthorizes an oracle price source.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_src1
+pub fn emit_oracle_source_authorized(
+    env: &Env,
+    admin: &Address,
+    source: &Address,
+    authorized: bool,
+) {
+    env.events().publish(
+        (symbol_short!("orc_src1"),),
+        (admin.clone(), source.clone(), authorized),
+    );
+}
+
+/// Emitted when an authorized source submits a new price for `asset`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: orc_pr1
+///
+/// **Topics** (indexed):
+/// - Event name: "orc_pr1"
+/// - asset: Address - The asset the price was submitted for
+///
+/// **Payload** (non-indexed):
+/// - source: Address - The authorized source that submitted the price
+/// - price: i128 - The raw submitted price
+/// - decimals: u32 - Decimal places in `price`
+/// - timestamp: u64 - Ledger timestamp the price was recorded at
+pub fn emit_price_submitted(
+    env: &Env,
+    asset: &Address,
+    source: &Address,
+    price: i128,
+    decimals: u32,
+    timestamp: u64,
+) {
+    env.events().publish(
+        (symbol_short!("orc_pr1"), asset.clone()),
+        (source.clone(), price, decimals, timestamp),
+    );
 }

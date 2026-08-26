@@ -1692,17 +1692,18 @@ pub fn get_valid_proof(env: &Env, milestone_hash: &soroban_sdk::BytesN<32>) -> O
         .get(&key)
 }
 
-/// Register an authorized oracle for milestone verification
-pub fn set_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+/// Register an authorized oracle for milestone verification, recording the
+/// ed25519 public key that its submitted proofs must be signed with.
+pub fn set_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes, public_key: &soroban_sdk::BytesN<32>) {
     use soroban_sdk::Symbol;
     let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
     env.storage()
         .instance()
-        .set(&key, &true);
+        .set(&key, public_key);
 }
 
-/// Check if an oracle is authorized for milestone verification
-pub fn get_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) -> Option<bool> {
+/// Get the ed25519 public key registered for an authorized oracle, if any.
+pub fn get_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) -> Option<soroban_sdk::BytesN<32>> {
     use soroban_sdk::Symbol;
     let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
     env.storage()
@@ -2210,6 +2211,122 @@ pub fn clear_settle_continuation(env: &Env, creator: &Address) {
     env.storage()
         .persistent()
         .remove(&DataKey::SettleContinuation(creator.clone()));
+}
+
+// ── Oracle price feed storage ─────────────────────────────────────────────
+
+/// Get the global oracle configuration, if it has been set via `configure_oracle`.
+pub fn get_oracle_config(env: &Env) -> Option<crate::types::OracleConfig> {
+    env.storage().instance().get(&DataKey::OracleConfig)
+}
+
+/// Set the global oracle configuration.
+pub fn set_oracle_config(env: &Env, config: &crate::types::OracleConfig) {
+    env.storage().instance().set(&DataKey::OracleConfig, config);
+}
+
+/// Returns `true` if `source` is authorized to submit oracle prices.
+pub fn is_oracle_source_authorized(env: &Env, source: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleAuthorizedSource(source.clone()))
+        .unwrap_or(false)
+}
+
+/// Authorize or deauthorize `source` as an oracle price submitter.
+pub fn set_oracle_source_authorized(env: &Env, source: &Address, authorized: bool) {
+    env.storage().instance().set(
+        &DataKey::OracleAuthorizedSource(source.clone()),
+        &authorized,
+    );
+}
+
+/// Get the latest submitted price for `asset`, if any.
+pub fn get_oracle_price(env: &Env, asset: &Address) -> Option<crate::types::PriceData> {
+    let key = DataKey::OraclePrice(asset.clone());
+    let val = env.storage().persistent().get(&key);
+    if val.is_some() {
+        bump_persistent(env, &key);
+    }
+    val
+}
+
+/// Store the latest submitted price for `asset`.
+pub fn set_oracle_price(env: &Env, asset: &Address, price: &crate::types::PriceData) {
+    let key = DataKey::OraclePrice(asset.clone());
+    env.storage().persistent().set(&key, price);
+    bump_persistent(env, &key);
+}
+
+// ── Fractionalization storage functions ─────────────────────────────
+
+/// Get a fractionalization vault record by its vault id.
+pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalVault(vault_id))
+}
+
+/// Persist a fractionalization vault record, keyed by its vault id.
+pub fn set_fractional_vault(env: &Env, vault: &crate::types::FractionalVault) {
+    let key = DataKey::FractionalVault(vault.id);
+    env.storage().persistent().set(&key, vault);
+    bump_persistent(env, &key);
+}
+
+/// Increment and return the next fractionalization vault id (starts at 1).
+pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
+    let count = env
+        .storage()
+        .instance()
+        .get(&DataKey::FractionalVaultCount)
+        .unwrap_or(0_u64);
+    let next = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::FractionalVaultCount, &next);
+    Ok(next)
+}
+
+/// Look up the vault id for a locked asset's identity, if it has ever been fractionalized.
+pub fn get_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AssetFractionalizationIndex(
+            asset_contract.clone(),
+            asset_id.clone(),
+        ))
+}
+
+/// Record which vault id a locked asset's identity maps to.
+pub fn set_asset_fractionalization_index(
+    env: &Env,
+    asset_contract: &Address,
+    asset_id: &soroban_sdk::BytesN<32>,
+    vault_id: u64,
+) {
+    let key = DataKey::AssetFractionalizationIndex(asset_contract.clone(), asset_id.clone());
+    env.storage().persistent().set(&key, &vault_id);
+    bump_persistent(env, &key);
+}
+
+/// Get a holder's outstanding fractional share balance for a vault.
+pub fn get_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FractionalShareBalance(vault_id, holder.clone()))
+        .unwrap_or(0)
+}
+
+/// Set a holder's outstanding fractional share balance for a vault.
+pub fn set_fractional_share_balance(env: &Env, vault_id: u64, holder: &Address, balance: i128) {
+    let key = DataKey::FractionalShareBalance(vault_id, holder.clone());
+    env.storage().persistent().set(&key, &balance);
+    bump_persistent(env, &key);
 }
 
 // ============================================================

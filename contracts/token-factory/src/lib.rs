@@ -64,6 +64,8 @@ mod proposal_queue_test;
 mod event_versions_test;
 #[cfg(test)]
 mod staking_integration_test;
+#[cfg(test)]
+mod oracle_integration_test;
 mod timelock;
 mod token_creation;
 mod treasury;
@@ -179,9 +181,10 @@ mod vault_balance_invariant_proptest;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
-    PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo, StreamPage,
-    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, FractionalVault,
+    FractionalizationParams, PaginationCursor, PreflightItemResult, PriceData, Reservation,
+    StakeInfo, StakingPool, StreamInfo, StreamPage, StreamParams, TokenCreationParams, TokenInfo,
+    TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -1112,30 +1115,12 @@ impl TokenFactory {
     // ═══════════════════════════════════════════════════════════════════════
     // Transfer Restriction Functions (Whitelist / Blacklist via Freeze)
     // ═══════════════════════════════════════════════════════════════════════
-
-    /// Enable or disable freeze (transfer restriction) capability for a token.
-    ///
-    /// When enabled, the token creator can freeze individual addresses, preventing
-    /// them from participating in transfers, burns, or mints (blacklist model).
-    /// When disabled, no new addresses can be frozen, but existing frozen state persists.
-    ///
-    /// # Arguments
-    /// * `token_address` - The token contract address
-    /// * `admin` - Token creator address (must authorize)
-    /// * `enabled` - `true` to enable freeze capability, `false` to disable
-    ///
-    /// # Errors
-    /// * `ContractPaused` - Contract is paused
-    /// * `TokenNotFound` - Token not found
-    /// * `Unauthorized` - Caller is not the token creator
-    pub fn set_freeze_enabled(
-        env: Env,
-        token_address: Address,
-        admin: Address,
-        enabled: bool,
-    ) -> Result<(), Error> {
-        freeze_functions::set_freeze_enabled(&env, &token_address, &admin, enabled)
-    }
+    //
+    // `freeze_enabled` is set once at token creation (see `create_token_with_freeze`
+    // below) and is immutable afterwards — mirroring `clawback_enabled`'s
+    // invariant. There is deliberately no `set_freeze_enabled` entry point:
+    // toggling it post-deployment would let a creator silently add freeze
+    // capability to a token advertised as freeze-free at launch.
 
     /// Freeze (blacklist) an address for a specific token.
     ///
@@ -1973,6 +1958,51 @@ impl TokenFactory {
             metadata_uri,
             fee_payment,
             clawback_enabled,
+        )
+    }
+
+    /// Deploy a token with opt-in freeze capability enabled at creation time.
+    ///
+    /// Identical to `create_token` except the `freeze_enabled` flag is set
+    /// at creation time and **cannot be changed afterwards** (immutability
+    /// invariant, mirroring `clawback_enabled`). A token deployed via plain
+    /// `create_token` always has `freeze_enabled: false` for its lifetime.
+    ///
+    /// # Arguments
+    /// * `creator`        - Address deploying the token (must authorize)
+    /// * `name`           - Token name
+    /// * `symbol`         - Token symbol
+    /// * `decimals`       - Decimal places
+    /// * `initial_supply` - Initial supply minted to `creator`
+    /// * `metadata_uri`   - Optional IPFS URI
+    /// * `fee_payment`    - Fee (>= base_fee + optional metadata_fee)
+    /// * `freeze_enabled` - `true` to allow the creator to freeze holder
+    ///   balances via `freeze_address`; immutable after creation
+    ///
+    /// # Errors
+    /// Same as `create_token`.
+    pub fn create_token_with_freeze(
+        env: Env,
+        creator: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        initial_supply: i128,
+        metadata_uri: Option<String>,
+        fee_payment: i128,
+        freeze_enabled: bool,
+    ) -> Result<Address, Error> {
+        token_creation::create_token_with_all_options(
+            &env,
+            creator,
+            name,
+            symbol,
+            decimals,
+            initial_supply,
+            metadata_uri,
+            fee_payment,
+            false,
+            freeze_enabled,
         )
     }
 
@@ -4475,6 +4505,128 @@ impl TokenFactory {
         staking::pending_rewards(&env, caller, pool_id)
     }
 
+    // ── Fractionalization entry points ──────────────────────────────────
+
+    /// Lock a unique asset (identified by `params.asset_contract` +
+    /// `params.asset_id`) and mint `params.total_supply` fractional
+    /// ownership shares. `owner` must hold and authorize transfer of the
+    /// asset. Returns the id of the newly created fractionalization vault.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::InvalidTokenParams` - Shares token name/symbol are invalid
+    /// * `Error::InvalidAmount` - `total_supply` is zero or negative
+    /// * `Error::AssetAlreadyFractionalized` - This asset already has an active vault
+    pub fn fractionalize(
+        env: Env,
+        owner: Address,
+        params: FractionalizationParams,
+    ) -> Result<u64, Error> {
+        fractionalization::fractionalize(&env, owner, params)
+    }
+
+    /// Redeem (unlock) a fractionalized asset. `caller` must hold and burn
+    /// 100% of the vault's outstanding shares; the locked asset is then
+    /// released back to `caller`.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::FractionalVaultNotFound` - No active fractional vault exists for `vault_id`
+    /// * `Error::InsufficientShares` - Caller does not hold 100% of the outstanding shares
+    pub fn redeem_fractional_asset(env: Env, caller: Address, vault_id: u64) -> Result<(), Error> {
+        fractionalization::redeem(&env, caller, vault_id)
+    }
+
+    /// Transfer `amount` fractional shares of `vault_id` from `from` to `to`.
+    /// This is the only way shares move between holders, making multi-holder
+    /// 100%-accumulation redemption reachable.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` - Contract is paused
+    /// * `Error::FractionalVaultNotFound` - No active vault exists for `vault_id`
+    /// * `Error::InvalidShareAmount` - `amount` is zero or negative
+    /// * `Error::InsufficientShareBalance` - `from` holds fewer shares than `amount`
+    pub fn transfer_shares(
+        env: Env,
+        vault_id: u64,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        fractionalization::transfer_shares(&env, vault_id, from, to, amount)
+    }
+
+    /// Return the fractionalization vault record for `vault_id`, if any.
+    pub fn get_fractional_vault(env: Env, vault_id: u64) -> Option<FractionalVault> {
+        storage::get_fractional_vault(&env, vault_id)
+    }
+
+    /// Returns `true` if `vault_id` is currently locked in an active fractionalization vault.
+    pub fn is_asset_fractionalized(env: Env, vault_id: u64) -> bool {
+        fractionalization::is_fractionalized(&env, vault_id)
+    }
+
+    /// Return a holder's outstanding fractional share balance for `vault_id`.
+    pub fn get_fractional_share_balance(env: Env, vault_id: u64, holder: Address) -> i128 {
+        storage::get_fractional_share_balance(&env, vault_id, &holder)
+    }
+
+    // ── Oracle price feed ─────────────────────────────────────────────
+
+    /// Configure the oracle's max staleness window, in seconds (admin only).
+    ///
+    /// # Errors
+    /// * `MissingAdmin` - Factory has not been initialized
+    /// * `Unauthorized` - Caller is not the factory admin
+    /// * `OracleInvalidConfig` - `max_age_seconds` is zero
+    pub fn configure_oracle(env: Env, admin: Address, max_age_seconds: u64) -> Result<(), Error> {
+        oracle::configure_oracle(&env, &admin, max_age_seconds)
+    }
+
+    /// Authorize or deauthorize `source` as an oracle price submitter (admin only).
+    ///
+    /// Deauthorizing a source immediately invalidates its already-submitted
+    /// price too — see `get_price`.
+    ///
+    /// # Errors
+    /// * `MissingAdmin` - Factory has not been initialized
+    /// * `Unauthorized` - Caller is not the factory admin
+    pub fn set_oracle_authorized(
+        env: Env,
+        admin: Address,
+        source: Address,
+        authorized: bool,
+    ) -> Result<(), Error> {
+        oracle::set_oracle_authorized(&env, &admin, &source, authorized)
+    }
+
+    /// Submit a price observation for `asset` (authorized sources only).
+    ///
+    /// # Errors
+    /// * `OracleUnauthorizedSource` - `source` has not been authorized by the admin
+    /// * `OracleInvalidPrice` - `price` is not strictly positive
+    pub fn submit_price(
+        env: Env,
+        source: Address,
+        asset: Address,
+        price: i128,
+        decimals: u32,
+    ) -> Result<(), Error> {
+        oracle::submit_price(&env, &source, &asset, price, decimals)
+    }
+
+    /// Read the latest price for `asset`, enforcing the configured staleness
+    /// window and rejecting non-positive or since-deauthorized-source values.
+    ///
+    /// # Errors
+    /// * `OraclePriceNotFound` - No price has ever been submitted for `asset`,
+    ///   or its source has since been deauthorized
+    /// * `OracleNotConfigured` - The oracle max-staleness window has not been set
+    /// * `OracleInvalidPrice` - The stored price is not strictly positive
+    /// * `OraclePriceStale` - The stored price is older than the configured max age
+    pub fn get_price(env: Env, asset: Address) -> Result<PriceData, Error> {
+        oracle::get_price(&env, &asset)
+    }
 }
 
 // Temporarily disabled - requires create_token implementation

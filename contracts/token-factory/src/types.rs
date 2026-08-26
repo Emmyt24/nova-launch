@@ -171,6 +171,10 @@ pub struct TokenCreationParams {
     /// This flag is **immutable after creation** — it cannot be toggled later.
     /// Set `true` only for regulated use-cases (e.g. stablecoins, tokenized securities).
     pub clawback_enabled: bool,
+    /// Whether the creator may freeze individual holder balances via
+    /// `freeze_address`. This flag is **immutable after creation** — it
+    /// cannot be toggled later, matching `clawback_enabled`'s invariant.
+    pub freeze_enabled: bool,
 }
 
 /// Outcome of validating a single item during a batch pre-flight dry-run.
@@ -682,12 +686,16 @@ pub struct TokenStats {
 /// * `price` - Raw price value (must be > 0)
 /// * `decimals` - Number of decimal places in `price` (e.g. 7 means price / 10^7)
 /// * `timestamp` - Ledger timestamp when the price was recorded
+/// * `source` - The oracle address that submitted this price. Used by
+///   `get_price` to reject a price whose source has since been deauthorized,
+///   even if the price has not yet aged out past `max_age_seconds`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriceData {
     pub price: i128,
     pub decimals: u32,
     pub timestamp: u64,
+    pub source: Address,
 }
 
 /// Global oracle configuration stored in instance storage.
@@ -1003,6 +1011,24 @@ pub enum DataKey {
     NextStakingPoolId,
     /// A user's stake within a pool: (pool_id, staker) → StakeInfo
     UserStake(u64, Address),
+    // ── Oracle price feed ─────────────────────────────────────────────────
+    /// Global oracle configuration (max staleness window).
+    OracleConfig,
+    /// Whether `source` is authorized to submit oracle prices.
+    OracleAuthorizedSource(Address),
+    /// Latest price observation submitted for `asset`.
+    OraclePrice(Address),
+    // ── Fractionalization ───────────────────────────────────────────────────
+    /// Fractionalization vault record, keyed by vault id
+    FractionalVault(u64),
+    /// Running counter used to assign new fractionalization vault ids
+    FractionalVaultCount,
+    /// Secondary index from a locked asset's identity to its vault id, used
+    /// to reject double-fractionalization / enforce asset uniqueness:
+    /// (asset_contract, asset_id) -> vault_id
+    AssetFractionalizationIndex(Address, BytesN<32>),
+    /// Outstanding fractional share balance: (vault_id, holder) -> amount
+    FractionalShareBalance(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1356,6 +1382,24 @@ impl Error {
     pub const StakingNotActive: Self = Self(134);
     pub const InvalidRewardRate: Self = Self(135);
     pub const InsufficientStake: Self = Self(136);
+    // Oracle price feed errors
+    pub const OracleUnauthorizedSource: Self = Self(137);
+    pub const OraclePriceStale: Self = Self(138);
+    pub const OracleInvalidPrice: Self = Self(139);
+    pub const OraclePriceNotFound: Self = Self(140);
+    pub const OracleInvalidConfig: Self = Self(141);
+    pub const OracleNotConfigured: Self = Self(142);
+    // Fractionalization errors
+    /// The (asset_contract, asset_id) pair already has an active fractionalization vault.
+    pub const AssetAlreadyFractionalized: Self = Self(143);
+    /// No active fractionalization vault exists for the given identifier.
+    pub const FractionalVaultNotFound: Self = Self(144);
+    /// Caller does not hold 100% of the outstanding shares supply.
+    pub const InsufficientShares: Self = Self(145);
+    /// Fractional share transfer amount is not strictly positive.
+    pub const InvalidShareAmount: Self = Self(146);
+    /// Sender does not hold enough fractional shares to cover the transfer.
+    pub const InsufficientShareBalance: Self = Self(147);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1383,6 +1427,17 @@ impl Error {
             134 => "StakingNotActive",
             135 => "InvalidRewardRate",
             136 => "InsufficientStake",
+            137 => "OracleUnauthorizedSource",
+            138 => "OraclePriceStale",
+            139 => "OracleInvalidPrice",
+            140 => "OraclePriceNotFound",
+            141 => "OracleInvalidConfig",
+            142 => "OracleNotConfigured",
+            143 => "AssetAlreadyFractionalized",
+            144 => "FractionalVaultNotFound",
+            145 => "InsufficientShares",
+            146 => "InvalidShareAmount",
+            147 => "InsufficientShareBalance",
             _ => "UnknownError",
         }
     }

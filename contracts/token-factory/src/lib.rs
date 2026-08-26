@@ -12,7 +12,7 @@ mod freeze_functions;
 mod fractionalization;
 #[cfg(test)]
 mod fractionalization_test;
-mod governance;
+pub mod governance;
 mod game_history;
 mod ipfs_pinning;
 
@@ -64,10 +64,10 @@ mod proposal_queue_test;
 mod event_versions_test;
 #[cfg(test)]
 mod staking_integration_test;
-mod timelock;
+pub mod timelock;
 mod token_creation;
 mod treasury;
-mod types;
+pub mod types;
 mod vault;
 mod validation;
 mod vesting;

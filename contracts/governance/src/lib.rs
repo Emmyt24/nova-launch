@@ -341,6 +341,14 @@ impl GovernanceContract {
         storage::is_paused(&env)
     }
 
+    /// Get the current contract administrator address.
+    ///
+    /// # Returns
+    /// The [`Address`] of the current administrator.
+    pub fn get_admin(env: Env) -> Address {
+        storage::get_admin(&env)
+    }
+
     // ── Proposals ───────────────────────────────────────────────────────────
 
     /// Create a new governance proposal.

@@ -238,15 +238,23 @@ IntegrationMetrics.recordWebhookDelivery("success", "TokenMinted", 0.3);
 ```
 monitoring/
 ├── docker-compose.yml              # Monitoring stack orchestration
+├── Makefile                        # Monitoring automation & test commands
 ├── README.md                       # This file
 ├── alertmanager/
 │   └── alertmanager.yml            # Alert routing configuration
+├── elk/
+│   ├── elasticsearch-ilm-policy.json # Elasticsearch index lifecycle policy
+│   ├── filebeat.yml                # Filebeat log shipper configuration
+│   ├── kibana-dashboards/          # Exported Kibana dashboard objects
+│   │   └── nova-overview.ndjson
+│   └── logstash.conf               # Logstash log processing pipeline
 ├── grafana/
 │   ├── dashboards/                 # Pre-built Grafana dashboards (JSON)
 │   │   ├── nova-overview.json
 │   │   ├── nova-api.json
 │   │   ├── nova-blockchain.json
-│   │   └── nova-infrastructure.json
+│   │   ├── nova-infrastructure.json
+│   │   └── slo-dashboard.json
 │   └── provisioning/
 │       ├── dashboards/dashboards.yml
 │       └── datasources/prometheus.yml
@@ -256,12 +264,20 @@ monitoring/
 │   └── structured-logger.ts        # Winston structured logging
 ├── metrics/
 │   └── prometheus-config.ts        # Prometheus metric definitions (reference)
-└── prometheus/
-    ├── prometheus.yml               # Prometheus scrape configuration
-    └── alerts/
-        ├── api.yml
-        ├── blockchain.yml
-        ├── infrastructure.yml
-        ├── webhooks.yml
-        └── slo-burn-rate.yml       # SLO burn-rate alerts (P1/P2)
+├── pagerduty/
+│   └── incident-response.ts        # PagerDuty incident response integration
+├── prometheus/
+│   ├── prometheus.yml              # Prometheus scrape configuration
+│   └── alerts/
+│       ├── api.yml
+│       ├── blockchain.yml
+│       ├── infrastructure.yml
+│       ├── webhooks.yml
+│       └── slo-burn-rate.yml       # SLO burn-rate alerts (P1/P2)
+├── sentry/
+│   ├── backend-config.ts           # Sentry backend error tracking config
+│   └── frontend-config.ts          # Sentry frontend error tracking config
+└── vault/
+    ├── vault-config.hcl            # HashiCorp Vault server configuration
+    └── vault-init.sh               # Vault secrets initialization script
 ```

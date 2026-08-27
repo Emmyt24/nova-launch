@@ -227,6 +227,13 @@ describe("HealthService", () => {
       expect(result.metrics.cpu).toBeDefined();
       expect(result.metrics.cpu.usage).toBeGreaterThanOrEqual(0);
       expect(result.metrics.database).toBeDefined();
+      expect(result.metrics.database).toEqual({
+        poolSize: 1,
+        activeConnections: 1,
+        idleConnections: 0,
+      });
+      const query = vi.mocked(prisma.$queryRaw).mock.calls.at(-1)?.[0];
+      expect(query?.join(" ")).toContain("pg_stat_activity");
       expect(result.metrics.requests).toBeDefined();
       expect(result.metrics.requests.total).toBeGreaterThanOrEqual(0);
       expect(result.metrics.requests.errorRate).toBeGreaterThanOrEqual(0);

@@ -128,10 +128,8 @@ export async function getCurrentBaseFee(
   config: StellarNetworkConfig = stellarConfig
 ): Promise<number> {
   const horizon = getHorizonServer(config);
-  const server = new StellarSdk.Horizon.Server(config.horizonUrl);
   try {
-    const ledger = await server.ledgers().limit(1).order("desc").call();
-    const feeStats = await server.feeStats().call();
+    const feeStats = await horizon.feeStats().call();
     return Math.max(
       StellarSdk.BASE_FEE,
       parseInt(feeStats.max_fee.mode as string)

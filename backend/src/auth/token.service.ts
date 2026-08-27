@@ -5,6 +5,24 @@ import { v4 as uuidv4 } from "uuid";
 import { AUTH_CONSTANTS } from "../auth.constants";
 import { AuthResponseDto, JwtPayloadDto } from "./dto/auth.dto";
 
+function parseExpiryToSeconds(expiry: string): number {
+  const match = expiry.match(/^(\d+(?:\.\d+)?)([smhdwy])$/);
+  if (!match) {
+    throw new Error(`Unsupported JWT expiry format: ${expiry}`);
+  }
+
+  const multipliers: Record<string, number> = {
+    s: 1,
+    m: 60,
+    h: 60 * 60,
+    d: 24 * 60 * 60,
+    w: 7 * 24 * 60 * 60,
+    y: 365 * 24 * 60 * 60,
+  };
+
+  return Number(match[1]) * multipliers[match[2]];
+}
+
 @Injectable()
 export class TokenService {
   private readonly logger = new Logger(TokenService.name);
@@ -46,7 +64,7 @@ export class TokenService {
     return {
       accessToken,
       refreshToken,
-      expiresIn: 15 * 60, // 15 minutes in seconds
+      expiresIn: parseExpiryToSeconds(AUTH_CONSTANTS.JWT_ACCESS_EXPIRY),
       tokenType: "Bearer",
       walletAddress,
     };

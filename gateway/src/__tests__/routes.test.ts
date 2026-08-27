@@ -39,6 +39,21 @@ describe("ROUTES", () => {
     expect(wh?.requiresAuth).toBe(true);
   });
 
+  it("webhook dead-letter admin routes require auth and use the strict tier", () => {
+    const dl = ROUTES.find((r) => r.prefix === "/api/webhooks-deadletter");
+    expect(dl).toBeDefined();
+    expect(dl?.requiresAuth).toBe(true);
+    expect(dl?.tier).toBe("strict");
+  });
+
+  it("registers /api/webhooks-deadletter before the more general /api/webhooks", () => {
+    const dlIndex = ROUTES.findIndex((r) => r.prefix === "/api/webhooks-deadletter");
+    const whIndex = ROUTES.findIndex((r) => r.prefix === "/api/webhooks");
+    expect(dlIndex).toBeGreaterThanOrEqual(0);
+    expect(whIndex).toBeGreaterThanOrEqual(0);
+    expect(dlIndex).toBeLessThan(whIndex);
+  });
+
   it("leaderboard routes do not require auth", () => {
     const lb = ROUTES.find((r) => r.prefix === "/api/leaderboard");
     expect(lb?.requiresAuth).toBe(false);

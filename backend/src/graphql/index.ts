@@ -178,6 +178,49 @@ interface ConnectionExtra {
  * JWT validation as the REST tenancy middleware. Accepts the token via an
  * `authorization` / `Authorization` ("Bearer <jwt>") field or a bare
  * `authToken` field. Returns null when no valid tenant can be derived.
+ *
+ * ---------------------------------------------------------------------------
+ * GraphQL subscription connection_init JWT-to-tenant handshake contract
+ * ---------------------------------------------------------------------------
+ * This function (called from `onConnect` below) is the *only* place GraphQL
+ * subscriptions authenticate. It is an independent JWT-parsing path — REST and
+ * GraphQL Query traffic never flow through here — so it must stay compatible
+ * with whatever token shape `TokenService.generateTokenPair` produces. A
+ * change to the JWT claims or signing secret on one side without the other
+ * silently breaks realtime subscriptions while REST/Query traffic keeps
+ * working (and vice versa).
+ *
+ * Where the JWT is read from:
+ *   The graphql-ws client sends a `connection_init` message whose `payload`
+ *   becomes `ctx.connectionParams`. The token is taken from, in order:
+ *     params.authorization  -> params.Authorization  -> params.authToken
+ *   A leading "Bearer " prefix is stripped; the remainder is the raw JWT.
+ *
+ * Which claim populates SubscriptionContext.tenant.id:
+ *   `extractTenantFromJwt` (../middleware/tenancy) runs `jwt.verify(token,
+ *   JWT_SECRET)` and reads `payload.tenantId ?? payload.tenant_id`. That value
+ *   must pass `validateTenantId` (1–64 chars of [A-Za-z0-9_-]) and becomes
+ *   `tenant.id`. `payload.tenantName`, if a string, becomes `tenant.name`.
+ *   The signing secret is `process.env.JWT_SECRET` (falls back to
+ *   "dev-secret-key" only when unset — dev/test convenience).
+ *
+ * Missing / invalid / expired token — how "unauthenticated connections never
+ * receive any events" (see resolvers.ts `SubscriptionContext`) is enforced:
+ *   - No params, no recognised token field, or a non-string/empty token
+ *     -> this function returns null.
+ *   - Bad signature, expired (`exp`), malformed, or missing/invalid tenant
+ *     claim -> `jwt.verify` throws or `validateTenantId` fails; the `catch`
+ *     in `extractTenantFromJwt` returns null.
+ *   - `onConnect` returns `false` on a null tenant, so graphql-ws rejects the
+ *     handshake and closes the socket with code 4403 — the client never
+ *     reaches `onSubscribe`, so zero events are ever delivered. There is no
+ *     "anonymous" code path: without a resolved `tenant.id`, `tenantOwnsEvent`
+ *     in resolvers.ts would also return false.
+ *
+ * Executable spec: src/graphql/__tests__/subscriptions.integration.test.ts
+ *   ("delivers a tokenDeployed event to an authenticated subscriber",
+ *    "does not deliver another tenant's events",
+ *    "rejects a connection with no/invalid JWT").
  */
 function resolveTenantFromConnectionParams(
   params: Record<string, unknown> | undefined
@@ -227,7 +270,11 @@ export function attachGraphqlSubscriptions(
       subscribe,
       roots: { query: rootValue, mutation: rootValue, subscription: rootValue },
 
-      // Validate the JWT on the connection_init handshake and stash the tenant.
+      // connection_init handshake: parse the JWT from ctx.connectionParams,
+      // resolve the tenant, and stash it on ctx.extra. Full contract (token
+      // location, claim mapping, missing/invalid-token behaviour, and the
+      // coupling to TokenService.generateTokenPair) is documented on
+      // `resolveTenantFromConnectionParams` above.
       onConnect: (ctx) => {
         const tenant = resolveTenantFromConnectionParams(
           ctx.connectionParams as Record<string, unknown> | undefined

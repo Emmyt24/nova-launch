@@ -1,3 +1,31 @@
+/**
+ * ⚠️ NO-OP STUB — NOT THE LIVE METRICS MODULE ⚠️
+ *
+ * Every export in this file (metrics, `register`, `IntegrationMetrics`,
+ * `MetricsCollector`, `createMetricsMiddleware`) is a no-op: `.inc()`,
+ * `.observe()`, `.set()` and the `record*` helpers do nothing, and
+ * `register.metrics()` returns an empty string. Nothing recorded here is ever
+ * scraped by Prometheus.
+ *
+ * The REAL, canonical Prometheus implementation (backed by `prom-client`, wired
+ * into `index.ts` via `createMetricsMiddleware()` and exposed at `GET /metrics`)
+ * lives in `backend/src/lib/metrics/index.ts`. Add or update metrics THERE.
+ *
+ * Why this stub still exists: three services still import `IntegrationMetrics`
+ * from this path instead of the real module —
+ *   - src/services/notificationService.ts
+ *   - src/services/webhookDeliveryService.ts
+ *   - src/services/stellarEventListener.ts
+ * so their integration-metric calls are currently silently discarded. Wiring
+ * those imports to `lib/metrics` is tracked by the companion "wire services to
+ * real metrics" issue; once that lands this file has no importers and should be
+ * deleted outright.
+ *
+ * Beware: export names here (`httpRequestDuration`, `errorTotal`, …) are nearly
+ * identical to the real module's, so an import from the wrong path compiles
+ * cleanly and produces a metric that is never recorded.
+ */
+
 type LabelValues = Record<string, string | number | boolean | undefined>;
 
 class NoopMetric {

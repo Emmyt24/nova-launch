@@ -25,6 +25,7 @@ async function runValidateEnv(env: Record<string, string>) {
   vi.stubEnv('FACTORY_CONTRACT_ID', env.FACTORY_CONTRACT_ID ?? '');
   vi.stubEnv('DATABASE_URL', env.DATABASE_URL ?? 'postgresql://localhost/test');
   vi.stubEnv('JWT_SECRET', env.JWT_SECRET ?? 'super-secret-jwt-key-for-testing');
+  vi.stubEnv('ADMIN_JWT_SECRET', env.ADMIN_JWT_SECRET ?? 'super-secret-admin-jwt-key-for-testing');
 
   const { validateEnv } = await import('../config/env');
   return validateEnv();

@@ -30,6 +30,9 @@ export const RATE_LIMIT_TIERS: Record<RateLimitTier, { windowMs: number; max: nu
 export const ROUTES: RouteConfig[] = [
   { prefix: "/api/admin",      tier: "strict",  requiresAuth: true  },
   { prefix: "/api/governance", tier: "strict",  requiresAuth: true  },
+  // More specific prefix listed before "/api/webhooks" so the route-registration
+  // loop in app.ts registers it first and the broader entry can never shadow it.
+  { prefix: "/api/webhooks-deadletter", tier: "strict", requiresAuth: true },
   { prefix: "/api/webhooks",   tier: "strict",  requiresAuth: true  },
   { prefix: "/api/tokens",     tier: "default", requiresAuth: false },
   { prefix: "/api/dividends",  tier: "default", requiresAuth: false },

@@ -1,13 +1,16 @@
 /**
- * Metrics re-export shim.
+ * Canonical Prometheus metrics module for the backend.
  *
- * The canonical implementation lives in `monitoring/metrics/prometheus-config.ts`
- * (workspace root). This shim re-exports everything from there so that backend
- * source files can import from a path that stays within `src/` and is therefore
- * compatible with the TypeScript `rootDir: "./src"` constraint.
+ * This file holds the REAL implementation (backed by `prom-client`). It is the
+ * one wired into `src/index.ts` via `createMetricsMiddleware()` and exposed at
+ * `GET /metrics` for Prometheus to scrape. All new backend metrics belong here.
  *
- * If you ever move the monitoring package to a separate npm workspace, update
- * only this file.
+ * Do NOT confuse this with `src/monitoring/metrics/prometheus-config.ts`, which
+ * is an all-no-op stub with nearly identical export names
+ * (`httpRequestDuration`, `errorTotal`, …). Anything registered against that
+ * stub is silently discarded. It survives only because a few services still
+ * import `IntegrationMetrics` from it (see the header comment in that file and
+ * the companion "wire services to real metrics" issue).
  */
 
 // prom-client is a direct dependency of the backend (see package.json).

@@ -73,6 +73,15 @@ export const SUBSCRIPTION_TOPICS = {
  * connection JWT during the graphql-ws `connection_init` handshake (see
  * graphql/index.ts). It is undefined only for unauthenticated connections,
  * which never receive any events.
+ *
+ * The full handshake contract — where the JWT is read from in the
+ * `connection_init` payload, that `tenantId` / `tenant_id` populates
+ * `tenant.id`, how a missing/invalid/expired token is rejected (4403 close,
+ * zero events), and the requirement that this path stay compatible with
+ * `TokenService.generateTokenPair` — is documented on
+ * `resolveTenantFromConnectionParams` in graphql/index.ts. Keep the two in
+ * sync; the executable spec is
+ * src/graphql/__tests__/subscriptions.integration.test.ts.
  */
 export interface SubscriptionContext {
   tenant?: { id: string; name?: string };

@@ -95,4 +95,68 @@ describe("createIdempotencyMiddleware", () => {
     middleware(mockReq(), mockRes(), n);
     expect(n).toHaveBeenCalledOnce();
   });
+
+  // ── Deterministic fallback key (issue #1885) ────────────────────────────────
+
+  const keyOf = (req: Request) =>
+    req.headers[IDEMPOTENCY_HEADER.toLowerCase()] as string | undefined;
+
+  const run = (overrides: Partial<Request> = {}): string => {
+    const req = mockReq(overrides);
+    middleware(req, mockRes(), next());
+    return keyOf(req)!;
+  };
+
+  it("synthesises the SAME key for two structurally-identical retries with no client key", () => {
+    const shape: Partial<Request> = {
+      method: "POST",
+      path: "/api/tokens",
+      headers: { authorization: "Bearer user-a-token" },
+      body: { amount: 100, to: "GABC" },
+    };
+
+    const first = run({ ...shape, headers: { ...shape.headers } });
+    const retry = run({ ...shape, headers: { ...shape.headers } });
+
+    expect(first).toBeDefined();
+    expect(first).toBe(retry);
+  });
+
+  it("is insensitive to body property ordering", () => {
+    const a = run({ body: { amount: 100, to: "GABC", memo: "x" } });
+    const b = run({ body: { memo: "x", to: "GABC", amount: 100 } });
+    expect(a).toBe(b);
+  });
+
+  it("synthesises DIFFERENT keys when body, path or method differ", () => {
+    const base: Partial<Request> = {
+      method: "POST",
+      path: "/api/tokens",
+      body: { amount: 100 },
+    };
+
+    const keys = [
+      run(base),
+      run({ ...base, body: { amount: 200 } }),
+      run({ ...base, path: "/api/vaults" }),
+      run({ ...base, method: "DELETE" }),
+    ];
+
+    expect(new Set(keys).size).toBe(4);
+  });
+
+  it("synthesises DIFFERENT keys for different callers making the same request", () => {
+    const shape: Partial<Request> = {
+      method: "POST",
+      path: "/api/tokens",
+      body: { amount: 100 },
+    };
+    const userA = run({ ...shape, headers: { authorization: "Bearer aaa" } });
+    const userB = run({ ...shape, headers: { authorization: "Bearer bbb" } });
+    expect(userA).not.toBe(userB);
+  });
+
+  it("synthesised fallback key is UUID-shaped", () => {
+    expect(run()).toMatch(uuidRegex);
+  });
 });

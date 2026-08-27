@@ -67,9 +67,13 @@ export function validateEnv(): BackendEnv {
   const jwtSecret =
     process.env.JWT_SECRET ||
     (isProduction ? '' : 'dev-secret-key-change-me');
+  // Guard against the dev-mode default above ever reaching production —
+  // whether JWT_SECRET was left unset (falls through to the dev default)
+  // or someone copied that literal string into a real .env believing it
+  // was just a placeholder.
   if (
     isProduction &&
-    (!jwtSecret || jwtSecret === 'your-secret-key-change-in-production')
+    (!jwtSecret || jwtSecret === 'dev-secret-key-change-me')
   ) {
     throw new Error('JWT_SECRET must be set to a secure value in production.');
   }

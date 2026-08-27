@@ -204,10 +204,10 @@ describe("IntegrationMetrics", () => {
   it("recordWebhookDelivery success without retry", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "success",
         "TokenMinted",
-        0.3,
-        false
+        "success",
+        300,
+        0
       )
     ).not.toThrow();
   });
@@ -215,20 +215,20 @@ describe("IntegrationMetrics", () => {
   it("recordWebhookDelivery failure with retry", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "failure",
         "TokenBurned",
-        5.0,
-        true
+        "failed",
+        5000,
+        1
       )
     ).not.toThrow();
   });
 
-  it("recordWebhookDelivery uses default isRetry=false", () => {
+  it("recordWebhookDelivery uses default retries=0", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "success",
         "TokenTransferred",
-        0.1
+        "success",
+        100
       )
     ).not.toThrow();
   });

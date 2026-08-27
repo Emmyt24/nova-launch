@@ -4,17 +4,17 @@ import { Repository, SelectQueryBuilder } from "typeorm";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { Inject } from "@nestjs/common";
 import { Cache } from "cache-manager";
-import { BurnTransaction } from "./entities/burn-transaction.entity";
+import { BurnTransaction } from "./burn-transaction.entity";
 import {
   BurnHistoryQueryDto,
   BurnType,
   SortBy,
   SortOrder,
-} from "./dto/burn-history-query.dto";
+} from "./burn-history-query.dto";
 import {
   BurnHistoryResponse,
   AppliedFilters,
-} from "./interfaces/burn-history.interface";
+} from "./burn-history.interface";
 
 @Injectable()
 export class BurnHistoryService {

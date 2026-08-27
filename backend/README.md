@@ -58,11 +58,9 @@ Copy `.env.example` to `.env` and configure:
 cp .env.example .env
 ```
 
-Required environment variables:
-
-- `PORT` - Server port (default: 3001)
-- `ADMIN_JWT_SECRET` - Secret for admin JWT tokens
-- `DATABASE_URL` - Database connection string
+`.env.example` documents every variable inline. The core set is validated at
+startup — see [Environment Variables](#environment-variables) below for the
+authoritative rules.
 
 ### Development
 
@@ -102,6 +100,53 @@ npm test backend/src/__tests__/chaos.db-pool.test.ts
 
 This spec covers concurrent query saturation, client acquisition failures,
 and safe shutdown behavior for the pg pool wrapper.
+
+## Environment Variables
+
+Core configuration is validated at startup by `validateEnv()` in
+[`src/config/env.ts`](src/config/env.ts), which is the **source of truth** for
+the variables below. When a required variable is missing or malformed the
+process fails fast with an explanatory error instead of booting in a bad state.
+
+Behaviour depends on `NODE_ENV`:
+
+- **`NODE_ENV=production`** — the "required in production" variables must be
+  present and valid, or startup throws.
+- **any other value** (the default is `development`) — those variables fall back
+  to the development defaults listed below.
+
+A few checks run regardless of `NODE_ENV`: an unknown `STELLAR_NETWORK` and a
+`FACTORY_CONTRACT_ID` that does not match the expected format both always throw.
+
+| Variable | Required in production | Format / allowed values | Development default |
+|---|---|---|---|
+| `NODE_ENV` | no | free-form; only the exact value `production` changes behaviour | `development` |
+| `PORT` | no | integer | `3001` |
+| `STELLAR_NETWORK` | no | `testnet` \| `mainnet` — any other value throws in every environment | `testnet` |
+| `STELLAR_HORIZON_URL` | no | URL | derived from `STELLAR_NETWORK` (see below) |
+| `STELLAR_SOROBAN_RPC_URL` | no | URL | derived from `STELLAR_NETWORK` (see below) |
+| `STELLAR_NETWORK_PASSPHRASE` | no | string | derived from `STELLAR_NETWORK` (see below) |
+| `FACTORY_CONTRACT_ID` | **yes** | `^C[A-Z2-7]{55}$` (56 chars, starts with `C`); a malformed value throws in **every** environment | `""` (empty string) |
+| `DATABASE_URL` | **yes** | PostgreSQL connection string | `postgresql://postgres:postgres@localhost:5432/postgres?schema=public` |
+| `JWT_SECRET` | **yes** | any non-empty string except the literal `your-secret-key-change-in-production` | `dev-secret-key-change-me` |
+
+### Network-derived Stellar defaults
+
+`STELLAR_NETWORK` implicitly selects the defaults for `STELLAR_HORIZON_URL`,
+`STELLAR_SOROBAN_RPC_URL`, and `STELLAR_NETWORK_PASSPHRASE`. Setting any of those
+three explicitly overrides just that one; leaving them unset is the common case,
+so it is easy to miss that switching `STELLAR_NETWORK` moves all three endpoints
+at once.
+
+| `STELLAR_NETWORK` | `STELLAR_HORIZON_URL` | `STELLAR_SOROBAN_RPC_URL` | `STELLAR_NETWORK_PASSPHRASE` |
+|---|---|---|---|
+| `testnet` (default) | `https://horizon-testnet.stellar.org` | `https://soroban-testnet.stellar.org` | `Test SDF Network ; September 2015` |
+| `mainnet` | `https://horizon.stellar.org` | `https://soroban-mainnet.stellar.org` | `Public Global Stellar Network ; September 2015` |
+
+See [`.env.example`](.env.example) for a copy-paste template. Variables consumed
+elsewhere in the app (`ADMIN_JWT_SECRET`, `REDIS_URL`, notification provider
+keys, …) are documented inline in `.env.example` and are **not** enforced by
+`validateEnv()`.
 
 ## Rate Limiting
 

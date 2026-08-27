@@ -323,6 +323,38 @@ describe("createMetricsMiddleware", () => {
     expect(() => finishCallback?.()).not.toThrow();
   });
 
+  it("uses a bounded label for unmatched paths", () => {
+    const middleware = createMetricsMiddleware();
+    const recordRequest = vi.spyOn(MetricsCollector, "recordHttpRequest");
+    let finishCallback: (() => void) | undefined;
+    const req = {
+      method: "GET",
+      path: "/api/tokens/variable-address",
+      headers: {},
+      route: undefined,
+    };
+    const res = {
+      statusCode: 404,
+      on: (event: string, cb: () => void) => {
+        if (event === "finish") finishCallback = cb;
+      },
+      getHeader: vi.fn().mockReturnValue(undefined),
+    };
+
+    middleware(req, res, vi.fn());
+    finishCallback?.();
+
+    expect(recordRequest).toHaveBeenCalledWith(
+      "GET",
+      "unmatched",
+      404,
+      expect.any(Number),
+      undefined,
+      undefined,
+    );
+    recordRequest.mockRestore();
+  });
+
   it("records request bytes from content-length header", () => {
     const middleware = createMetricsMiddleware();
     const next = vi.fn();

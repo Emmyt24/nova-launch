@@ -56,6 +56,17 @@ const cache = new Map<string, CacheEntry>();
 /** Safety-net TTL — entries are also evicted by event-driven invalidation. */
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+const MAX_SORTED_SET_SCORE = BigInt(Number.MAX_SAFE_INTEGER);
+
+/** Redis scores are numbers, so cap BigInt amounts instead of converting silently. */
+export function toSafeSortedSetScore(value: bigint | string | null | undefined): number {
+  const amount = BigInt(value ?? 0);
+  if (amount > MAX_SORTED_SET_SCORE) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Number(amount);
+}
+
 function getCacheKey(
   type: string,
   period: TimePeriod,
@@ -146,7 +157,7 @@ eventBus.subscribe<TokenBurnedPayload>("token.burned", async (event) => {
   const { tokenId, amount } = event.payload;
   if (!tokenId) return;
 
-  const delta = Number(amount ?? "0");
+  const delta = toSafeSortedSetScore(amount);
 
   // A burn affects burn-volume, burn-count, and unique-burner leaderboards.
   invalidateCacheByType("most-burned");
@@ -273,7 +284,7 @@ async function recomputeMostBurned(
   // gaps are self-healing since a miss just falls back to recompute again.
   const allScores: SortedSetMemberInput[] = burnsByToken.map((b) => ({
     tokenId: b.tokenId,
-    score: Number(b._sum.amount || BigInt(0)),
+    score: toSafeSortedSetScore(b._sum.amount),
   }));
 
   return { data, total, allScores };

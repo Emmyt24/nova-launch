@@ -682,9 +682,11 @@ export function createMetricsMiddleware() {
       const durationNs = process.hrtime.bigint() - start;
       const durationSeconds = Number(durationNs) / 1e9;
 
-      // Normalise route: use express matched route or fall back to path
-      const route =
-        (req.route?.path as string | undefined) ?? req.path ?? "unknown";
+      // Never use raw req.path here: path parameters create unbounded Prometheus labels.
+      const matchedRoute = req.route?.path as string | undefined;
+      const route = matchedRoute
+        ? `${req.baseUrl ?? ""}${matchedRoute}`
+        : "unmatched";
       const method = req.method ?? "UNKNOWN";
       const statusCode = res.statusCode;
 

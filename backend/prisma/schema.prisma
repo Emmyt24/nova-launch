@@ -10,6 +10,8 @@ datasource db {
 model Token {
   id            String        @id @default(uuid())
   address       String        @unique
+  /// Stellar transaction hash that registered/deployed this token.
+  deployTxHash  String?       @unique
   creator       String
   name          String
   symbol        String
@@ -42,6 +44,7 @@ model Token {
   governanceRegistration TokenGovernanceRegistration?
 
   @@index([address])
+  @@index([deployTxHash])
   @@index([creator])
   @@index([createdAt])
   @@index([totalSupply])

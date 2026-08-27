@@ -49,6 +49,7 @@ export class TokenEventParser {
       where: { address: event.tokenAddress },
       create: {
         address: event.tokenAddress,
+        deployTxHash: event.transactionHash,
         creator: event.creator ?? "",
         name: event.name ?? "",
         symbol: event.symbol ?? "",

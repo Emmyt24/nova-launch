@@ -138,12 +138,22 @@ router.post(
       // deliverWebhook starts its own retry loop at attempt 1, so this is
       // always a fresh attempt counter — never a resumption of the
       // exhausted one that landed the entry in the dead-letter queue.
-      await webhookDeliveryService.deliverWebhook(
+      const deliveryResult = await webhookDeliveryService.deliverWebhook(
         subscription,
         deadLetter.event,
         payload.data || payload,
         `admin_retry_${id}`
       );
+
+      if (!deliveryResult.success) {
+        return res.status(502).json(
+          errorResponse({
+            code: "DELIVERY_FAILED",
+            message: "Dead-letter delivery failed; entry remains unresolved",
+            details: deliveryResult,
+          }, req.correlationId)
+        );
+      }
 
       await webhookDeadLetterService.markResolved(id, "retried");
 
@@ -199,10 +209,40 @@ router.post(
 
       try {
         const requeued = await webhookDeadLetterService.requeueDeadLetter(id);
+        const subscription = await webhookService.getSubscription(
+          requeued.subscriptionId
+        );
+        if (!subscription) {
+          return res.status(404).json(
+            errorResponse({
+              code: "SUBSCRIPTION_NOT_FOUND",
+              message: "Associated webhook subscription no longer exists",
+            }, req.correlationId)
+          );
+        }
+
+        const payload = JSON.parse(requeued.payload);
+        const deliveryResult = await webhookDeliveryService.deliverWebhook(
+          subscription,
+          requeued.event,
+          payload.data || payload,
+          `requeue_${id}`
+        );
+        if (!deliveryResult.success) {
+          return res.status(502).json(
+            errorResponse({
+              code: "DELIVERY_FAILED",
+              message: "Dead-letter delivery failed; entry remains unresolved",
+              details: deliveryResult,
+            }, req.correlationId)
+          );
+        }
+
+        await webhookDeadLetterService.markResolved(id, "retried");
 
         res.json(
           successResponse({
-            message: "Dead-letter entry requeued for delivery",
+            message: "Dead-letter entry redelivered successfully",
             id,
             requeueCount: requeued.requeueCount,
           }, req.correlationId)

@@ -81,6 +81,12 @@ describe('POST /api/webhooks/dead-letter/:id/requeue', () => {
       ...mockEntry,
       requeueCount: 1,
     });
+    mockWebhookDeliveryService.deliverWebhook.mockResolvedValue({
+      success: true,
+      statusCode: 200,
+      attempts: 1,
+      error: null,
+    });
 
     const app = buildApp();
     const response = await request(app)
@@ -93,6 +99,41 @@ describe('POST /api/webhooks/dead-letter/:id/requeue', () => {
     });
     expect(mockWebhookDeadLetterService.getEntry).toHaveBeenCalledWith(deadLetterId);
     expect(mockWebhookDeadLetterService.requeueDeadLetter).toHaveBeenCalledWith(deadLetterId);
+    expect(mockWebhookDeliveryService.deliverWebhook).toHaveBeenCalledWith(
+      mockSubscription,
+      mockEntry.event,
+      { amount: 100 },
+      `requeue_${deadLetterId}`
+    );
+    expect(mockWebhookDeadLetterService.markResolved).toHaveBeenCalledWith(deadLetterId, 'retried');
+  });
+
+  it('leaves the entry unresolved when requeue delivery fails', async () => {
+    const mockEntry = {
+      id: 'dl-failed',
+      subscriptionId: 'sub-456',
+      event: 'payment.completed',
+      payload: JSON.stringify({ data: { amount: 100 } }),
+      requeueCount: 0,
+      resolvedAt: null,
+    };
+    const mockSubscription = { id: 'sub-456', url: 'https://webhook.example.com' };
+    mockWebhookDeadLetterService.getEntry.mockResolvedValue(mockEntry);
+    mockWebhookDeadLetterService.requeueDeadLetter.mockResolvedValue({ ...mockEntry, requeueCount: 1 });
+    mockWebhookService.getSubscription.mockResolvedValue(mockSubscription);
+    mockWebhookDeliveryService.deliverWebhook.mockResolvedValue({
+      success: false,
+      statusCode: 503,
+      attempts: 3,
+      error: 'Service Unavailable',
+    });
+
+    const response = await request(buildApp())
+      .post('/api/webhooks/dead-letter/dl-failed/requeue')
+      .expect(502);
+
+    expect(response.body.error.code).toBe('DELIVERY_FAILED');
+    expect(mockWebhookDeadLetterService.markResolved).not.toHaveBeenCalled();
   });
 
   it('returns 404 when dead-letter entry not found', async () => {

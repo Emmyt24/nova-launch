@@ -83,6 +83,20 @@ describe('GET /api/events/catchup', () => {
     expect(res.body.events).toBeUndefined();
   });
 
+  it('signals a cursor reset when since is ahead of the current sequence', async () => {
+    bus._setSequence(3);
+    bus._setHistory([makeEvent(1), makeEvent(2), makeEvent(3)]);
+
+    const res = await request(makeApp()).get('/api/events/catchup?since=8');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      truncated: true,
+      reason: 'cursor_reset',
+      currentSequence: 3,
+    });
+    expect(res.body.events).toBeUndefined();
+  });
+
   it('includes currentSequence in all responses', async () => {
     bus._setSequence(7);
     bus._setHistory([makeEvent(7)]);

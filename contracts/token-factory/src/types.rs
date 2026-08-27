@@ -185,6 +185,80 @@ pub struct PreflightItemResult {
     pub error_code: u32,
 }
 
+/// Outcome of a single `schedule_batch_reveal` / `resume_batch_reveal` /
+/// `schedule_batch_settle` / `resume_batch_settle` call.
+///
+/// A batch is only ever split at item boundaries — `executed_count` items
+/// were fully committed to storage, `remaining_count` were not touched at
+/// all. `continuation_pending` is `true` when `remaining_count > 0`, in
+/// which case the tenant must call the matching `resume_*` entry point on a
+/// later ledger to make further progress.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchScheduleResult {
+    pub executed_count: u32,
+    pub remaining_count: u32,
+    pub continuation_pending: bool,
+}
+
+/// Pending, gas-budget-deferred continuation of a `batch_reveal` call.
+///
+/// Persists the still-unexecuted tail of the batch so it can resume on a
+/// later ledger without re-validating or re-executing already-committed
+/// items.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevealBatchContinuation {
+    pub creator: Address,
+    pub remaining_tokens: Vec<TokenCreationParams>,
+    /// Fee payment remaining to cover `remaining_tokens`.
+    pub remaining_fee_payment: i128,
+    /// Ledger sequence this continuation last executed a chunk on.
+    pub last_activity_ledger: u32,
+}
+
+/// Lifecycle state of a cross-contract settlement `Reservation` (#1624).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationStatus {
+    /// Amount reserved against max-supply headroom; not yet minted.
+    Prepared = 0,
+    /// Reservation finalized — tokens minted to `recipient`.
+    Committed = 1,
+    /// Reservation released without minting (explicit abort, failed commit,
+    /// or timeout cleanup).
+    Aborted = 2,
+}
+
+/// A two-phase-commit reservation for a cross-contract treasury
+/// disbursement, created by `prepare_settlement` and resolved by exactly one
+/// of `commit_settlement`, `abort_settlement`, or `cleanup_stuck_reservation`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reservation {
+    pub id: u64,
+    /// Governance-side proposal id this reservation was created for.
+    pub proposal_id: u64,
+    pub recipient: Address,
+    pub token_index: u32,
+    pub amount: i128,
+    pub status: ReservationStatus,
+    /// Ledger sequence the reservation was created (`prepare`d) on.
+    pub created_ledger: u32,
+}
+
+/// Pending, gas-budget-deferred continuation of a `batch_settle` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettleBatchContinuation {
+    pub creator: Address,
+    pub token_index: u32,
+    pub remaining_recipients: Vec<(Address, i128)>,
+    pub minted_so_far: i128,
+    /// Ledger sequence this continuation last executed a chunk on.
+    pub last_activity_ledger: u32,
+}
+
 /// Timelock configuration
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,7 +285,14 @@ pub struct TimelockDelayConfig {
     pub default_delay: u64,
 }
 
-/// Governance configuration
+/// Configuration for governance voting thresholds
+///
+/// Defines the quorum and approval requirements for all governance proposals.
+///
+/// # Fields
+/// * `quorum_percent` - Minimum participation percentage required (0-100)
+/// * `approval_percent` - Minimum approval percentage required (0-100)
+/// * `voting_period` - Duration in seconds that voting remains open after proposal creation
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GovernanceConfig {
@@ -271,6 +352,11 @@ pub struct BuybackCampaign {
     pub budget: i128,
     pub spent: i128,
     pub tokens_bought: i128,
+    /// Tokens actually burned so far. Tracked separately from `tokens_bought`
+    /// so a burn that under-delivers is visible rather than silently absorbed.
+    pub tokens_burned: i128,
+    /// Hard cap on the quote amount a single `execute_buyback_step` may spend.
+    pub max_spend_per_step: i128,
     pub execution_count: u32,
     pub start_time: u64,
     pub end_time: u64,
@@ -608,12 +694,10 @@ pub struct PriceData {
 ///
 /// # Fields
 /// * `max_age_seconds` - Maximum acceptable age of a price before it is considered stale
-/// * `min_sources` - Minimum number of authorized sources that must have submitted a price
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
     pub max_age_seconds: u64,
-    pub min_sources: u32,
 }
 
 /// Batch fee update structure for Phase 2 optimization
@@ -694,6 +778,49 @@ pub struct BurnAuction {
     pub status: AuctionStatus,
     pub created_at: u64,
     pub settled_at: Option<u64>,
+}
+
+/// Constant-product AMM pool state.
+///
+/// Stores reserves and LP token supply for a (token_a, token_b) pair.
+/// The pair ordering is determined by the first `add_liquidity` call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmmPool {
+    pub token_a: Address,
+    pub token_b: Address,
+    pub reserve_a: i128,
+    pub reserve_b: i128,
+    pub total_lp: i128,
+}
+
+/// A record of tokens escrowed by `lock_tokens` for a cross-chain bridge
+/// transfer, keyed by the contract-assigned `nonce`.
+///
+/// The nonce must be supplied verbatim to `release_tokens` (on the
+/// destination-side deployment of this contract) to authorize release; the
+/// lock record itself is not consulted by `release_tokens` — verifying that
+/// a matching lock actually occurred on the source chain is an off-chain /
+/// admin responsibility (see `bridge.rs` module docs).
+///
+/// # Fields
+/// * `nonce` - Monotonically-assigned, single-use identifier for this lock
+/// * `sender` - Address that authorized and funded the lock
+/// * `token` - Token contract address that was locked
+/// * `amount` - Amount of `token` escrowed (smallest unit)
+/// * `destination_chain` - Free-form identifier of the target chain (e.g. "ethereum")
+/// * `destination_address` - Raw destination-chain address bytes (format is chain-specific)
+/// * `locked_at` - Ledger timestamp when the lock was created
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeLock {
+    pub nonce: u64,
+    pub sender: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub destination_chain: String,
+    pub destination_address: Bytes,
+    pub locked_at: u64,
 }
 
 /// Storage keys for contract data
@@ -811,28 +938,71 @@ pub enum DataKey {
     DistributionClaimed(u32, Address),
     /// Running total of amounts claimed for a distribution
     DistributionClaimedTotal(u32),
-    // Cross-contract trusted caller allowlist
-    TrustedCaller(Address),
-    // Role-based access control: (token_index, address, role_discriminant)
-    TokenRole(u32, Address, u32),
-    // Cross-contract multisig
-    MultiSigConfig,
-    MultiSigProposal(u64),
-    MultiSigProposalCount,
-    MultiSigApproval(u64, Address),
-    // Asset fractionalization
-    AssetToVault(BytesN<32>),
-    OwnerFractionalVaultCount(Address),
-    FractionalVault(u64),
-    FractionalVaultCount,
-    FractionalVaultByOwner(Address, u32),
-    // Per-token freeze allowlist: (token_address, address)
+    // ── Commit-reveal session storage (#1626) ──
+    /// Commit-reveal session: session_id → CommitRevealSession
+    CommitRevealSession(u64),
+    /// Total number of commit-reveal sessions created
+    CommitRevealSessionCount,
+    /// Commitment record: (session_id, index) → CommitRecord
+    CommitRecord(u64, u32),
+    /// Bidder index within a session: (session_id, bidder) → u32
+    CommitRevealBidderIndex(u64, Address),
+    /// Whether the metadata identity lock has been engaged
+    MetadataLocked,
+    /// Ledger sequence at which the metadata identity lock was engaged
+    MetadataLockedAt,
+    /// Frozen/blacklist state for (token_address, address)
     FrozenAddress(Address, Address),
-    // Scheduled burns
-    BurnSchedule(u64),
-    BurnScheduleCount,
-    // Metadata update history count: token_index
+    /// Ledger timestamp at which (token_address, address) was frozen
+    FreezeTimestamp(Address, Address),
+    /// Unfreeze cooldown grace period (seconds) for a token
+    FreezeCooldown(Address),
+    /// RBAC role grant: (token_index, address, role_discriminant) → bool
+    TokenRole(u32, Address, u32),
+    /// Number of metadata history records for a token
     MetadataHistoryCount(u32),
+    /// Multisig admin-change configuration (signers + threshold)
+    MultiSigConfig,
+    /// Total number of multisig proposals created
+    MultiSigProposalCount,
+    /// Multisig proposal record, keyed by proposal id
+    MultiSigProposal(u64),
+    /// Whether `approver` has approved multisig proposal `proposal_id`
+    MultiSigApproval(u64, Address),
+    /// Whether `caller` is a registered cross-contract trusted caller
+    TrustedCaller(Address),
+    /// FIFO execution queue of proposal ids per `ActionType`
+    ProposalTypeQueue(ActionType),
+    /// Current per-ledger gas budget for the batch scheduler (#1625)
+    LedgerGasBudget,
+    /// Tenants currently holding a pending batch-scheduler continuation
+    FairShareQueue,
+    /// Gas used by `tenant` on `ledger_seq`: (tenant, ledger_seq) → u64
+    TenantLedgerGasUsed(Address, u32),
+    /// Total gas used by all tenants on `ledger_seq`
+    LedgerGasUsed(u32),
+    /// Pending `schedule_batch_reveal` continuation for `creator`
+    RevealContinuation(Address),
+    /// Pending `schedule_batch_settle` continuation for `creator`
+    SettleContinuation(Address),
+    /// Total amount of `token_index` currently reserved (prepared but not
+    /// yet committed/aborted) by the two-phase settlement protocol (#1624)
+    ReservedTotal(u32),
+    /// Total number of settlement reservations created
+    ReservationCount,
+    /// Settlement reservation record, keyed by reservation id
+    Reservation(u64),
+    /// Ledgers a reservation may sit `Prepared` before it can be force-released
+    ReservationTimeoutLedgers,
+    // ── Staking (#1757) ──
+    /// Staking pool configuration and state, keyed by pool_id
+    StakingPool(u64),
+    /// Total number of staking pools created
+    StakingPoolCount,
+    /// Next available staking pool ID
+    NextStakingPoolId,
+    /// A user's stake within a pool: (pool_id, staker) → StakeInfo
+    UserStake(u64, Address),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -936,7 +1106,16 @@ pub enum ProposalPriority {
     Critical = 3,
 }
 
-/// Entry in the priority execution queue
+/// Entry in the proposal execution queue
+///
+/// Represents a proposal that is queued for execution after timelock expires.
+/// Entries are sorted by priority (descending) and enqueue time (ascending, FIFO).
+///
+/// # Fields
+/// * `proposal_id` - ID of the queued proposal
+/// * `priority` - Execution priority (higher values execute first)
+/// * `enqueued_at` - Ledger timestamp when entry was added to queue
+/// * `eta` - Earliest timestamp when proposal can be executed (timelock expiry)
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueEntry {
@@ -1135,8 +1314,78 @@ impl Error {
     pub const DistributionAlreadyClaimed: Self = Self(103);
     pub const DistributionAlreadyReclaimed: Self = Self(104);
     pub const DistributionZeroSupply: Self = Self(105);
-    // Multisig errors
-    pub const DuplicateSigners: Self = Self(106);
+    // Commit-reveal errors (#1626)
+    pub const CommitRevealSessionNotFound: Self = Self(106);
+    pub const CommitWindowClosed: Self = Self(107);
+    pub const RevealWindowClosed: Self = Self(108);
+    pub const RevealWindowOpen: Self = Self(109);
+    pub const AlreadyCommitted: Self = Self(110);
+    pub const AlreadyRevealed: Self = Self(111);
+    pub const CommitmentMismatch: Self = Self(112);
+    pub const NoBidderCommitment: Self = Self(113);
+    pub const NoValidReveals: Self = Self(114);
+    pub const AlreadyFinalised: Self = Self(115);
+    pub const TooManyBidders: Self = Self(116);
+    // Compliance reporting errors
+    pub const ComplianceRuleExists: Self = Self(117);
+    pub const ComplianceRuleNotFound: Self = Self(118);
+    pub const ComplianceCheckFailed: Self = Self(119);
+    // Freeze cooldown errors
+    pub const FreezeCooldownActive: Self = Self(120);
+    // Batch scheduler continuation errors
+    pub const ContinuationAlreadyPending: Self = Self(121);
+    pub const NoContinuationPending: Self = Self(122);
+    pub const ContinuationNotYetEligible: Self = Self(123);
+    // Settlement reservation errors
+    pub const ReservationNotFound: Self = Self(124);
+    pub const ReservationNotPending: Self = Self(125);
+    pub const ReservationNotYetStuck: Self = Self(126);
+    // Milestone verification errors (#1133 extension)
+    pub const InvalidProof: Self = Self(127);
+    pub const VerificationUnavailable: Self = Self(128);
+    // Proposal type queue errors
+    pub const ProposalNotAtQueueFront: Self = Self(129);
+    // Vault circuit breaker errors
+    pub const VaultCircuitBreakerActive: Self = Self(130);
+    // Metadata identity lock errors
+    pub const MetadataImmutable: Self = Self(131);
+    // Multisig admin-change errors
+    pub const DuplicateSigners: Self = Self(132);
+    // Staking errors (#1757)
+    pub const StakingPoolNotFound: Self = Self(133);
+    pub const StakingNotActive: Self = Self(134);
+    pub const InvalidRewardRate: Self = Self(135);
+    pub const InsufficientStake: Self = Self(136);
+
+    /// Stable string name for this error code, for off-chain event payloads
+    /// (see `emit_operation_failed`). Covers the vault entry-point error
+    /// surface (`create_vault`, `claim_vault`, `cancel_vault`,
+    /// `verify_milestone`, `propose_vault_owner_change`,
+    /// `approve_vault_owner_change`); any other code maps to `"UnknownError"`
+    /// rather than failing, so this never breaks when new errors are added.
+    pub fn name(&self) -> &'static str {
+        match self.0 {
+            14 => "ContractPaused",
+            10 => "InvalidAmount",
+            3 => "InvalidParameters",
+            4 => "TokenNotFound",
+            2 => "Unauthorized",
+            8 => "ArithmeticError",
+            21 => "NothingToClaim",
+            20 => "CliffNotReached",
+            95 => "MilestoneUnauthorized",
+            96 => "MilestoneAlreadyVerified",
+            97 => "VaultOwnerChangePending",
+            98 => "VaultOwnerChangeNotFound",
+            99 => "VaultOwnerChangeAlreadyApproved",
+            130 => "VaultCircuitBreakerActive",
+            133 => "StakingPoolNotFound",
+            134 => "StakingNotActive",
+            135 => "InvalidRewardRate",
+            136 => "InsufficientStake",
+            _ => "UnknownError",
+        }
+    }
 }
 
 impl From<Error> for soroban_sdk::Error {
@@ -1162,12 +1411,18 @@ impl From<soroban_sdk::Error> for Error {
     }
 }
 
-// Buyback error code mapping (reusing existing errors):
-// - CampaignNotFound -> TokenNotFound (4)
-// - CampaignInactive -> ContractPaused (14)  
-// - BudgetExhausted -> InsufficientFee (1)
-// - SlippageExceeded -> InvalidAmount (10)
-// - InvalidBuybackParams -> InvalidParameters (3)
+// Buyback-and-burn campaign error codes (issue #1764).
+// These are dedicated discriminants -- earlier revisions reused unrelated
+// codes (e.g. ContractPaused for an inactive campaign), which made off-chain
+// error decoding ambiguous.
+// - CampaignNotFound      -> 51
+// - CampaignInactive      -> 133
+// - ExceedsStepLimit      -> 134
+// - SlippageExceeded      -> 135
+// - ReconciliationFailed  -> 136
+// - InvariantViolation    -> 137
+// - InsufficientBudget    -> 53
+// - InvalidStateTransition-> 40
 
 /// Type of pending change
 ///
@@ -1191,6 +1446,21 @@ pub enum VoteChoice {
     Abstain,
 }
 
+/// State transitions for a governance proposal lifecycle
+///
+/// A proposal moves through these states: Created → Active → Succeeded/Defeated
+/// → Queued → Executed/Cancelled, with Expired/Failed as terminal states.
+///
+/// # Variants
+/// * `Created` - Proposal just created, voting not yet started
+/// * `Active` - Voting period is active
+/// * `Succeeded` - Voting ended with approval threshold met and quorum satisfied
+/// * `Defeated` - Voting ended without meeting approval or quorum requirements
+/// * `Queued` - Succeeded proposal queued for execution after timelock
+/// * `Executed` - Proposal executed successfully
+/// * `Cancelled` - Proposal cancelled before execution
+/// * `Expired` - Proposal never executed before expiration timestamp
+/// * `Failed` - Proposal execution failed (execution reverted)
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProposalState {
@@ -1323,7 +1593,7 @@ pub struct PaginatedTokens {
 /// * `created_ledger` - Ledger sequence number when the stream was created
 /// * `stream_id` - Unique stream identifier (tiebreaker for same-ledger creates)
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamCursor {
     pub created_ledger: u32,
     pub stream_id: u64,
@@ -1340,13 +1610,29 @@ impl StreamCursor {
 ///
 /// # Fields
 /// * `streams` - Page of streams ordered by `(created_ledger, stream_id)` ascending
-/// * `next_cursor` - Cursor to pass to the next call (`None` when this is the last page)
+/// * `next_cursor` - Cursor to pass to the next call; only meaningful when `has_more` is `true`
 /// * `has_more` - Whether additional streams exist beyond this page
+///
+/// `next_cursor` is a plain `StreamCursor` rather than `Option<StreamCursor>`
+/// because `Option<T>` of a custom `#[contracttype]` is not marshalled
+/// correctly by this soroban-sdk version's generated contract client when
+/// nested inside another `#[contracttype]` struct — check `has_more` rather
+/// than relying on an absent cursor.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaginatedStreamsResponse {
     pub streams: soroban_sdk::Vec<StreamInfo>,
-    pub next_cursor: Option<StreamCursor>,
+    /// Cursor for the next page: empty when this is the last page, otherwise a
+    /// single element.
+    ///
+    /// Modelled as a 0-or-1 element `Vec` rather than the more natural
+    /// `Option<StreamCursor>` because soroban-sdk 27's `#[contracttype]`
+    /// derives only a fallible `TryFrom<StreamCursor> for ScVal`, while the
+    /// XDR crate's `ScVal: From<&Option<T>>` requires `T: Into<ScVal>`. An
+    /// `Option` of a user-defined contract type therefore fails to compile in
+    /// any build where `soroban-sdk/testutils` is unified in -- i.e. every
+    /// test build of this crate. `has_more` remains the flag to branch on.
+    pub next_cursor: soroban_sdk::Vec<StreamCursor>,
     pub has_more: bool,
 }
 

@@ -18,7 +18,6 @@ import {
   OnChainProjectionVerifier,
   OnChainDataFetcher,
   type OnChainTokenState,
-  type OnChainCampaignState,
   type ConsistencyCheckResult,
 } from '../services/consistency/onchainProjectionVerifier';
 
@@ -744,14 +743,6 @@ describe('Production Projection Consistency Tests', () => {
         findMany: vi.fn(),
         count: vi.fn(),
       },
-      campaign: {
-        findMany: vi.fn(),
-        findUnique: vi.fn(),
-      },
-      campaignExecution: {
-        count: vi.fn(),
-        aggregate: vi.fn(),
-      },
       $disconnect: vi.fn(),
     };
 
@@ -880,205 +871,6 @@ describe('Production Projection Consistency Tests', () => {
     });
   });
 
-  describe('Campaign Projection Drift', () => {
-    it('should detect campaign status drift', async () => {
-      mockPrisma.campaign.findUnique.mockResolvedValue({
-        campaignId: 1,
-        status: 'ACTIVE',
-        currentAmount: BigInt('500000'),
-        executionCount: 3,
-        targetAmount: BigInt('1000000'),
-      });
-
-      const onChainState: OnChainCampaignState = {
-        campaignId: 1,
-        tokenId: 'token-uuid',
-        creator: 'GCREATOR123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789ABC',
-        status: 'COMPLETED',
-        targetAmount: BigInt('1000000'),
-        currentAmount: BigInt('1000000'),
-        executionCount: 5,
-      };
-
-      const diffs = await verifier.checkSingleCampaign(1, onChainState);
-
-      expect(diffs.some(d => d.field === 'status')).toBe(true);
-      expect(diffs.find(d => d.field === 'status')?.backendValue).toBe('ACTIVE');
-      expect(diffs.find(d => d.field === 'status')?.onChainValue).toBe('COMPLETED');
-    });
-
-    it('should detect campaign amount drift', async () => {
-      mockPrisma.campaign.findUnique.mockResolvedValue({
-        campaignId: 1,
-        status: 'ACTIVE',
-        currentAmount: BigInt('300000'),
-        executionCount: 2,
-        targetAmount: BigInt('1000000'),
-      });
-
-      const onChainState: OnChainCampaignState = {
-        campaignId: 1,
-        tokenId: 'token-uuid',
-        creator: 'GCREATOR123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789ABC',
-        status: 'ACTIVE',
-        targetAmount: BigInt('1000000'),
-        currentAmount: BigInt('500000'),
-        executionCount: 3,
-      };
-
-      const diffs = await verifier.checkSingleCampaign(1, onChainState);
-
-      expect(diffs.some(d => d.field === 'currentAmount')).toBe(true);
-      expect(diffs.some(d => d.field === 'executionCount')).toBe(true);
-    });
-
-    it('should detect missing campaign in backend', async () => {
-      mockPrisma.campaign.findUnique.mockResolvedValue(null);
-
-      const onChainState: OnChainCampaignState = {
-        campaignId: 999,
-        tokenId: 'token-uuid',
-        creator: 'GCREATOR123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789ABC',
-        status: 'ACTIVE',
-        targetAmount: BigInt('1000000'),
-        currentAmount: BigInt('0'),
-        executionCount: 0,
-      };
-
-      const diffs = await verifier.checkSingleCampaign(999, onChainState);
-
-      expect(diffs.length).toBe(1);
-      expect(diffs[0].field).toBe('existence');
-      expect(diffs[0].backendValue).toBeNull();
-      expect(diffs[0].onChainValue).toBe('exists');
-    });
-
-    it('should pass when campaign projections match', async () => {
-      mockPrisma.campaign.findUnique.mockResolvedValue({
-        campaignId: 1,
-        status: 'ACTIVE',
-        currentAmount: BigInt('500000'),
-        executionCount: 3,
-        targetAmount: BigInt('1000000'),
-      });
-
-      const onChainState: OnChainCampaignState = {
-        campaignId: 1,
-        tokenId: 'token-uuid',
-        creator: 'GCREATOR123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789ABC',
-        status: 'ACTIVE',
-        targetAmount: BigInt('1000000'),
-        currentAmount: BigInt('500000'),
-        executionCount: 3,
-      };
-
-      const diffs = await verifier.checkSingleCampaign(1, onChainState);
-
-      expect(diffs.length).toBe(0);
-    });
-  });
-
-  describe('Batch Campaign Checks', () => {
-    it('should check multiple campaigns and aggregate results', async () => {
-      mockPrisma.campaign.findUnique
-        .mockResolvedValueOnce({
-          campaignId: 1,
-          status: 'ACTIVE',
-          currentAmount: BigInt('500000'),
-          executionCount: 3,
-          targetAmount: BigInt('1000000'),
-        })
-        .mockResolvedValueOnce({
-          campaignId: 2,
-          status: 'COMPLETED',
-          currentAmount: BigInt('2000000'),
-          executionCount: 10,
-          targetAmount: BigInt('2000000'),
-        })
-        .mockResolvedValueOnce(null);
-
-      const onChainStates: OnChainCampaignState[] = [
-        {
-          campaignId: 1,
-          tokenId: 'token-1',
-          creator: 'GCREATOR1',
-          status: 'ACTIVE',
-          targetAmount: BigInt('1000000'),
-          currentAmount: BigInt('500000'),
-          executionCount: 3,
-        },
-        {
-          campaignId: 2,
-          tokenId: 'token-2',
-          creator: 'GCREATOR2',
-          status: 'COMPLETED',
-          targetAmount: BigInt('2000000'),
-          currentAmount: BigInt('2000000'),
-          executionCount: 10,
-        },
-        {
-          campaignId: 3,
-          tokenId: 'token-3',
-          creator: 'GCREATOR3',
-          status: 'ACTIVE',
-          targetAmount: BigInt('500000'),
-          currentAmount: BigInt('0'),
-          executionCount: 0,
-        },
-      ];
-
-      const result = await verifier.checkMultipleCampaigns(onChainStates);
-
-      expect(result.campaignsChecked).toBe(3);
-      expect(result.consistent).toBe(false);
-      expect(result.diffs.some(d => d.identifier === '3' && d.field === 'existence')).toBe(true);
-    });
-
-    it('should return consistent=true when all campaigns match', async () => {
-      mockPrisma.campaign.findUnique
-        .mockResolvedValueOnce({
-          campaignId: 1,
-          status: 'ACTIVE',
-          currentAmount: BigInt('500000'),
-          executionCount: 3,
-          targetAmount: BigInt('1000000'),
-        })
-        .mockResolvedValueOnce({
-          campaignId: 2,
-          status: 'COMPLETED',
-          currentAmount: BigInt('2000000'),
-          executionCount: 10,
-          targetAmount: BigInt('2000000'),
-        });
-
-      const onChainStates: OnChainCampaignState[] = [
-        {
-          campaignId: 1,
-          tokenId: 'token-1',
-          creator: 'GCREATOR1',
-          status: 'ACTIVE',
-          targetAmount: BigInt('1000000'),
-          currentAmount: BigInt('500000'),
-          executionCount: 3,
-        },
-        {
-          campaignId: 2,
-          tokenId: 'token-2',
-          creator: 'GCREATOR2',
-          status: 'COMPLETED',
-          targetAmount: BigInt('2000000'),
-          currentAmount: BigInt('2000000'),
-          executionCount: 10,
-        },
-      ];
-
-      const result = await verifier.checkMultipleCampaigns(onChainStates);
-
-      expect(result.consistent).toBe(true);
-      expect(result.diffs.length).toBe(0);
-    });
-  });
-
   describe('Result Formatting', () => {
     it('should format results for human-readable output', () => {
       const result: ConsistencyCheckResult = {
@@ -1087,7 +879,6 @@ describe('Production Projection Consistency Tests', () => {
         totalChecked: 15,
         tokensChecked: 10,
         burnsChecked: 3,
-        campaignsChecked: 2,
         diffs: [
           {
             entity: 'token',
@@ -1095,14 +886,6 @@ describe('Production Projection Consistency Tests', () => {
             field: 'totalBurned',
             backendValue: '500000',
             onChainValue: '1000000',
-            severity: 'error',
-          },
-          {
-            entity: 'campaign',
-            identifier: '1',
-            field: 'status',
-            backendValue: 'ACTIVE',
-            onChainValue: 'COMPLETED',
             severity: 'error',
           },
         ],
@@ -1115,7 +898,6 @@ describe('Production Projection Consistency Tests', () => {
       expect(formatted).toContain('Consistent: ❌ NO');
       expect(formatted).toContain('Tokens checked:    10');
       expect(formatted).toContain('Burns checked:     3');
-      expect(formatted).toContain('Campaigns checked: 2');
       expect(formatted).toContain('GTOKEN123');
       expect(formatted).toContain('totalBurned');
     });
@@ -1127,7 +909,6 @@ describe('Production Projection Consistency Tests', () => {
         totalChecked: 15,
         tokensChecked: 10,
         burnsChecked: 3,
-        campaignsChecked: 2,
         diffs: [],
         errors: [],
         duration: 500,
@@ -1146,7 +927,6 @@ describe('Production Projection Consistency Tests', () => {
         totalChecked: 5,
         tokensChecked: 3,
         burnsChecked: 1,
-        campaignsChecked: 1,
         diffs: [
           {
             entity: 'burn',
@@ -1171,48 +951,4 @@ describe('Production Projection Consistency Tests', () => {
     });
   });
 
-  describe('Internal Campaign Projection Consistency', () => {
-    it('should verify execution count matches CampaignExecution records', async () => {
-      mockPrisma.campaign.findMany.mockResolvedValue([
-        {
-          campaignId: 1,
-          status: 'ACTIVE',
-          currentAmount: BigInt('500000'),
-          executionCount: 5,
-          targetAmount: BigInt('1000000'),
-        },
-      ]);
-
-      mockPrisma.campaignExecution.count.mockResolvedValue(3);
-      mockPrisma.campaignExecution.aggregate.mockResolvedValue({
-        _sum: { amount: BigInt('300000') },
-      });
-
-      const result = await verifier.checkCampaignProjections();
-
-      expect(result.diffs.some(d => d.field === 'executionCount')).toBe(true);
-      expect(result.diffs.some(d => d.field === 'currentAmount')).toBe(true);
-    });
-
-    it('should pass when internal projections are consistent', async () => {
-      mockPrisma.campaign.findMany.mockResolvedValue([
-        {
-          campaignId: 1,
-          status: 'ACTIVE',
-          currentAmount: BigInt('500000'),
-          executionCount: 5,
-          targetAmount: BigInt('1000000'),
-        },
-      ]);
-
-      mockPrisma.campaignExecution.count.mockResolvedValue(5);
-      mockPrisma.campaignExecution.aggregate.mockResolvedValue({
-        _sum: { amount: BigInt('500000') },
-      });
-
-      const result = await verifier.checkCampaignProjections();
-
-      expect(result.diffs.length).toBe(0);
-    });
-  });
 });

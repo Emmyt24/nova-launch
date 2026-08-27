@@ -67,6 +67,16 @@ export interface ContractErrorDetails {
 }
 
 /**
+ * Validation error thrown when a governance event payload is malformed.
+ */
+export class GovernanceEventValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GovernanceEventValidationError';
+  }
+}
+
+/**
  * Known contract error codes from CONTRACT_ERROR_MATRIX.md
  */
 const KNOWN_CONTRACT_ERRORS = new Set([
@@ -90,30 +100,60 @@ const KNOWN_CONTRACT_ERRORS = new Set([
   'CONTRACT_PAUSED',
 ]);
 
-/**
- * Governance Event Parser
- * 
- * Parses and persists governance events from the blockchain
- * into the database for analytics and tracking.
- * 
- * Preserves structured error details aligned with frontend error semantics.
- */
-export class GovernanceEventParser {
-  private readonly mapper: GovernanceEventMapper;
-  private readonly cursorStore: EventCursorStore;
-  private readonly transport: GovernanceCatchupTransport;
+  /**
+   * Governance Event Parser
+   * 
+   * Parses and persists governance events from the blockchain
+   * into the database for analytics and tracking.
+   * 
+   * Preserves structured error details aligned with frontend error semantics.
+   */
+  export class GovernanceEventParser {
+    private readonly mapper: GovernanceEventMapper;
+    private readonly cursorStore: EventCursorStore;
+    private readonly transport: GovernanceCatchupTransport;
 
-  constructor(
-    private prisma: PrismaClient,
-    opts?: {
-      transport?: GovernanceCatchupTransport;
-      cursorStore?: EventCursorStore;
-    },
-  ) {
-    this.mapper = new GovernanceEventMapper();
-    this.cursorStore = opts?.cursorStore ?? new EventCursorStore(prisma);
-    this.transport = opts?.transport ?? new DefaultGovernanceCatchupTransport();
-  }
+    constructor(
+      private prisma: PrismaClient,
+      opts?: {
+        transport?: GovernanceCatchupTransport;
+        cursorStore?: EventCursorStore;
+      },
+    ) {
+      this.mapper = new GovernanceEventMapper();
+      this.cursorStore = opts?.cursorStore ?? new EventCursorStore(prisma);
+      this.transport = opts?.transport ?? new DefaultGovernanceCatchupTransport();
+    }
+
+    private validateBigIntString(value: unknown, field: string): string {
+      const str = typeof value === 'string' ? value : String(value ?? '');
+      if (!/^-?\d+$/.test(str)) {
+        throw new GovernanceEventValidationError(`Invalid ${field}: ${str}`);
+      }
+      return str;
+    }
+
+    private validateProposalStatus(status: unknown, field: string): ProposalStatus {
+      const str = typeof status === 'string' ? status.toLowerCase() : String(status ?? '').toLowerCase();
+      const statusMap: Record<string, ProposalStatus> = {
+        'active': ProposalStatus.ACTIVE,
+        'passed': ProposalStatus.PASSED,
+        'rejected': ProposalStatus.REJECTED,
+        'queued': ProposalStatus.QUEUED,
+        'executed': ProposalStatus.EXECUTED,
+        'cancelled': ProposalStatus.CANCELLED,
+        'expired': ProposalStatus.EXPIRED,
+        'created': ProposalStatus.ACTIVE,
+        'succeeded': ProposalStatus.PASSED,
+        'defeated': ProposalStatus.REJECTED,
+        'failed': ProposalStatus.REJECTED,
+      };
+      const mapped = statusMap[str];
+      if (!mapped) {
+        throw new GovernanceEventValidationError(`Unknown ${field}: ${String(status)}`);
+      }
+      return mapped;
+    }
 
   /**
    * Parse contract error from error response
@@ -199,6 +239,9 @@ export class GovernanceEventParser {
    */
   async parseProposalCreatedEvent(event: ProposalCreatedEvent): Promise<void> {
     try {
+      const quorum = this.validateBigIntString(event.quorum, 'quorum');
+      const threshold = this.validateBigIntString(event.threshold, 'threshold');
+
       await this.prisma.proposal.upsert({
         where: { proposalId: event.proposalId },
         create: {
@@ -211,8 +254,8 @@ export class GovernanceEventParser {
           status: ProposalStatus.ACTIVE,
           startTime: event.startTime,
           endTime: event.endTime,
-          quorum: BigInt(event.quorum),
-          threshold: BigInt(event.threshold),
+          quorum: BigInt(quorum),
+          threshold: BigInt(threshold),
           metadata: event.metadata,
           txHash: event.txHash,
           createdAt: event.timestamp,
@@ -232,6 +275,8 @@ export class GovernanceEventParser {
    */
   async parseVoteCastEvent(event: VoteCastEvent): Promise<void> {
     try {
+      const weight = this.validateBigIntString(event.weight, 'vote weight');
+
       const proposal = await this.prisma.proposal.findUnique({
         where: { proposalId: event.proposalId },
       });
@@ -246,7 +291,7 @@ export class GovernanceEventParser {
           proposalId: proposal.id,
           voter: event.voter,
           support: event.support,
-          weight: BigInt(event.weight),
+          weight: BigInt(weight),
           reason: event.reason,
           txHash: event.txHash,
           timestamp: event.timestamp,
@@ -367,10 +412,12 @@ export class GovernanceEventParser {
         throw new Error(`Proposal ${event.proposalId} not found`);
       }
 
+      const newStatus = this.validateProposalStatus(event.newStatus, 'proposal status');
+
       await this.prisma.proposal.update({
         where: { id: proposal.id },
         data: {
-          status: event.newStatus as ProposalStatus,
+          status: newStatus,
         },
       });
 
@@ -417,10 +464,15 @@ export class GovernanceEventParser {
         return;
       }
 
+      const status = this.validateProposalStatus(event.status, 'snapshot status');
+      this.validateBigIntString(event.yesVotes, 'snapshot yesVotes');
+      this.validateBigIntString(event.noVotes, 'snapshot noVotes');
+      this.validateBigIntString(event.quorumRequired, 'snapshot quorumRequired');
+
       await this.prisma.proposal.update({
         where: { id: proposal.id },
         data: {
-          status: event.status as ProposalStatus,
+          status,
         },
       });
 

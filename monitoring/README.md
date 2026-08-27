@@ -100,6 +100,37 @@ A **14× burn rate** means errors are arriving 14 times faster than the budget
 allows. For the availability SLO (budget = 0.1%), this fires when the 5-minute
 error rate exceeds **1.4%**.
 
+## Alert–Dashboard Correlation
+
+Every Prometheus alert rule includes a `dashboard_url` annotation linking to the
+Grafana dashboard panel an on-call engineer should examine first when the alert
+fires.
+
+| Alert File                   | Targeted Dashboard          |
+| ---------------------------- | --------------------------- |
+| `prometheus/alerts/api.yml`  | `nova-api` (API Performance) |
+| `prometheus/alerts/blockchain.yml` | `nova-blockchain` (Blockchain Activity) |
+| `prometheus/alerts/infrastructure.yml` | `nova-infra` (Infrastructure) / `nova-api` |
+| `prometheus/alerts/webhooks.yml` | `nova-api` (API Performance) |
+| `prometheus/alerts/slo-burn-rate.yml` | `nova-slo-burn-rate` (SLO Burn Rate) |
+
+### Convention for future alerts
+
+Every new alert rule **must** include a `dashboard_url` annotation. The value
+should be a full Grafana URL pointing to the most relevant dashboard panel, for
+example:
+
+```yaml
+annotations:
+  summary: "…"
+  description: "…"
+  dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
+```
+
+If no existing panel is a good match, either create one and link to it, or link
+to the most semantically related dashboard without a panel-specific query
+parameter.
+
 ### Validating Alert Rules Locally
 
 Install `promtool` (ships with every Prometheus release):

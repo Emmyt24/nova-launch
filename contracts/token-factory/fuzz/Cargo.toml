@@ -1,0 +1,28 @@
+[package]
+name = "token-factory-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Deliberately detached from the parent `contracts` workspace: this crate
+# links libfuzzer-sys/arbitrary (which the real contract crates should never
+# depend on) and imports a pre-built governance.wasm artifact rather than
+# depending on the `governance` crate directly (see
+# fuzz_targets/cross_contract_invariants.rs for why).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+token-factory = { path = ".." }
+
+[[bin]]
+name = "cross_contract_invariants"
+path = "fuzz_targets/cross_contract_invariants.rs"
+test = false
+doc = false
+bench = false

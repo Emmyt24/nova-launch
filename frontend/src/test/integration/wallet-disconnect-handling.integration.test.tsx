@@ -3,18 +3,14 @@
  *
  * Covers:
  *  1. UI reflects disconnected state after mid-session disconnect
- *  2. Wallet-dependent actions are disabled / prompt reconnection
- *  3. No unhandled errors on disconnect
- *  4. Reconnection restores full functionality
+ *  2. No unhandled errors on disconnect
+ *  3. Reconnection restores full functionality
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { useWallet } from '../../hooks/useWallet';
 import { WalletService } from '../../services/wallet';
 import { analytics } from '../../services/analytics';
-import { CampaignCreationForm } from '../../components/CampaignForm/CampaignCreationForm';
 
 vi.mock('../../services/wallet');
 vi.mock('../../services/analytics');
@@ -29,7 +25,6 @@ vi.mock('../../providers/ToastProvider', () => ({
 // Fixtures
 // ---------------------------------------------------------------------------
 const WALLET_ADDRESS = 'GABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12';
-const TOKEN_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -69,38 +64,6 @@ describe('Mid-session wallet disconnection (#1089)', () => {
       expect(result.current.wallet.connected).toBe(false);
       expect(result.current.wallet.address).toBeNull();
     });
-  });
-
-  // ── 2. Wallet-dependent actions disabled ──────────────────────────────────
-  it('disables wallet-dependent form actions after disconnect', async () => {
-    // Start connected
-    const { useWallet: useWalletMock } = await import('../../hooks/useWallet');
-    vi.mocked(useWalletMock as any);
-
-    // Render form with disconnected wallet (simulates post-disconnect state)
-    const { rerender } = render(
-      <CampaignCreationForm tokenAddress={TOKEN_ADDRESS} />
-    );
-
-    // Simulate disconnect by re-rendering with disconnected wallet mock
-    vi.doMock('../../hooks/useWallet', () => ({
-      useWallet: vi.fn(() => ({
-        wallet: { connected: false, address: null, network: 'testnet' },
-        connect: vi.fn(),
-        disconnect: vi.fn(),
-        isConnecting: false,
-        error: null,
-      })),
-    }));
-
-    rerender(<CampaignCreationForm tokenAddress={TOKEN_ADDRESS} />);
-
-    // Submit button should be disabled
-    const submitBtn = screen.getByRole('button', { name: /Create Campaign/i });
-    expect(submitBtn).toBeDisabled();
-
-    // Wallet warning should be visible
-    expect(screen.getByText(/Wallet Required/i)).toBeInTheDocument();
   });
 
   // ── 3. No unhandled errors on disconnect ──────────────────────────────────

@@ -20,6 +20,7 @@ import Redis from "ioredis";
 
 import { GatewayEnv } from "./config";
 import { createAuthMiddleware } from "./auth";
+import { createIdempotencyMiddleware } from "./idempotency";
 import { createRateLimiter, createRedisClient } from "./rateLimiter";
 import { ROUTES, RATE_LIMIT_TIERS, RateLimitTier } from "./routes";
 
@@ -56,8 +57,11 @@ export function createApp({ env, redis: injectedRedis }: GatewayDeps) {
   app.get("/health/live",  (_req, res) => res.json({ status: "ok" }));
   app.get("/health/ready", (_req, res) => res.json({ status: "ok" }));
 
-  // ── Authentication ───────────────────────────────────────────────────────────
-  app.use(createAuthMiddleware(env.JWT_SECRET));
+  // ── Authentication (applied per-route based on requiresAuth flag) ───────────
+  const authMiddleware = createAuthMiddleware(env.JWT_SECRET);
+
+  // ── Idempotency key propagation ──────────────────────────────────────────────
+  app.use(createIdempotencyMiddleware());
 
   // ── Rate limiting + proxy per route ─────────────────────────────────────────
   const redis = injectedRedis ?? createRedisClient(env.REDIS_URL);
@@ -85,7 +89,11 @@ export function createApp({ env, redis: injectedRedis }: GatewayDeps) {
   });
 
   for (const route of ROUTES) {
-    app.use(route.prefix, getLimiter(route.tier), proxy);
+    if (route.requiresAuth) {
+      app.use(route.prefix, authMiddleware, getLimiter(route.tier), proxy);
+    } else {
+      app.use(route.prefix, getLimiter(route.tier), proxy);
+    }
   }
 
   // ── 404 fallback ─────────────────────────────────────────────────────────────

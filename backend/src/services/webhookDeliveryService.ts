@@ -21,6 +21,9 @@ import {
   createRedisClient,
   incrementSlidingWindow,
 } from "../middleware/rateLimiter";
+import tenantWebhookRateLimiter, {
+  TenantWebhookRateLimiter,
+} from "./tenantWebhookRateLimiter";
 
 const gzipAsync = promisify(gzip);
 
@@ -58,8 +61,10 @@ export class WebhookDeliveryService {
   // Lazily created so environments/tests without Redis never pay the
   // connection cost unless a delivery actually needs rate-limit checking.
   private rateLimitRedis: Redis | null = null;
+  private readonly rateLimiter: TenantWebhookRateLimiter;
 
   constructor(rateLimiter: TenantWebhookRateLimiter = tenantWebhookRateLimiter) {
+    this.rateLimiter = rateLimiter;
     this.circuitBreaker = new CircuitBreaker({
       failureThreshold: parseInt(process.env.WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5"),
       successThreshold: parseInt(process.env.WEBHOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD || "2"),
@@ -131,6 +136,14 @@ export class WebhookDeliveryService {
    * unavailable, matching the existing middleware's fail-open behavior —
    * a rate-limiter outage must not stop webhook delivery altogether.
    */
+  /**
+   * Tenant key for a subscription — see `tenantWebhookRateLimiter.ts` for why
+   * `createdBy` is used until a real multi-tenant/organization concept exists.
+   */
+  private getTenantId(subscription: WebhookSubscription): string {
+    return subscription.createdBy;
+  }
+
   private async isWithinTenantRateLimit(tenantId: string): Promise<boolean> {
     // No Redis configured (e.g. local/test environments) — skip the check
     // rather than attempting a real network connection on every delivery.
@@ -197,7 +210,6 @@ export class WebhookDeliveryService {
     // outbound HTTP call. If the tenant is within budget this resolves
     // immediately; otherwise the delivery is queued (never dropped) and
     // resolves once a token refills (see TenantWebhookRateLimiter).
-    const tenantId = this.getTenantId(subscription);
     await this.rateLimiter.acquire(tenantId);
 
     return this.circuitBreaker.execute(async () => {

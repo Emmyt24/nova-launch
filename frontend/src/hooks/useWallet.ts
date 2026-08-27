@@ -134,7 +134,7 @@ export const useWallet = (options: UseWalletOptions = {}) => {
                 setNetworkMismatchWarning(mismatch ? (message ?? null) : null);
 
                 try {
-                    analytics.track(AnalyticsEvent.WALLET_CONNECTED, { network, walletType: type });
+                    analytics.track(AnalyticsEvent.WALLET_CONNECTED, { network, walletType: type ?? 'unknown' });
                 } catch {}
 
                 return true;

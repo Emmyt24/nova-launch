@@ -61,3 +61,37 @@ incoming requests and echoes it in the response and structured log entry.
 `WebhookDeliveryService.triggerEvent()` accepts an optional `correlationId`.
 Pass the originating request's correlation ID so webhook delivery logs can be
 joined with the ingest log.
+
+## Distributed Tracing (W3C `traceparent`)
+
+Separate from the `X-Correlation-Id` scheme above, the backend is instrumented
+with OpenTelemetry (`backend/src/instrumentation.ts`) and participates in W3C
+Trace Context (https://www.w3.org/TR/trace-context/#traceparent-header):
+
+```
+traceparent: <version>-<trace-id>-<parent-id>-<trace-flags>
+```
+
+**Convention:**
+- A client (or any upstream caller) MAY set `traceparent` on an inbound
+  request. `backend/src/middleware/correlation-logging.ts#parseTraceParent`
+  parses it and, when well-formed, attaches it to the async context
+  (`backend/src/lib/async-context.ts`) for the lifetime of the request.
+- `backend/src/lib/outboundHttpClient.ts` re-emits the same `traceparent` on
+  any outbound call made during that request, so a trace ID survives
+  fan-out to downstream dependencies.
+- **The gateway** (`gateway/src/app.ts`) proxies via `http-proxy-middleware`,
+  which forwards inbound headers — including `traceparent` — to the backend
+  unchanged. It never fabricates or strips the header.
+- If `traceparent` is absent or malformed, the backend does not error — it
+  simply has no trace context to propagate, leaving trace origination to
+  whichever layer has an OTel SDK registered (a malformed header is treated
+  identically to a missing one, never propagated as garbage).
+
+**Re-verifying after a routing or proxy change:**
+- Gateway hop: `cd gateway && npx vitest run src/__tests__/tracePropagation.integration.test.ts`
+  — proves an explicit `traceparent` survives the gateway's proxy hop
+  unchanged, and that a request with none still passes through cleanly.
+- Backend capture/re-emission: `cd backend && npx vitest run src/__tests__/otel-trace-propagation.smoke.test.ts`
+  — proves the backend parses an inbound `traceparent` into its async
+  context and re-emits it on outbound calls, with or without a live OTel SDK.

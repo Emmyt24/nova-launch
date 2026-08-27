@@ -12,6 +12,7 @@ import {
 } from './vaultEventParser';
 import { EventCursorStore } from './eventCursorStore';
 import { isRetryableError, sleep } from '../stellar-service-integration/rate-limiter';
+import { findNearestUsableSnapshotLedger, restoreAllProjectionSnapshots } from './projectionSnapshot';
 
 const _env = validateEnv();
 const HORIZON_URL = _env.STELLAR_HORIZON_URL;
@@ -198,6 +199,32 @@ export class EventReplayService {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(`Event replay failed: ${errorMsg}`);
     }
+  }
+
+  /**
+   * Replays up to `targetLedger`, resuming from the nearest usable
+   * cross-projection snapshot (see `projectionSnapshot.ts`) instead of
+   * always replaying from ledger zero. Falls back to a full replay from
+   * origin if no complete snapshot set exists at or before `targetLedger`.
+   */
+  async replayFromLedger(
+    targetLedger: number,
+    options: Omit<ReplayOptions, 'startLedger' | 'endLedger'> = {},
+  ): Promise<ReplayResult> {
+    const snapshotLedger = await findNearestUsableSnapshotLedger(this.prisma, targetLedger);
+
+    if (snapshotLedger !== null) {
+      console.log(
+        `[EventReplay] Resuming from snapshot at ledger ${snapshotLedger} (target: ${targetLedger})`,
+      );
+      await restoreAllProjectionSnapshots(this.prisma, snapshotLedger);
+      return this.replay({ ...options, startLedger: snapshotLedger + 1, endLedger: targetLedger });
+    }
+
+    console.log(
+      `[EventReplay] No usable snapshot at or before ledger ${targetLedger} — replaying from origin`,
+    );
+    return this.replay({ ...options, endLedger: targetLedger });
   }
 
   /**

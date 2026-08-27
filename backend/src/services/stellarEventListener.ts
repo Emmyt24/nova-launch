@@ -1,6 +1,10 @@
 import axios from "axios";
-import { Gauge } from "prom-client";
+import { randomUUID } from "crypto";
+import { hostname } from "os";
+import { Gauge, register } from "prom-client";
 import { validateEnv } from "../config/env";
+import { LeaderElection, LEADER_LOCK_TTL_MS, LEADER_RENEW_INTERVAL_MS } from "../lib/leaderElection";
+import { getRedis } from "../lib/redis";
 import { WebhookEventType } from "../types/webhook";
 import webhookDeliveryService from "./webhookDeliveryService";
 import { PrismaClient } from "@prisma/client";
@@ -105,6 +109,15 @@ export class StellarEventListener {
   private alertDebounceMs = 5000;
   private transport: HorizonTransport;
 
+  /**
+   * Distributed leader election — only the elected leader may run the
+   * ingestion loop and advance the event cursor. Standby instances keep
+   * this heartbeat running (hot) but never call `pollEvents()` while idle.
+   */
+  private leaderElection: LeaderElection;
+  private electionStarted = false;
+  private fencingToken: number | null = null;
+
   constructor(transport?: HorizonTransport) {
     this.prisma = new PrismaClient();
     this.governanceParser = new GovernanceEventParser(this.prisma);
@@ -112,6 +125,22 @@ export class StellarEventListener {
     this.cursorStore = new EventCursorStore(this.prisma);
     this.streamEventParser = new StreamEventParser(this.prisma);
     this.transport = transport || new DefaultHorizonTransport();
+    this.leaderElection = new LeaderElection({
+      redis: getRedis(),
+      role: "stellar_event_listener",
+      instanceId: `${hostname()}:${process.pid}:${randomUUID()}`,
+      ttlMs: LEADER_LOCK_TTL_MS,
+      renewIntervalMs: LEADER_RENEW_INTERVAL_MS,
+      events: {
+        onBecameLeader: (token) => this.onBecameLeader(token),
+        onLostLeadership: (reason) => this.onLostLeadership(reason),
+      },
+    });
+  }
+
+  /** Test/tooling hook: allows injecting a LeaderElection instance without going through the constructor's Redis wiring. */
+  setLeaderElection(leaderElection: LeaderElection): void {
+    this.leaderElection = leaderElection;
   }
 
   setTransport(transport: HorizonTransport): void {
@@ -119,11 +148,14 @@ export class StellarEventListener {
   }
 
   /**
-   * Start listening for Stellar events
+   * Start contending for leadership. The ingestion loop only begins once
+   * this instance is actually elected leader (see `onBecameLeader`) — an
+   * instance that never wins the election stays hot (heartbeating) but
+   * idle, exactly like every other standby.
    */
   async start(): Promise<void> {
-    if (this.isRunning) {
-      console.warn("Event listener is already running");
+    if (this.electionStarted) {
+      console.warn("Event listener election already started");
       return;
     }
 
@@ -142,25 +174,57 @@ export class StellarEventListener {
       );
     }
 
+    this.electionStarted = true;
+    console.log("[StellarEventListener] starting leader election heartbeat...");
+    await this.leaderElection.start();
+  }
+
+  /**
+   * Called by the LeaderElection heartbeat when this instance wins (or
+   * regains) leadership. Loads the durable cursor and starts ingestion.
+   */
+  private async onBecameLeader(fencingToken: number): Promise<void> {
+    this.fencingToken = fencingToken;
+
+    if (this.isRunning) {
+      // Already ingesting (e.g. a renewal that the script reported as a
+      // fresh acquisition due to a prior lease expiry/regrant) — nothing to restart.
+      return;
+    }
+
     // Load durable cursor before starting — resumes from last processed event
     this.lastCursor = await this.cursorStore.load();
-    console.log(`Resuming from cursor: ${this.lastCursor ?? "origin"}`);
+    console.log(`[StellarEventListener] became leader (fencingToken=${fencingToken}), resuming from cursor: ${this.lastCursor ?? "origin"}`);
 
     // If cursor is too far behind the live ledger, drop it and do a full catchup
     await this.applyCatchupPolicyIfNeeded();
 
     this.isRunning = true;
-    console.log("Starting Stellar event listener...");
 
     // Start polling loop
     this.pollEvents();
   }
 
   /**
-   * Stop listening for events
+   * Called by the LeaderElection heartbeat when this instance loses (or
+   * never had) leadership. Halts ingestion — the instance remains hot,
+   * still heartbeating and ready to resume if it wins a future election.
    */
-  stop(): void {
+  private onLostLeadership(reason: string): void {
+    if (this.isRunning) {
+      console.warn(`[StellarEventListener] lost leadership (${reason}) — halting ingestion`);
+    }
     this.isRunning = false;
+    this.fencingToken = null;
+  }
+
+  /**
+   * Stop listening for events and release leadership (if held).
+   */
+  async stop(): Promise<void> {
+    this.isRunning = false;
+    this.electionStarted = false;
+    await this.leaderElection.stop();
     console.log("Stopping Stellar event listener...");
   }
 
@@ -188,6 +252,13 @@ export class StellarEventListener {
 
         if (isTransient) {
           const { delayMs, attempt } = backoff.recordFailure();
+
+          if (attempt > LISTENER_RECONNECT_CONFIG.maxRetries) {
+            console.error(
+              `[StellarEventListener] ${attempt} consecutive failures — max retries exhausted. Surfacing terminal error.`,
+            );
+            throw new Error(`Max retries exhausted after ${attempt} attempts`);
+          }
 
           if (attempt > 5) {
             console.error(
@@ -232,6 +303,20 @@ export class StellarEventListener {
       console.log(`Processing ${events.length} new events`);
 
       for (const event of events) {
+        // Every cursor write is gated on the fencing token still being
+        // current. If a new leader has since been elected (this instance
+        // was demoted but hasn't noticed — clock skew, slow GC, delayed
+        // partition detection), the token check fails and we must not
+        // advance the cursor with stale/duplicate progress.
+        if (this.fencingToken === null || !(await this.leaderElection.validateFencingToken(this.fencingToken))) {
+          console.error(
+            "[StellarEventListener] fencing-token rejected — refusing stale cursor write, halting ingestion",
+          );
+          this.isRunning = false;
+          this.fencingToken = null;
+          return;
+        }
+
         await this.processEvent(event);
         this.lastCursor = event.paging_token;
         await this.cursorStore.save(this.lastCursor);
@@ -292,14 +377,6 @@ export class StellarEventListener {
       // ── Vault / Stream ──────────────────────────────────────────────────
       if (kind.startsWith('vault_')) {
         await this.processStreamOrVaultEvent(event);
-        IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
-        IntegrationMetrics.recordEventProcessed(kind, 'success');
-        return;
-      }
-
-      // ── Campaign ────────────────────────────────────────────────────────
-      if (kind.startsWith('campaign_')) {
-        await this.processBuybackEvent(event);
         IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
         IntegrationMetrics.recordEventProcessed(kind, 'success');
         return;
@@ -536,26 +613,6 @@ export class StellarEventListener {
         break;
       }
     }
-  }
-
-  /**
-   * Check if event is a campaign/buyback event (registry-backed)
-   */
-  private isBuybackEvent(event: StellarEvent): boolean {
-    const topic0 = event.topic[0];
-    return [
-      'camp_cr_v1', 'camp_cr',
-      'camp_ex_v1', 'camp_ex',
-      'camp_st_v1', 'camp_st',
-      'buyback_exec',
-    ].includes(topic0);
-  }
-
-  /**
-   * Process buyback event
-   */
-  private async processBuybackEvent(event: StellarEvent): Promise<void> {
-     // Placeholder for buyback processing logic
   }
 
   /**

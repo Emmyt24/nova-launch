@@ -1,42 +1,52 @@
-use crate::events;
-use crate::storage;
-use crate::types::{Error, StreamInfo, StreamParams};
-use soroban_sdk::{Address, Env, Vec};
+//! Payment streaming module (Issue #1765).
+//!
+//! Creates vesting-aware payment streams from a creator to a recipient,
+//! optionally gated by milestones on top of the linear-vesting schedule
+//! computed by [`crate::vesting`]. Distinct from the pre-existing Vaults
+//! feature (`vault.rs`) — see the module-level docs there for the naming
+//! history. Storage/events for streams (`DataKey::Stream`, `StreamInfo`,
+//! `emit_stream_*`) predate this module as scaffolding; this module is what
+//! actually wires create/claim/cancel/metadata-update logic on top of them.
 
-/// Maximum number of streams in a batch operation
-const MAX_BATCH_SIZE: u32 = 100;
+use soroban_sdk::{Address, Env, String, Vec};
 
-/// Create a single stream
-///
-/// Creates a payment stream from creator to recipient with vesting schedule.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `creator` - Address creating the stream (must authorize)
-/// * `params` - Stream parameters (recipient, amount, schedule)
-///
-/// # Returns
-/// Returns the stream ID
-///
-/// # Errors
-/// * `Error::Unauthorized` - Caller is not the creator
-/// * `Error::InvalidParameters` - Invalid stream parameters
-/// * `Error::ContractPaused` - Contract is paused
-pub fn create_stream(env: &Env, creator: &Address, params: &StreamParams) -> Result<u64, Error> {
-    creator.require_auth();
+use crate::stream_types::{MAX_BATCH_SIZE, MAX_MILESTONES_PER_STREAM};
+use crate::types::{Error, Milestone, StreamInfo, StreamParams};
+use crate::{events, storage, vesting};
 
-    // Check if contract is paused
-    if storage::is_paused(env) {
-        return Err(Error::ContractPaused);
+fn validate_params(env: &Env, params: &StreamParams, milestones_len: u32) -> Result<(), Error> {
+    if params.total_amount <= 0 {
+        return Err(Error::InvalidAmount);
     }
+    vesting::validate_schedule(params.start_time, params.end_time, params.cliff_time)?;
+    if storage::get_token_info(env, params.token_index).is_none() {
+        return Err(Error::TokenNotFound);
+    }
+    if milestones_len > MAX_MILESTONES_PER_STREAM {
+        return Err(Error::InvalidParameters);
+    }
+    Ok(())
+}
 
-    // Validate stream parameters
-    validate_stream_params(env, params)?;
+/// Write a new `StreamInfo` and its indices/event, unconditionally.
+///
+/// Callers must have already validated `params`/`milestones` and authorized
+/// `creator` as appropriate — this is the single place that actually mints a
+/// stream id and commits storage, shared by [`create_stream`],
+/// [`batch_create_streams`], and `recurring_stream`'s per-period child-stream
+/// creation (which intentionally does *not* re-require the creator's live
+/// signature on every period — see `recurring_stream::trigger_recurring_period`).
+pub(crate) fn mint_stream(
+    env: &Env,
+    creator: &Address,
+    params: &StreamParams,
+    metadata: Option<String>,
+    milestones: Vec<Milestone>,
+) -> u64 {
+    let stream_id_u32 = storage::increment_stream_count(env)
+        .unwrap_or_else(|e| panic!("mint_stream: counter overflow after validation: {:?}", e));
+    let stream_id = stream_id_u32 as u64;
 
-    // Get next stream ID
-    let stream_id = storage::get_next_stream_id(env);
-
-    // Create stream info
     let stream = StreamInfo {
         id: stream_id,
         creator: creator.clone(),
@@ -47,525 +57,302 @@ pub fn create_stream(env: &Env, creator: &Address, params: &StreamParams) -> Res
         start_time: params.start_time,
         end_time: params.end_time,
         cliff_time: params.cliff_time,
-        metadata: None,
+        metadata: metadata.clone(),
         cancelled: false,
         paused: false,
         disputed: false,
-        milestones: soroban_sdk::Vec::new(env),
+        milestones,
     };
 
-    // Store stream
     storage::set_stream(env, stream_id, &stream);
+    storage::add_token_stream(env, params.token_index, stream_id_u32);
+    storage::add_creator_stream_index(env, creator, env.ledger().sequence(), stream_id);
 
-    // Maintain the keyset pagination index (created_ledger, stream_id) for the owner
-    let created_ledger = env.ledger().sequence();
-    storage::add_creator_stream_index(env, creator, created_ledger, stream_id);
-
-    // Emit event
     events::emit_stream_created(
         env,
-        stream_id as u32,
+        stream_id_u32,
         creator,
         &params.recipient,
         params.total_amount,
-        false, // has_metadata
+        metadata.is_some(),
     );
 
-    Ok(stream_id)
+    stream_id
 }
 
-#[cfg(any())] // TEMP-VALIDATION-ONLY: disabled for vault_error isolation build
-mod deterministic_batch_event_tests {
-    use super::*;
-    use soroban_sdk::{
-        symbol_short,
-        testutils::{Address as _, Events, Ledger},
-        Env, Symbol, TryFromVal,
-    };
-
-    fn setup_env() -> (Env, Address, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let contract_id = env.register_contract(None, crate::TokenFactory);
-        (env, creator, recipient, contract_id)
-    }
-
-    fn set_stream(env: &Env, contract_id: &Address, stream_id: u64, stream: &StreamInfo) {
-        env.as_contract(contract_id, || storage::set_stream(env, stream_id, stream));
-    }
-
-    fn batch_claim_in_contract(
-        env: &Env,
-        contract_id: &Address,
-        recipient: &Address,
-        stream_ids: &soroban_sdk::Vec<u64>,
-    ) -> Result<soroban_sdk::Vec<i128>, Error> {
-        env.as_contract(contract_id, || batch_claim(env, recipient, stream_ids))
-    }
-
-    fn get_stream_in_contract(env: &Env, contract_id: &Address, stream_id: u64) -> StreamInfo {
-        env.as_contract(contract_id, || storage::get_stream(env, stream_id).unwrap())
-    }
-
-    #[test]
-    fn batch_claim_emits_claim_events_in_input_order() {
-        let (env, creator, recipient, contract_id) = setup_env();
-        env.ledger().with_mut(|li| li.timestamp = 1_000);
-
-        let stream1 = StreamInfo {
-            id: 1,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1_000,
-            claimed_amount: 0,
-            start_time: 0,
-            end_time: 100,
-            cliff_time: 0,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        let stream2 = StreamInfo { id: 2, ..stream1.clone() };
-
-        set_stream(&env, &contract_id, 1, &stream1);
-        set_stream(&env, &contract_id, 2, &stream2);
-
-        let before = env.events().all().events().len();
-        let ids = soroban_sdk::vec![&env, 1u64, 2u64];
-        let claimed = batch_claim_in_contract(&env, &contract_id, &recipient, &ids).unwrap();
-        assert_eq!(claimed.len(), 2);
-
-        let after = env.events().all().events().len();
-        assert_eq!(after - before, 2, "expected exactly one claim event per claimed stream");
-    }
-
-    #[test]
-    fn batch_claim_failure_emits_no_partial_claim_events() {
-        let (env, creator, recipient, contract_id) = setup_env();
-        let other_recipient = Address::generate(&env);
-        env.ledger().with_mut(|li| li.timestamp = 1_000);
-
-        let stream1 = StreamInfo {
-            id: 11,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1_000,
-            claimed_amount: 0,
-            start_time: 0,
-            end_time: 100,
-            cliff_time: 0,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        let stream2 = StreamInfo {
-            id: 12,
-            recipient: other_recipient,
-            ..stream1.clone()
-        };
-
-        set_stream(&env, &contract_id, 11, &stream1);
-        set_stream(&env, &contract_id, 12, &stream2);
-
-        let before = env.events().all().events().len();
-        let ids = soroban_sdk::vec![&env, 11u64, 12u64];
-        let err = batch_claim_in_contract(&env, &contract_id, &recipient, &ids).unwrap_err();
-        assert_eq!(err, Error::Unauthorized);
-
-        assert_eq!(env.events().all().events().len(), before, "failed batch must not leak claim events");
-        assert_eq!(get_stream_in_contract(&env, &contract_id, 11).claimed_amount, 0);
-        assert_eq!(get_stream_in_contract(&env, &contract_id, 12).claimed_amount, 0);
-    }
-}
-
-/// Batch create streams
-///
-/// Creates multiple payment streams in a single transaction.
-/// All-or-nothing atomicity: if any stream is invalid, entire batch fails.
-///
-/// # Event ordering contract (deterministic)
-/// Successful batch emits:
-/// 1. one `strm_crt` event per created stream in input order
-/// 2. one trailing `bch_strm` summary event
-///
-/// Failed batch emits none of these success events.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `creator` - Address creating the streams (must authorize)
-/// * `streams` - Vector of stream parameters
-///
-/// # Returns
-/// Returns vector of created stream IDs
+/// Create a single payment stream.
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the creator
-/// * `Error::InvalidParameters` - Invalid parameters or batch too large
-/// * `Error::ContractPaused` - Contract is paused
-/// * `Error::BatchTooLarge` - Batch exceeds maximum size
-///
-/// # Examples
-/// ```
-/// let streams = vec![
-///     &env,
-///     StreamParams { recipient: addr1, amount: 1000, ... },
-///     StreamParams { recipient: addr2, amount: 2000, ... },
-/// ];
-/// let stream_ids = batch_create_streams(&env, &creator, &streams)?;
-/// ```
-pub fn batch_create_streams(
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::InvalidAmount` - `total_amount <= 0`
+/// * `Error::InvalidStreamSchedule` - Bad `start`/`end`/`cliff` ordering
+/// * `Error::TokenNotFound` - `token_index` is not a registered token
+/// * `Error::InvalidParameters` - Too many milestones, or a milestone has a non-positive `unlock_amount`
+pub fn create_stream(
     env: &Env,
     creator: &Address,
-    streams: &Vec<StreamParams>,
-) -> Result<Vec<u64>, Error> {
+    params: &StreamParams,
+    metadata: Option<String>,
+    milestones: Vec<Milestone>,
+) -> Result<u64, Error> {
     creator.require_auth();
 
-    // Check if contract is paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
 
-    // Validate batch size
-    if streams.is_empty() {
-        return Err(Error::InvalidParameters);
+    validate_params(env, params, milestones.len())?;
+    for milestone in milestones.iter() {
+        if milestone.unlock_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
     }
 
-    if streams.len() > MAX_BATCH_SIZE {
+    Ok(mint_stream(env, creator, params, metadata, milestones))
+}
+
+/// Batch-create up to [`MAX_BATCH_SIZE`] streams in one atomic call.
+///
+/// Follows the same stage-then-commit atomicity model as
+/// `batch_operations::batch_reveal`: every item is validated in phase 1
+/// (nothing written), then every stream is written in phase 2 (infallible,
+/// since everything committed there already passed phase 1).
+///
+/// # Errors
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::InvalidParameters` - Empty batch
+/// * `Error::BatchTooLarge` - `items.len() > MAX_BATCH_SIZE`
+/// * Any [`create_stream`] validation error, for the first invalid item found
+pub fn batch_create_streams(
+    env: &Env,
+    creator: &Address,
+    items: Vec<StreamParams>,
+) -> Result<Vec<u64>, Error> {
+    creator.require_auth();
+
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+
+    let batch_len = items.len();
+    if batch_len == 0 {
+        return Err(Error::InvalidParameters);
+    }
+    if batch_len > MAX_BATCH_SIZE {
         return Err(Error::BatchTooLarge);
     }
 
-    // Single pass: Validate and create streams
-    // Soroban natively rolls back if validation fails midway
-    let mut stream_ids = Vec::new(env);
-
-    for stream_params in streams.iter() {
-        validate_stream_params(env, &stream_params)?;
-        
-        let stream_id = storage::get_next_stream_id(env);
-
-        let stream = StreamInfo {
-            id: stream_id,
-            creator: creator.clone(),
-            recipient: stream_params.recipient.clone(),
-            token_index: stream_params.token_index,
-            total_amount: stream_params.total_amount,
-            claimed_amount: 0,
-            start_time: stream_params.start_time,
-            end_time: stream_params.end_time,
-            cliff_time: stream_params.cliff_time,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-
-        storage::set_stream(env, stream_id, &stream);
-        stream_ids.push_back(stream_id);
+    // Phase 1 (stage): validate every item. Nothing written to storage here.
+    for item in items.iter() {
+        validate_params(env, &item, 0)?;
     }
 
-    // Emit batch summary event
-    events::emit_batch_streams_created(env, creator, stream_ids.len());
+    // Phase 2 (commit): every item already passed validation, so this loop
+    // cannot fail on a validation error.
+    let mut ids = Vec::new(env);
+    for item in items.iter() {
+        let stream_id = mint_stream(env, creator, &item, None, Vec::new(env));
+        ids.push_back(stream_id);
+    }
 
-    Ok(stream_ids)
+    events::emit_batch_streams_created(env, creator, batch_len);
+
+    Ok(ids)
 }
 
-/// Validate stream parameters
-///
-/// Checks that stream parameters are valid and consistent.
-///
-/// # Validation Rules
-/// * Amount must be positive
-/// * Start time must be before end time (or equal for instant unlock)
-/// * Cliff time must be between start and end (inclusive):
-///   - cliff_time == start_time: immediate vesting (no cliff)
-///   - cliff_time == end_time: full cliff (all tokens unlock at end)
-///   - start_time < cliff_time < end_time: standard cliff
-/// * For zero-duration streams (start == end), cliff must equal start
-/// * Token must exist
-fn validate_stream_params(env: &Env, params: &StreamParams) -> Result<(), Error> {
-    // Validate amount
-    if params.total_amount <= 0 {
-        return Err(Error::InvalidAmount);
+/// Sum of a stream's linearly-vested amount plus any verified-milestone bonus.
+fn total_unlocked(stream: &StreamInfo, now: u64) -> Result<i128, Error> {
+    let vested = vesting::linear_vested_amount(
+        stream.total_amount,
+        stream.start_time,
+        stream.end_time,
+        stream.cliff_time,
+        now,
+    )?;
+
+    let mut milestone_unlocked: i128 = 0;
+    for milestone in stream.milestones.iter() {
+        if milestone.verified {
+            milestone_unlocked = milestone_unlocked
+                .checked_add(milestone.unlock_amount)
+                .ok_or(Error::ArithmeticError)?;
+        }
     }
 
-    // Validate times
-    if params.start_time >= params.end_time {
-        return Err(Error::InvalidParameters);
-    }
-
-    // Validate cliff time is within stream duration
-    // Cliff must be between start and end (inclusive on both ends)
-    if params.cliff_time < params.start_time {
-        return Err(Error::InvalidSchedule);
-    }
-    if params.cliff_time > params.end_time {
-        return Err(Error::InvalidSchedule);
-    }
-
-    // Edge case: zero-duration streams must have cliff at start
-    if params.start_time == params.end_time && params.cliff_time != params.start_time {
-        return Err(Error::InvalidSchedule);
-    }
-
-    // Validate token exists
-    if storage::get_token_info(env, params.token_index).is_none() {
-        return Err(Error::TokenNotFound);
-    }
-
-    Ok(())
+    vested
+        .checked_add(milestone_unlocked)
+        .ok_or(Error::ArithmeticError)
 }
 
-/// Claim vested tokens from a stream
+/// Claim the currently-vested (and unclaimed) balance of a stream.
 ///
-/// Allows recipient to claim tokens that have vested according to schedule.
-///
-/// # Cliff Enforcement
-/// Claims before cliff_time are rejected with CliffNotReached error.
-/// This check occurs after authorization but before cancellation checks,
-/// ensuring the cliff is enforced universally regardless of stream state.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `recipient` - Address claiming tokens (must authorize)
-/// * `stream_id` - ID of the stream to claim from
-///
-/// # Returns
-/// Returns the amount claimed
+/// Commits the updated `claimed_amount` to storage and returns the claimable
+/// amount, but does **not** perform the token transfer itself — the caller
+/// (the `claim_stream` contract entry point) does that after this returns,
+/// so state is committed before the external call (CEI pattern), matching
+/// `claim_vault_inner`.
 ///
 /// # Errors
-/// * `Error::StreamNotFound` - Stream not found
-/// * `Error::Unauthorized` - Caller is not the recipient
-/// * `Error::CliffNotReached` - Current time before cliff_time
-/// * `Error::StreamCancelled` - Stream cancelled
-/// * `Error::NothingToClaim` - No claimable amount
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::StreamNotFound` - No stream with this id
+/// * `Error::Unauthorized` - Caller is not the stream's recipient
+/// * `Error::StreamCancelled` - Stream was cancelled
+/// * `Error::NothingToClaim` - Nothing vested beyond what's already claimed
+/// * `Error::ArithmeticError` - Overflow computing the claimable amount
 pub fn claim_stream(env: &Env, recipient: &Address, stream_id: u64) -> Result<i128, Error> {
     recipient.require_auth();
 
-    // Get stream
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+
     let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
 
-    // Verify recipient
     if stream.recipient != *recipient {
         return Err(Error::Unauthorized);
     }
-
-    // Enforce cliff: no claims before cliff_time
-    // This check occurs before cancellation check to ensure temporal constraints
-    // are enforced universally, regardless of stream operational state
-    let current_time = env.ledger().timestamp();
-    if current_time < stream.cliff_time {
-        return Err(Error::CliffNotReached);
-    }
-
-    // Check if cancelled
     if stream.cancelled {
         return Err(Error::StreamCancelled);
     }
 
-    if stream.paused {
-        return Err(Error::TokenPaused);
-    }
+    let now = env.ledger().timestamp();
+    let ceiling = total_unlocked(&stream, now)?;
+    let claimable = ceiling
+        .checked_sub(stream.claimed_amount)
+        .ok_or(Error::ArithmeticError)?;
 
-    // Block settlement while disputed
-    if stream.disputed {
-        return Err(Error::StreamDisputed);
-    }
-
-    // Calculate claimable amount
-    let claimable = calculate_claimable(env, &stream)?;
-
-    if claimable == 0 {
+    if claimable <= 0 {
         return Err(Error::NothingToClaim);
     }
 
-    // Update claimed amount
     stream.claimed_amount = stream
         .claimed_amount
         .checked_add(claimable)
         .ok_or(Error::ArithmeticError)?;
-
     storage::set_stream(env, stream_id, &stream);
 
-    // Emit event
     events::emit_stream_claimed(env, stream_id as u32, recipient, claimable);
 
     Ok(claimable)
 }
 
-/// Batch claim vested tokens from multiple streams
+/// Cancel an active stream, computing (and committing to storage) the
+/// vested-but-unclaimed amount owed to the recipient and the unvested
+/// remainder owed back to the creator.
 ///
-/// Allows recipient to claim tokens that have vested according to schedule
-/// from multiple streams in a single transaction. Streams that cannot be
-/// claimed (e.g. before cliff or zero remaining) are skipped without error.
-///
-/// # Event ordering contract (deterministic)
-/// Successful batch emits `strm_clm` events in the same order as `stream_ids`
-/// for claimable streams only (non-claimable streams are skipped without event).
-/// If validation fails in phase 1, no `strm_clm` events are emitted.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `recipient` - Address claiming tokens (must authorize)
-/// * `stream_ids` - Vector of stream IDs to claim from
-///
-/// # Returns
-/// Returns a vector of claimed amounts matching the input order
+/// Like [`claim_stream`], this does not itself transfer tokens — it commits
+/// state first and returns `(vested_unclaimed, unvested_to_creator)` for the
+/// `cancel_stream` contract entry point to disburse, preserving the CEI
+/// ordering.
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the recipient for one of the streams
-/// * `Error::TokenNotFound` - Stream not found
-/// * `Error::InvalidParameters` - Stream cancelled
-pub fn batch_claim(
-    env: &Env,
-    recipient: &Address,
-    stream_ids: &Vec<u64>,
-) -> Result<Vec<i128>, Error> {
-    recipient.require_auth();
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::StreamNotFound` - No stream with this id
+/// * `Error::Unauthorized` - Caller is neither the stream creator nor the contract admin
+/// * `Error::StreamCancelled` - Stream was already cancelled
+pub fn cancel_stream(env: &Env, actor: &Address, stream_id: u64) -> Result<(i128, i128), Error> {
+    actor.require_auth();
 
-    // Phase 1: validate all streams and calculate claimable amounts (1 read per stream)
-    let mut validated_streams = soroban_sdk::Vec::new(env);
-    for stream_id in stream_ids.iter() {
-        let stream = storage::get_stream(env, stream_id).ok_or(Error::TokenNotFound)?;
-
-        // Verify recipient
-        if stream.recipient != *recipient {
-            return Err(Error::Unauthorized);
-        }
-
-        // Check if cancelled
-        if stream.cancelled {
-            return Err(Error::InvalidParameters);
-        }
-
-        // Calculate claimable amount
-        let claimable = calculate_claimable(env, &stream)?;
-        validated_streams.push_back((stream_id, stream, claimable));
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
     }
 
-    // Phase 2: claim from all eligible streams (mutates and emits events)
-    let mut claimed_amounts = Vec::new(env);
+    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
 
-    for (stream_id, mut stream, claimable) in validated_streams.iter() {
-        if claimable > 0 {
-            // Update claimed amount
-            stream.claimed_amount = stream
-                .claimed_amount
-                .checked_add(claimable)
-                .ok_or(Error::ArithmeticError)?;
-
-            storage::set_stream(env, stream_id, &stream);
-
-            // Emit event
-            events::emit_stream_claimed(env, stream_id as u32, recipient, claimable);
-        }
-
-        claimed_amounts.push_back(claimable);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *actor != stream.creator && *actor != admin {
+        return Err(Error::Unauthorized);
+    }
+    if stream.cancelled {
+        return Err(Error::StreamCancelled);
     }
 
-    Ok(claimed_amounts)
-}
-
-/// Calculate claimable amount for a stream
-///
-/// Calculates how much can be claimed based on vesting schedule.
-///
-/// # Vesting Semantics
-/// Vesting starts at start_time, not cliff_time. The cliff acts as a
-/// release gate - tokens vest continuously from start_time but are
-/// locked until cliff_time.
-///
-/// Example: start=100, cliff=150, end=200, current=150
-///   → elapsed=50, duration=100 → 50% vested at cliff unlock
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `stream` - The stream to calculate for
-///
-/// # Returns
-/// Returns the claimable amount (0 if before cliff or start)
-fn calculate_claimable(env: &Env, stream: &StreamInfo) -> Result<i128, Error> {
-    let current_time = env.ledger().timestamp();
-
-    // Before cliff: nothing claimable (cliff acts as release gate)
-    if current_time < stream.cliff_time {
-        return Ok(0);
-    }
-
-    // Before start: nothing claimable
-    if current_time < stream.start_time {
-        return Ok(0);
-    }
-
-    // Calculate vested amount
-    // Note: Vesting starts at start_time, not cliff_time
-    // The cliff is a release gate - tokens vest continuously but are locked until cliff_time
-    let vested = if current_time >= stream.end_time {
-        // After end: everything is vested
-        stream.total_amount
-    } else {
-        // During vesting: linear vesting from start_time
-        let elapsed = current_time - stream.start_time;
-        let duration = stream.end_time - stream.start_time;
-
-        // Handle zero-duration edge case
-        if duration == 0 {
-            stream.total_amount
-        } else {
-            stream
-                .total_amount
-                .checked_mul(elapsed as i128)
-                .and_then(|v| v.checked_div(duration as i128))
-                .ok_or(Error::ArithmeticError)?
-        }
-    };
-
-    // Add unlock_amount for each verified milestone
-    let mut milestone_unlocked: i128 = 0;
-    for i in 0..stream.milestones.len() {
-        let m = stream.milestones.get(i).unwrap();
-        if m.verified {
-            milestone_unlocked = milestone_unlocked
-                .checked_add(m.unlock_amount)
-                .ok_or(Error::ArithmeticError)?;
-        }
-    }
-
-    // Total claimable = (time-vested + milestone-unlocked) - already claimed
-    let total_unlocked = vested
-        .checked_add(milestone_unlocked)
-        .ok_or(Error::ArithmeticError)?
-        .min(stream.total_amount); // never exceed total
-
-    let claimable = total_unlocked
+    let now = env.ledger().timestamp();
+    let ceiling = total_unlocked(&stream, now)?;
+    let vested_unclaimed = ceiling
         .checked_sub(stream.claimed_amount)
-        .ok_or(Error::ArithmeticError)?;
+        .ok_or(Error::ArithmeticError)?
+        .max(0);
+    let capped_ceiling = ceiling.min(stream.total_amount);
+    let unvested_to_creator = stream
+        .total_amount
+        .checked_sub(capped_ceiling)
+        .ok_or(Error::ArithmeticError)?
+        .max(0);
 
-    Ok(claimable.max(0))
+    stream.cancelled = true;
+    stream.claimed_amount = stream
+        .claimed_amount
+        .checked_add(vested_unclaimed)
+        .ok_or(Error::ArithmeticError)?;
+    storage::set_stream(env, stream_id, &stream);
+
+    events::emit_stream_cancelled_with_settlement(
+        env,
+        stream_id as u32,
+        actor,
+        vested_unclaimed,
+        unvested_to_creator,
+    );
+
+    Ok((vested_unclaimed, unvested_to_creator))
 }
 
-/// Verify a milestone for a stream, unlocking its associated token amount.
+/// Update a stream's metadata.
 ///
-/// The configured `oracle_address` on the milestone must call this function
-/// (Soroban authorization). Once verified, the milestone's `unlock_amount`
-/// becomes claimable by the stream recipient via `claim_stream`.
-///
-/// Time-based streams (empty `milestones` vec) are unaffected by this function.
-///
-/// # Arguments
-/// * `oracle`     - Must match `milestone.oracle_address` and must authorize
-/// * `stream_id`  - ID of the stream containing the milestone
-/// * `milestone_index` - Index into `stream.milestones`
+/// Metadata is immutable once the recipient has claimed anything — this
+/// prevents a creator from retroactively rewriting the description of a
+/// stream after value has already moved against it.
 ///
 /// # Errors
-/// * `StreamNotFound`     - Stream does not exist
-/// * `InvalidParameters`  - Index out of range, stream cancelled, or already verified
-/// * `Unauthorized`       - Oracle address does not match milestone config
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::StreamNotFound` - No stream with this id
+/// * `Error::Unauthorized` - Caller is not the stream creator
+/// * `Error::StreamCancelled` - Stream was cancelled
+/// * `Error::StreamMetadataLocked` - Stream has already had a claim
+pub fn update_stream_metadata(
+    env: &Env,
+    actor: &Address,
+    stream_id: u64,
+    metadata: Option<String>,
+) -> Result<(), Error> {
+    actor.require_auth();
+
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+
+    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
+
+    if stream.creator != *actor {
+        return Err(Error::Unauthorized);
+    }
+    if stream.cancelled {
+        return Err(Error::StreamCancelled);
+    }
+    if stream.claimed_amount > 0 {
+        return Err(Error::StreamMetadataLocked);
+    }
+
+    stream.metadata = metadata.clone();
+    storage::set_stream(env, stream_id, &stream);
+
+    events::emit_stream_metadata_updated(env, stream_id as u32, actor, metadata.is_some());
+
+    Ok(())
+}
+
+/// Verify a milestone, unlocking its `unlock_amount` on top of the linear
+/// vesting schedule. Only the milestone's designated `oracle_address` may
+/// call this.
+///
+/// # Errors
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::StreamNotFound` - No stream with this id
+/// * `Error::StreamCancelled` - Stream was cancelled
+/// * `Error::MilestoneNotFound` - `milestone_index` out of range
+/// * `Error::UnauthorizedMilestoneOracle` - Caller is not this milestone's oracle
+/// * `Error::MilestoneAlreadyVerified` - Milestone was already verified
 pub fn verify_stream_milestone(
     env: &Env,
     oracle: &Address,
@@ -574,1294 +361,458 @@ pub fn verify_stream_milestone(
 ) -> Result<(), Error> {
     oracle.require_auth();
 
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+
     let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
-
     if stream.cancelled {
-        return Err(Error::InvalidParameters);
+        return Err(Error::StreamCancelled);
     }
 
-    if milestone_index >= stream.milestones.len() {
-        return Err(Error::InvalidParameters);
-    }
-
-    let mut milestone = stream.milestones.get(milestone_index).unwrap();
-
-    if milestone.verified {
-        // Idempotent: already verified — treat as success
-        return Ok(());
-    }
+    let mut milestone = stream
+        .milestones
+        .get(milestone_index)
+        .ok_or(Error::MilestoneNotFound)?;
 
     if milestone.oracle_address != *oracle {
-        return Err(Error::Unauthorized);
+        return Err(Error::UnauthorizedMilestoneOracle);
+    }
+    if milestone.verified {
+        return Err(Error::MilestoneAlreadyVerified);
     }
 
     milestone.verified = true;
     stream.milestones.set(milestone_index, milestone);
     storage::set_stream(env, stream_id, &stream);
 
-    events::emit_milestone_verified(env, stream_id, oracle);
-
     Ok(())
-}
-
-/// Cancel a stream
-pub fn cancel_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
-    creator.require_auth();
-
-    // Get stream
-    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::TokenNotFound)?;
-
-    // Verify creator
-    if stream.creator != *creator {
-        return Err(Error::Unauthorized);
-    }
-
-    // Check if already cancelled
-    if stream.cancelled {
-        return Err(Error::InvalidParameters);
-    }
-
-    // Compute vested amount at cancellation time using the linear vesting formula
-    let current_time = env.ledger().timestamp();
-    let vested_total = if current_time >= stream.end_time {
-        stream.total_amount
-    } else if current_time <= stream.start_time {
-        0
-    } else {
-        let elapsed = current_time - stream.start_time;
-        let duration = stream.end_time - stream.start_time;
-        stream
-            .total_amount
-            .checked_mul(elapsed as i128)
-            .and_then(|v| v.checked_div(duration as i128))
-            .ok_or(Error::ArithmeticError)?
-    };
-
-    // Amount newly settled to the recipient (net of what was already claimed)
-    let newly_settled = vested_total
-        .checked_sub(stream.claimed_amount)
-        .unwrap_or(0)
-        .max(0);
-
-    let unvested_to_creator = stream
-        .total_amount
-        .checked_sub(vested_total)
-        .unwrap_or(0)
-        .max(0);
-
-    // Record settlement: advance claimed_amount to vested_total so the recipient
-    // cannot claim again through claim_stream on a cancelled stream.
-    stream.claimed_amount = vested_total;
-    stream.cancelled = true;
-    storage::set_stream(env, stream_id, &stream);
-
-    // Emit settlement event
-    events::emit_stream_cancelled_with_settlement(
-        env,
-        stream_id as u32,
-        creator,
-        newly_settled,
-        unvested_to_creator,
-    );
-
-    Ok(())
-}
-
-/// Pause a stream
-///
-/// Allows creator to temporarily suspend claims on a stream.
-pub fn pause_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
-    creator.require_auth();
-
-    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::TokenNotFound)?;
-
-    if stream.creator != *creator {
-        return Err(Error::Unauthorized);
-    }
-
-    if stream.cancelled {
-        return Err(Error::InvalidParameters);
-    }
-
-    stream.paused = true;
-    storage::set_stream(env, stream_id, &stream);
-
-    Ok(())
-}
-
-/// Unpause a stream
-///
-/// Allows creator to resume a paused stream.
-pub fn unpause_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
-    creator.require_auth();
-
-    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::TokenNotFound)?;
-
-    if stream.creator != *creator {
-        return Err(Error::Unauthorized);
-    }
-
-    if stream.cancelled {
-        return Err(Error::InvalidParameters);
-    }
-
-    stream.paused = false;
-    storage::set_stream(env, stream_id, &stream);
-
-    Ok(())
-}
-
-/// Raise a dispute on a stream, pausing settlement until resolved.
-///
-/// Either the creator or recipient may raise a dispute. Once disputed,
-/// `claim_stream` returns `StreamDisputed` until an admin resolves it.
-///
-/// # Errors
-/// * `StreamNotFound`       – stream does not exist
-/// * `Unauthorized`         – caller is neither creator nor recipient
-/// * `StreamCancelled`      – stream is already cancelled
-/// * `DisputeAlreadyRaised` – dispute is already active
-pub fn raise_dispute(env: &Env, caller: &Address, stream_id: u64) -> Result<(), Error> {
-    caller.require_auth();
-
-    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
-
-    if *caller != stream.creator && *caller != stream.recipient {
-        return Err(Error::Unauthorized);
-    }
-    if stream.cancelled {
-        return Err(Error::StreamCancelled);
-    }
-    if stream.disputed {
-        return Err(Error::DisputeAlreadyRaised);
-    }
-
-    stream.disputed = true;
-    storage::set_stream(env, stream_id, &stream);
-
-    events::emit_stream_dispute_raised(env, stream_id as u32, caller);
-
-    Ok(())
-}
-
-/// Resolve a dispute on a stream, re-enabling settlement.
-///
-/// Only the contract admin may resolve disputes.
-///
-/// # Errors
-/// * `StreamNotFound`   – stream does not exist
-/// * `Unauthorized`     – caller is not the admin
-/// * `StreamNotDisputed`– no active dispute to resolve
-pub fn resolve_dispute(env: &Env, admin: &Address, stream_id: u64) -> Result<(), Error> {
-    admin.require_auth();
-
-    let stored_admin = storage::get_admin(env);
-    if *admin != stored_admin {
-        return Err(Error::Unauthorized);
-    }
-
-    let mut stream = storage::get_stream(env, stream_id).ok_or(Error::StreamNotFound)?;
-
-    if !stream.disputed {
-        return Err(Error::StreamNotDisputed);
-    }
-
-    stream.disputed = false;
-    storage::set_stream(env, stream_id, &stream);
-
-    events::emit_stream_dispute_resolved(env, stream_id as u32, admin);
-
-    Ok(())
-}
-
-/// Get stream information
-pub fn get_stream(env: &Env, stream_id: u64) -> Option<StreamInfo> {
-    storage::get_stream(env, stream_id)
-}
-
-/// Get claimable amount for a stream
-///
-/// Returns the amount currently available to claim.
-/// Before cliff_time, this returns 0 (not an error).
-/// This allows recipients to query their balance without triggering errors.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `stream_id` - ID of the stream
-///
-/// # Returns
-/// Returns claimable amount (delegates to calculate_claimable for consistency)
-///
-/// # Errors
-/// * `Error::StreamNotFound` - Stream not found
-pub fn get_claimable_amount(env: &Env, stream_id: u64) -> Result<i128, Error> {
-    let stream = storage::get_stream(env, stream_id).ok_or(Error::TokenNotFound)?;
-
-    calculate_claimable(env, &stream)
-}
-
-#[cfg(any())] // TEMP-VALIDATION-ONLY: disabled for vault_error isolation build
-mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, testutils::Ledger, Env};
-
-    fn setup() -> (Env, Address, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let contract_id = env.register_contract(None, crate::TokenFactory);
-
-        // Initialize storage
-        env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &creator);
-        });
-
-        (env, creator, recipient, contract_id)
-    }
-
-    fn set_stream(env: &Env, contract_id: &Address, stream_id: u64, stream: &StreamInfo) {
-        env.as_contract(contract_id, || storage::set_stream(env, stream_id, stream));
-    }
-
-    fn get_stream(env: &Env, contract_id: &Address, stream_id: u64) -> StreamInfo {
-        env.as_contract(contract_id, || storage::get_stream(env, stream_id).unwrap())
-    }
-
-    fn claim(env: &Env, contract_id: &Address, recipient: &Address, stream_id: u64) -> Result<i128, Error> {
-        env.as_contract(contract_id, || claim_stream(env, recipient, stream_id))
-    }
-
-    fn validate_params(env: &Env, contract_id: &Address, params: &StreamParams) -> Result<(), Error> {
-        env.as_contract(contract_id, || validate_stream_params(env, params))
-    }
-
-    fn get_claimable(env: &Env, contract_id: &Address, stream_id: u64) -> Result<i128, Error> {
-        env.as_contract(contract_id, || get_claimable_amount(env, stream_id))
-    }
-
-    fn pause(env: &Env, contract_id: &Address, creator: &Address, stream_id: u64) -> Result<(), Error> {
-        env.as_contract(contract_id, || pause_stream(env, creator, stream_id))
-    }
-
-    fn unpause(
-        env: &Env,
-        contract_id: &Address,
-        creator: &Address,
-        stream_id: u64,
-    ) -> Result<(), Error> {
-        env.as_contract(contract_id, || unpause_stream(env, creator, stream_id))
-    }
-
-    fn cancel(env: &Env, contract_id: &Address, creator: &Address, stream_id: u64) -> Result<(), Error> {
-        env.as_contract(contract_id, || cancel_stream(env, creator, stream_id))
-    }
-
-    fn get_stream_public(env: &Env, contract_id: &Address, stream_id: u64) -> Option<StreamInfo> {
-        env.as_contract(contract_id, || super::get_stream(env, stream_id))
-    }
-
-    #[test]
-    fn test_claim_before_cliff_returns_error() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-        // Create and store a stream directly
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-        // Set time just before cliff
-        env.ledger().with_mut(|li| li.timestamp = 149);
-        let res = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(res, Err(Error::CliffNotReached));
-    }
-
-    #[test]
-    fn test_claim_at_cliff_succeeds() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-        // Set time at cliff
-        env.ledger().with_mut(|li| li.timestamp = 150);
-        let res = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(res.unwrap(), 500);
-    }
-
-    #[test]
-    fn test_validate_stream_params_valid() {
-        let (env, _creator, recipient, contract_id) = setup();
-
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-        };
-
-        // This will fail because token doesn't exist, but tests validation logic
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::TokenNotFound));
-    }
-
-    #[test]
-    fn test_validate_stream_params_invalid_amount() {
-        let (env, _creator, recipient, contract_id) = setup();
-
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-        };
-
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::InvalidAmount));
-    }
-
-    #[test]
-    fn test_validate_stream_params_invalid_times() {
-        let (env, _creator, recipient, contract_id) = setup();
-
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 200,
-            end_time: 100, // End before start
-            cliff_time: 150,
-        };
-
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_calculate_claimable_before_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-
-        // Set time before cliff
-        env.ledger().with_mut(|li| {
-            li.timestamp = 140;
-        });
-
-        let claimable = calculate_claimable(&env, &stream).unwrap();
-        assert_eq!(claimable, 0);
-    }
-
-    #[test]
-    fn test_calculate_claimable_after_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            cancelled: false,
-            paused: false,
-            metadata: None,
-            disputed: false,
-        };
-
-        // Set time after cliff (halfway through vesting)
-        env.ledger().with_mut(|li| {
-            li.timestamp = 150;
-        });
-
-        let claimable = calculate_claimable(&env, &stream).unwrap();
-        assert_eq!(claimable, 500); // 50% vested
-    }
-
-    #[test]
-    fn test_calculate_claimable_after_end() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            cancelled: false,
-            paused: false,
-            metadata: None,
-            disputed: false,
-        };
-
-        // Set time after end
-        env.ledger().with_mut(|li| {
-            li.timestamp = 250;
-        });
-
-        let claimable = calculate_claimable(&env, &stream).unwrap();
-        assert_eq!(claimable, 1000); // 100% vested
-    }
-
-    #[test]
-    fn test_pause_and_unpause_stream() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let mut stream = StreamInfo {
-            id: 1,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-
-        // Mock save stream to storage
-        set_stream(&env, &contract_id, 1, &stream);
-
-        // Advance time to make it claimable
-        env.ledger().with_mut(|li| {
-            li.timestamp = 160;
-        });
-
-        // 1. Pause the stream
-        assert!(pause(&env, &contract_id, &creator, 1).is_ok());
-
-        // 2. Verify claims are blocked
-        let claim_res = claim(&env, &contract_id, &recipient, 1);
-        assert_eq!(claim_res, Err(Error::TokenPaused));
-
-        // 3. Verify Authorization (recipient cannot unpause)
-        let unpause_res = unpause(&env, &contract_id, &recipient, 1);
-        assert_eq!(unpause_res, Err(Error::Unauthorized));
-
-        // 4. Unpause the stream as creator
-        assert!(unpause(&env, &contract_id, &creator, 1).is_ok());
-
-        // 5. Verify claims resume normally
-        let claim_success = claim(&env, &contract_id, &recipient, 1);
-        assert!(claim_success.is_ok());
-        assert!(claim_success.unwrap() > 0);
-    }
-
-    // ========================================================================
-    // Cliff Boundary Tests
-    // ========================================================================
-
-    #[test]
-    fn test_claim_one_second_before_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time exactly one second before cliff
-        env.ledger().with_mut(|li| li.timestamp = 149);
-
-        // Attempt claim - should fail with CliffNotReached
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result, Err(Error::CliffNotReached));
-
-        // Keep numeric mapping assertion in sync with current enum layout.
-        assert_eq!(Error::CliffNotReached.0, 20);
-    }
-
-    #[test]
-    fn test_claim_exactly_at_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time exactly at cliff (50% through vesting period)
-        env.ledger().with_mut(|li| li.timestamp = 150);
-
-        // Claim should succeed and return 50% of tokens
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 500); // 50% vested
-    }
-
-    #[test]
-    fn test_claim_one_second_after_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time exactly one second after cliff
-        env.ledger().with_mut(|li| li.timestamp = 151);
-
-        // Claim should succeed
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert!(result.is_ok());
-        // At time 151: (151-100)/(200-100) = 51/100 = 51% vested
-        assert_eq!(result.unwrap(), 510);
-    }
-
-    #[test]
-    fn test_no_cliff_scenario() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Create stream with cliff_time == start_time (no cliff)
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 100, // Same as start_time
-        };
-
-        // Validation should accept this configuration
-        // (Will fail on token existence check, but validates cliff logic)
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::TokenNotFound));
-
-        // Create stream directly to test claiming
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 100, // No cliff
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // At exact start_time vested amount is 0, so claim returns InvalidAmount.
-        env.ledger().with_mut(|li| li.timestamp = 100);
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result, Err(Error::InvalidAmount));
-
-        // At 25% through
-        env.ledger().with_mut(|li| li.timestamp = 125);
-        let claimable = get_claimable(&env, &contract_id, 0).unwrap();
-        assert_eq!(claimable, 250); // 25% vested
-    }
-
-    #[test]
-    fn test_full_cliff_scenario() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Create stream with cliff_time == end_time (full cliff)
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 200, // Same as end_time
-        };
-
-        // Validation should accept this configuration
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::TokenNotFound)); // Expected - token doesn't exist
-
-        // Create stream directly to test claiming
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 200, // Full cliff
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // No tokens claimable before end_time
-        env.ledger().with_mut(|li| li.timestamp = 150);
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result, Err(Error::CliffNotReached));
-
-        // All tokens claimable at end_time
-        env.ledger().with_mut(|li| li.timestamp = 200);
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1000); // 100% vested
-    }
-
-    // ========================================================================
-    // Multiple Claim Attempts Tests
-    // ========================================================================
-
-    #[test]
-    fn test_multiple_claims_before_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time before cliff
-        env.ledger().with_mut(|li| li.timestamp = 140);
-
-        // First claim attempt - should fail
-        let result1 = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result1, Err(Error::CliffNotReached));
-
-        // Verify stream state unchanged
-        let stream_after_1 = get_stream(&env, &contract_id, 0);
-        assert_eq!(stream_after_1.claimed_amount, 0);
-
-        // Second claim attempt - should also fail
-        let result2 = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result2, Err(Error::CliffNotReached));
-
-        // Verify stream state still unchanged
-        let stream_after_2 = get_stream(&env, &contract_id, 0);
-        assert_eq!(stream_after_2.claimed_amount, 0);
-
-        // Third claim attempt - should also fail
-        let result3 = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result3, Err(Error::CliffNotReached));
-
-        // Verify stream state still unchanged
-        let stream_after_3 = get_stream(&env, &contract_id, 0);
-        assert_eq!(stream_after_3.claimed_amount, 0);
-    }
-
-    #[test]
-    fn test_claim_before_then_at_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // First attempt before cliff - should fail
-        env.ledger().with_mut(|li| li.timestamp = 149);
-        let result1 = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result1, Err(Error::CliffNotReached));
-
-        // Verify stream state unchanged
-        let stream_after_fail = get_stream(&env, &contract_id, 0);
-        assert_eq!(stream_after_fail.claimed_amount, 0);
-
-        // Second attempt at cliff - should succeed
-        env.ledger().with_mut(|li| li.timestamp = 150);
-        let result2 = claim(&env, &contract_id, &recipient, 0);
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), 500); // 50% vested
-
-        // Verify stream state updated
-        let stream_after_success = get_stream(&env, &contract_id, 0);
-        assert_eq!(stream_after_success.claimed_amount, 500);
-    }
-
-    // ========================================================================
-    // Cancellation Interaction Tests
-    // ========================================================================
-
-    // ========================================================================
-    // Stream Cancellation With Settlement Tests
-    // ========================================================================
-
-    /// Cancel at 50% vested: recipient receives half, creator gets half back.
-    #[test]
-    fn test_stream_cancel_settlement_at_50_percent() {
-        let (env, creator, recipient, contract_id) = setup();
-
-        // Stream: start=100, end=200, total=1000 — cancel at t=150 (50% elapsed)
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 100,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-        env.ledger().with_mut(|li| li.timestamp = 150);
-
-        let result = cancel(&env, &contract_id, &creator, 0);
-        assert!(result.is_ok(), "cancel at 50% should succeed");
-
-        // Verify stream state: claimed_amount advances to vested (500), cancelled = true
-        let s = get_stream(&env, &contract_id, 0);
-        assert!(s.cancelled);
-        assert_eq!(s.claimed_amount, 500); // vested_total recorded
-
-        // Recipient can no longer claim (stream cancelled, already settled)
-        let claim_result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(claim_result, Err(Error::StreamCancelled));
-    }
-
-    /// Cancel at 0% vested (before start): recipient gets nothing, creator gets everything.
-    #[test]
-    fn test_stream_cancel_settlement_at_0_percent() {
-        let (env, creator, recipient, contract_id) = setup();
-
-        // Cancel before stream starts (current_time <= start_time)
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 200,
-            end_time: 300,
-            cliff_time: 200,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-        env.ledger().with_mut(|li| li.timestamp = 100); // before start
-
-        let result = cancel(&env, &contract_id, &creator, 0);
-        assert!(result.is_ok(), "cancel at 0% should succeed");
-
-        let s = get_stream(&env, &contract_id, 0);
-        assert!(s.cancelled);
-        // No tokens vested: claimed_amount stays 0 (vested_total = 0)
-        assert_eq!(s.claimed_amount, 0);
-    }
-
-    /// Cancel at 100% vested (after end): recipient receives full amount.
-    #[test]
-    fn test_stream_cancel_settlement_at_100_percent() {
-        let (env, creator, recipient, contract_id) = setup();
-
-        // Cancel after stream fully vested; recipient had claimed 0
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 100,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-        env.ledger().with_mut(|li| li.timestamp = 300); // after end
-
-        let result = cancel(&env, &contract_id, &creator, 0);
-        assert!(result.is_ok(), "cancel at 100% should succeed");
-
-        let s = get_stream(&env, &contract_id, 0);
-        assert!(s.cancelled);
-        // Full amount vested: claimed_amount = total_amount
-        assert_eq!(s.claimed_amount, 1000);
-    }
-
-    #[test]
-    fn test_cancelled_stream_before_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Create and cancel a stream
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: true, // Stream is cancelled
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time before cliff
-        env.ledger().with_mut(|li| li.timestamp = 140);
-
-        // Attempt claim - should return CliffNotReached (not StreamCancelled)
-        // This verifies cliff check occurs before cancellation check
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result, Err(Error::CliffNotReached));
-    }
-
-    #[test]
-    fn test_cancelled_stream_after_cliff() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Create and cancel a stream
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: true, // Stream is cancelled
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time at or after cliff
-        env.ledger().with_mut(|li| li.timestamp = 150);
-
-        // Attempt claim - should return StreamCancelled
-        // Cliff check passes, so cancellation check is reached
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert_eq!(result, Err(Error::StreamCancelled));
-    }
-
-    // ========================================================================
-    // Zero-Duration Edge Case Tests
-    // ========================================================================
-
-    #[test]
-    fn test_zero_duration_valid() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Create stream with start_time == end_time == cliff_time
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 100,
-            end_time: 100,   // Same as start
-            cliff_time: 100, // Same as start
-        };
-
-        // Validation should accept this configuration
-        let result = validate_params(&env, &contract_id, &params);
-        // Current implementation rejects start_time >= end_time first.
-        assert_eq!(result, Err(Error::InvalidParameters));
-
-        // Create stream directly to test claiming
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 100,
-            cliff_time: 100,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time to cliff_time
-        env.ledger().with_mut(|li| li.timestamp = 100);
-
-        // Full amount should be claimable immediately (no division by zero)
-        let result = claim(&env, &contract_id, &recipient, 0);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1000); // 100% immediately available
-    }
-
-    #[test]
-    fn test_zero_duration_invalid_cliff() {
-        let (env, _creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        // Attempt to create stream with start_time == end_time but cliff_time < start_time
-        let params = StreamParams {
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            start_time: 100,
-            end_time: 100,  // Same as start
-            cliff_time: 50, // Before start - invalid
-        };
-
-        // Current implementation rejects start_time >= end_time first.
-        let result = validate_params(&env, &contract_id, &params);
-        assert_eq!(result, Err(Error::InvalidParameters));
-    }
-
-    // ========================================================================
-    // Query Behavior Tests
-    // ========================================================================
-
-    #[test]
-    fn test_query_before_cliff_returns_zero() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time before cliff
-        env.ledger().with_mut(|li| li.timestamp = 140);
-
-        // Query should return 0 without error
-        let result = get_claimable(&env, &contract_id, 0);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
-    }
-
-    #[test]
-    fn test_query_after_cliff_returns_vested() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Set time after cliff (60% through vesting)
-        env.ledger().with_mut(|li| li.timestamp = 160);
-
-        // Query should return calculated vested amount
-        let query_result = get_claimable(&env, &contract_id, 0);
-        assert!(query_result.is_ok());
-
-        // Verify it matches calculate_claimable
-        let calc_result = calculate_claimable(&env, &stream);
-        assert!(calc_result.is_ok());
-        assert_eq!(query_result.unwrap(), calc_result.unwrap());
-
-        // At time 160: (160-100)/(200-100) = 60/100 = 60% vested
-        assert_eq!(query_result.unwrap(), 600);
-    }
-
-    // ========================================================================
-    // Cliff Immutability Tests
-    // ========================================================================
-
-    #[test]
-    fn test_cliff_time_immutable() {
-        let (env, creator, recipient, contract_id): (Env, Address, Address, Address) = setup();
-
-        let stream = StreamInfo {
-            id: 0,
-            creator: creator.clone(),
-            recipient: recipient.clone(),
-            token_index: 0,
-            total_amount: 1000,
-            claimed_amount: 0,
-            start_time: 100,
-            end_time: 200,
-            cliff_time: 150,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-        };
-        set_stream(&env, &contract_id, 0, &stream);
-
-        // Retrieve stream multiple times
-        let stream1 = get_stream_public(&env, &contract_id, 0).unwrap();
-        let stream2 = get_stream_public(&env, &contract_id, 0).unwrap();
-        let stream3 = get_stream_public(&env, &contract_id, 0).unwrap();
-
-        // Verify cliff_time is identical in all retrievals
-        assert_eq!(stream1.cliff_time, 150);
-        assert_eq!(stream2.cliff_time, 150);
-        assert_eq!(stream3.cliff_time, 150);
-        assert_eq!(stream1.cliff_time, stream2.cliff_time);
-        assert_eq!(stream2.cliff_time, stream3.cliff_time);
-    }
 }
 
 #[cfg(test)]
-mod dispute_tests {
+mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, testutils::Ledger, Env};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
 
-    fn make_stream(env: &Env, creator: &Address, recipient: &Address) -> StreamInfo {
-        StreamInfo {
-            id: 1,
-            creator: creator.clone(),
+    fn setup(env: &Env) -> (Address, u32) {
+        let admin = Address::generate(env);
+        storage::set_admin(env, &admin);
+        let token = crate::types::TokenInfo {
+            address: Address::generate(env),
+            creator: admin.clone(),
+            name: String::from_str(env, "Test"),
+            symbol: String::from_str(env, "TST"),
+            decimals: 7,
+            total_supply: 1_000_000_000,
+            initial_supply: 1_000_000_000,
+            max_supply: None,
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: 0,
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        };
+        storage::set_token_info(env, 0, &token);
+        (admin, 0)
+    }
+
+    fn params(_env: &Env, recipient: &Address, token_index: u32) -> StreamParams {
+        StreamParams {
             recipient: recipient.clone(),
-            token_index: 0,
+            token_index,
             total_amount: 1_000,
-            claimed_amount: 0,
             start_time: 0,
             end_time: 1_000,
             cliff_time: 0,
-            metadata: None,
-            cancelled: false,
-            paused: false,
-            disputed: false,
-            milestones: soroban_sdk::Vec::new(env),
         }
     }
 
-    fn setup() -> (Env, Address, Address, Address) {
+    #[test]
+    #[should_panic]
+    fn create_stream_requires_auth() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let _ = create_stream(&env, &creator, &p, None, Vec::new(&env));
+        });
+    }
+
+    #[test]
+    fn create_stream_rejects_zero_amount() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
-        let admin = Address::generate(&env);
-        let treasury = Address::generate(&env);
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-        client.initialize(&admin, &treasury, &1_000_000_i128, &500_000_i128);
-        (env, contract_id, admin, treasury)
-    }
-
-    #[test]
-    fn raise_dispute_blocks_claim() {
-        let (env, contract_id, admin, _) = setup();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-
         env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &admin);
-            let stream = make_stream(&env, &creator, &recipient);
-            storage::set_stream(&env, 1, &stream);
-
-            // Raise dispute as creator
-            raise_dispute(&env, &creator, 1).unwrap();
-
-            // Claim must be blocked
-            env.ledger().set_timestamp(500);
-            let err = claim_stream(&env, &recipient, 1).unwrap_err();
-            assert_eq!(err, Error::StreamDisputed);
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.total_amount = 0;
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidAmount));
         });
     }
 
     #[test]
-    fn resolve_dispute_re_enables_claim() {
-        let (env, contract_id, admin, _) = setup();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-
+    fn create_stream_rejects_bad_schedule() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &admin);
-            let stream = make_stream(&env, &creator, &recipient);
-            storage::set_stream(&env, 1, &stream);
-
-            raise_dispute(&env, &recipient, 1).unwrap();
-            resolve_dispute(&env, &admin, 1).unwrap();
-
-            // After resolution, stream is no longer disputed
-            let s = storage::get_stream(&env, 1).unwrap();
-            assert!(!s.disputed);
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.end_time = 0;
+            p.start_time = 100;
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidStreamSchedule));
         });
     }
 
     #[test]
-    fn raise_dispute_unauthorized_fails() {
-        let (env, contract_id, admin, _) = setup();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let stranger = Address::generate(&env);
-
+    fn create_stream_rejects_unregistered_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &admin);
-            let stream = make_stream(&env, &creator, &recipient);
-            storage::set_stream(&env, 1, &stream);
-
-            let err = raise_dispute(&env, &stranger, 1).unwrap_err();
-            assert_eq!(err, Error::Unauthorized);
+            setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, 999);
+            let result = create_stream(&env, &creator, &p, None, Vec::new(&env));
+            assert_eq!(result, Err(Error::TokenNotFound));
         });
     }
 
     #[test]
-    fn double_dispute_fails() {
-        let (env, contract_id, admin, _) = setup();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
+    fn create_stream_success_assigns_incrementing_ids() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        // Each auth-requiring call gets its own `as_contract` frame — calling
+        // `require_auth()` twice for the same address within a single frame
+        // (even under `mock_all_auths`) trips this soroban-sdk version's
+        // "frame is already authorized" guard.
+        let (creator, recipient, token_index) = env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            (
+                Address::generate(&env),
+                Address::generate(&env),
+                token_index,
+            )
+        });
+        let p = params(&env, &recipient, token_index);
+        let id1 = env.as_contract(&contract_id, || {
+            create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap()
+        });
+        let id2 = env.as_contract(&contract_id, || {
+            create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap()
+        });
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
 
+    #[test]
+    fn batch_create_streams_rejects_empty_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
         env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &admin);
-            let stream = make_stream(&env, &creator, &recipient);
-            storage::set_stream(&env, 1, &stream);
-
-            raise_dispute(&env, &creator, 1).unwrap();
-            let err = raise_dispute(&env, &creator, 1).unwrap_err();
-            assert_eq!(err, Error::DisputeAlreadyRaised);
+            setup(&env);
+            let creator = Address::generate(&env);
+            let result = batch_create_streams(&env, &creator, Vec::new(&env));
+            assert_eq!(result, Err(Error::InvalidParameters));
         });
     }
 
     #[test]
-    fn resolve_non_disputed_stream_fails() {
-        let (env, contract_id, admin, _) = setup();
-        let creator = Address::generate(&env);
-        let recipient = Address::generate(&env);
+    fn batch_create_streams_rejects_over_max_batch_size() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            for _ in 0..(MAX_BATCH_SIZE + 1) {
+                items.push_back(params(&env, &recipient, token_index));
+            }
+            let result = batch_create_streams(&env, &creator, items);
+            assert_eq!(result, Err(Error::BatchTooLarge));
+        });
+    }
+
+    #[test]
+    fn batch_create_streams_atomic_on_invalid_item() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            items.push_back(params(&env, &recipient, token_index));
+            let mut bad = params(&env, &recipient, token_index);
+            bad.total_amount = 0;
+            items.push_back(bad);
+
+            let result = batch_create_streams(&env, &creator, items);
+            assert_eq!(result, Err(Error::InvalidAmount));
+            // No stream should have been written despite the first item being valid.
+            assert!(storage::get_stream(&env, 1).is_none());
+        });
+    }
+
+    #[test]
+    fn batch_create_streams_success_returns_all_ids() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut items = Vec::new(&env);
+            for _ in 0..5 {
+                items.push_back(params(&env, &recipient, token_index));
+            }
+            let ids = batch_create_streams(&env, &creator, items).unwrap();
+            assert_eq!(ids.len(), 5);
+        });
+    }
+
+    #[test]
+    fn claim_stream_before_cliff_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = params(&env, &recipient, token_index);
+            p.cliff_time = 500;
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+
+            env.ledger().with_mut(|li| li.timestamp = 100);
+            let result = claim_stream(&env, &recipient, id);
+            assert_eq!(result, Err(Error::NothingToClaim));
+        });
+    }
+
+    #[test]
+    fn claim_stream_unauthorized_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+
+            env.ledger().with_mut(|li| li.timestamp = 1_000);
+            let result = claim_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn claim_stream_nonexistent_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            setup(&env);
+            let recipient = Address::generate(&env);
+            let result = claim_stream(&env, &recipient, 999);
+            assert_eq!(result, Err(Error::StreamNotFound));
+        });
+    }
+
+    #[test]
+    fn cancel_stream_requires_creator_or_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+
+            let result = cancel_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn cancel_stream_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            (creator, id)
+        });
+
+        env.as_contract(&contract_id, || cancel_stream(&env, &creator, id).unwrap());
+        let result = env.as_contract(&contract_id, || cancel_stream(&env, &creator, id));
+        assert_eq!(result, Err(Error::StreamCancelled));
+    }
+
+    #[test]
+    fn update_metadata_before_claim_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            (creator, id)
+        });
+
+        let new_meta = Some(String::from_str(&env, "updated"));
+        env.as_contract(&contract_id, || {
+            update_stream_metadata(&env, &creator, id, new_meta.clone()).unwrap()
+        });
+        let stream = env.as_contract(&contract_id, || storage::get_stream(&env, id).unwrap());
+        assert_eq!(stream.metadata, new_meta);
+    }
+
+    #[test]
+    fn update_metadata_locked_after_claim() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let (creator, recipient, id) = env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+            (creator, recipient, id)
+        });
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        env.as_contract(&contract_id, || claim_stream(&env, &recipient, id).unwrap());
+
+        let result = env.as_contract(&contract_id, || {
+            update_stream_metadata(&env, &creator, id, None)
+        });
+        assert_eq!(result, Err(Error::StreamMetadataLocked));
+    }
+
+    #[test]
+    fn update_metadata_non_creator_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+
+            let result = update_stream_metadata(&env, &recipient, id, None);
+            assert_eq!(result, Err(Error::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn verify_milestone_wrong_oracle_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let mut milestones = Vec::new(&env);
+            milestones.push_back(Milestone {
+                description: String::from_str(&env, "milestone 1"),
+                oracle_address: oracle.clone(),
+                unlock_amount: 100,
+                verified: false,
+            });
+            let id = create_stream(&env, &creator, &p, None, milestones).unwrap();
+
+            let result = verify_stream_milestone(&env, &attacker, id, 0);
+            assert_eq!(result, Err(Error::UnauthorizedMilestoneOracle));
+        });
+    }
+
+    #[test]
+    fn verify_milestone_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let (oracle, id) = env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let mut milestones = Vec::new(&env);
+            milestones.push_back(Milestone {
+                description: String::from_str(&env, "milestone 1"),
+                oracle_address: oracle.clone(),
+                unlock_amount: 100,
+                verified: false,
+            });
+            let id = create_stream(&env, &creator, &p, None, milestones).unwrap();
+            (oracle, id)
+        });
 
         env.as_contract(&contract_id, || {
-            storage::set_admin(&env, &admin);
-            let stream = make_stream(&env, &creator, &recipient);
-            storage::set_stream(&env, 1, &stream);
+            verify_stream_milestone(&env, &oracle, id, 0).unwrap()
+        });
+        let result = env.as_contract(&contract_id, || {
+            verify_stream_milestone(&env, &oracle, id, 0)
+        });
+        assert_eq!(result, Err(Error::MilestoneAlreadyVerified));
+    }
 
-            let err = resolve_dispute(&env, &admin, 1).unwrap_err();
-            assert_eq!(err, Error::StreamNotDisputed);
+    #[test]
+    fn verify_milestone_out_of_range_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let (_, token_index) = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = params(&env, &recipient, token_index);
+            let id = create_stream(&env, &creator, &p, None, Vec::new(&env)).unwrap();
+
+            let oracle = Address::generate(&env);
+            let result = verify_stream_milestone(&env, &oracle, id, 0);
+            assert_eq!(result, Err(Error::MilestoneNotFound));
         });
     }
 }

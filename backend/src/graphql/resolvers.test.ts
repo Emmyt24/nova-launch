@@ -22,10 +22,14 @@ vi.mock("../lib/prisma", () => ({
     token: { findUnique: vi.fn(), findMany: vi.fn() },
     burnRecord: { findMany: vi.fn() },
     stream: { findUnique: vi.fn(), findMany: vi.fn() },
-    proposal: { findUnique: vi.fn(), findMany: vi.fn() },
+    proposal: { findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     vote: { findMany: vi.fn() },
     campaign: { findUnique: vi.fn(), findMany: vi.fn() },
   },
+}));
+
+vi.mock("../lib/logger", () => ({
+  logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 async function getPrisma() {
@@ -503,6 +507,157 @@ describe("schema", () => {
     });
     expect(result.errors).toBeDefined();
     expect(result.errors![0].message).toMatch(/nonExistentField/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Query resolver error handling
+// ---------------------------------------------------------------------------
+
+describe("Query resolver error handling", () => {
+  it("token: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.token.findUnique).mockRejectedValue(
+      new Error("connection refused: DB is down")
+    );
+
+    await expect(
+      resolvers.Query.token(undefined, { address: "CTOKEN" })
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("tokens: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.token.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.tokens(undefined, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("stream: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.stream.findUnique).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.stream(undefined, { streamId: 1 })
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("streams: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.stream.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.streams(undefined, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("proposal: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.findUnique).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.proposal(undefined, { proposalId: 1 })
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("proposals: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.proposals(undefined, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("governanceQueue: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.governanceQueue(undefined, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("campaign: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.campaign.findUnique).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.campaign(undefined, { campaignId: 1 })
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("campaigns: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.campaign.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Query.campaigns(undefined, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("does not expose raw error message to client", async () => {
+    const p = await getPrisma();
+    const rawMsg = "PrismaClientKnownRequestError: table users does not exist";
+    vi.mocked(p.token.findUnique).mockRejectedValue(new Error(rawMsg));
+
+    const rejection = await resolvers.Query.token(undefined, { address: "X" }).catch(
+      (e) => e
+    );
+    expect(rejection.message).not.toContain("PrismaClientKnownRequestError");
+    expect(rejection.message).toBe("Internal server error");
+  });
+
+  it("token: logs the original error before sanitizing", async () => {
+    const { logger } = await import("../lib/logger");
+    const p = await getPrisma();
+    vi.mocked(p.token.findUnique).mockRejectedValue(new Error("raw db error"));
+
+    await resolvers.Query.token(undefined, { address: "X" }).catch(() => {});
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("token"),
+      expect.objectContaining({ error: "raw db error" })
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Field resolver error handling
+// ---------------------------------------------------------------------------
+
+describe("Field resolver error handling", () => {
+  it("Token.burnRecords: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.burnRecord.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Token.burnRecords({ id: "tok-1" }, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("Proposal.votes: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.vote.findMany).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Proposal.votes({ id: "prop-1" }, {})
+    ).rejects.toMatchObject({ message: "Internal server error" });
+  });
+
+  it("Proposal.queuePosition: sanitizes a database error as GraphQLError", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.count).mockRejectedValue(new Error("DB timeout"));
+
+    await expect(
+      resolvers.Proposal.queuePosition({
+        status: "QUEUED",
+        proposalType: "CUSTOM",
+        createdAt: new Date("2026-01-01"),
+      })
+    ).rejects.toMatchObject({ message: "Internal server error" });
   });
 });
 

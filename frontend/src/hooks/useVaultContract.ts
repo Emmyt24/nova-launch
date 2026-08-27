@@ -564,7 +564,6 @@ export async function claimVault(
   const contractId = STELLAR_CONFIG.factoryContractId;
 
   const contract = new Contract(contractId);
-  const walletService = new WalletService();
 
   const account = await server.getAccount(claimerAddress);
   const operation = contract.call(
@@ -582,7 +581,10 @@ export async function claimVault(
     .build();
 
   const prepared = await server.prepareTransaction(tx);
-  const signedXdr = await walletService.signTransaction(prepared.toXDR());
+  const signedXdr = await WalletService.signTransaction(prepared.toXDR());
+  if (!signedXdr) {
+    throw new Error('claim_stream transaction signing was rejected or cancelled');
+  }
   const signedTx = TransactionBuilder.fromXDR(
     signedXdr,
     config.networkPassphrase,

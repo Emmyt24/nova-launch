@@ -5,7 +5,7 @@
  */
 
 import { EventEmitter } from 'events';
-import axios, { AxiosResponse } from 'axios';
+import axios from 'axios';
 import { structuredLogger } from '../logging/structured-logger';
 import { MetricsCollector } from '../metrics/prometheus-config';
 
@@ -40,6 +40,10 @@ interface ProjectionLagHealthDetail {
   maxLag: number;
   measurementCount: number;
   status: 'healthy' | 'warning' | 'critical';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -83,7 +87,7 @@ export class HealthMonitor extends EventEmitter {
   }
 
   /**
-   * Perform a health check
+   * Perform a health check, honoring config.retries with bounded backoff.
    */
   private async performCheck(config: HealthCheckConfig): Promise<void> {
     const startTime = Date.now();
@@ -91,39 +95,59 @@ export class HealthMonitor extends EventEmitter {
     let error: string | undefined;
     let metadata: Record<string, unknown> | undefined;
 
-    try {
-      switch (config.type) {
-        case 'http':
-          if (config.url) {
-            const response = await axios.get(config.url, {
-              timeout: config.timeout,
-            });
-            healthy = response.status >= 200 && response.status < 300;
-          }
-          break;
+    const maxAttempts = (config.retries ?? 0) + 1;
 
-        case 'projection-lag':
-          // Projection lag health check
-          if (config.lagThresholdConfig?.queryFn) {
-            const result = await this.checkProjectionLag(config);
-            healthy = result.healthy;
-            metadata = result.metadata;
-            error = result.error;
-          }
-          break;
-
-        case 'custom':
-          if (config.customCheck) {
-            healthy = await config.customCheck();
-          }
-          break;
-
-        default:
-          healthy = true;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        await sleep(Math.min(200 * 2 ** (attempt - 1), 5000));
       }
-    } catch (err) {
-      healthy = false;
-      error = err instanceof Error ? err.message : 'Unknown error';
+
+      try {
+        switch (config.type) {
+          case 'http':
+            if (config.url) {
+              const response = await axios.get(config.url, {
+                timeout: config.timeout,
+                validateStatus: () => true,
+              });
+              if (response.status >= 200 && response.status < 300) {
+                healthy = true;
+                error = undefined;
+              } else {
+                healthy = false;
+                const rawBody = response.data;
+                const bodySnippet = (
+                  typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody)
+                ).slice(0, 200);
+                error = `HTTP ${response.status}: ${bodySnippet}`;
+              }
+            }
+            break;
+
+          case 'projection-lag':
+            if (config.lagThresholdConfig?.queryFn) {
+              const result = await this.checkProjectionLag(config);
+              healthy = result.healthy;
+              metadata = result.metadata;
+              error = result.error;
+            }
+            break;
+
+          case 'custom':
+            if (config.customCheck) {
+              healthy = await config.customCheck();
+            }
+            break;
+
+          default:
+            healthy = true;
+        }
+      } catch (err) {
+        healthy = false;
+        error = err instanceof Error ? err.message : 'Unknown error';
+      }
+
+      if (healthy) break;
     }
 
     const responseTime = Date.now() - startTime;

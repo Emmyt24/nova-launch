@@ -5,26 +5,36 @@ export interface ApiResponse<T = any> {
     code: string;
     message: string;
     details?: any;
+    correlationId?: string;
   };
   timestamp: string;
+  correlationId?: string;
 }
 
-export function successResponse<T>(data: T): ApiResponse<T> {
+export function successResponse<T>(data: T, correlationId?: string): ApiResponse<T> {
   return {
     success: true,
     data,
     timestamp: new Date().toISOString(),
+    ...(correlationId && { correlationId }),
   };
 }
 
-export function errorResponse(error: {
-  code: string;
-  message: string;
-  details?: any;
-}): ApiResponse<null> {
+export function errorResponse(
+  error: {
+    code: string;
+    message: string;
+    details?: any;
+  },
+  correlationId?: string
+): ApiResponse<null> {
   return {
     success: false,
-    error,
+    error: {
+      ...error,
+      ...(correlationId && { correlationId }),
+    },
     timestamp: new Date().toISOString(),
+    ...(correlationId && { correlationId }),
   };
 }

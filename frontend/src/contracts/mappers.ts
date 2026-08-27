@@ -11,7 +11,6 @@ import type {
   BurnParams,
   AdminBurnParams,
   MintParams,
-  CreateBuybackCampaignParams,
   UpdateGovernanceConfigParams,
   InitializeParams,
   CreateProposalParams,
@@ -103,23 +102,6 @@ export const mappers = {
     addr(p.to),
     i128(p.amount),
   ],
-
-  /** create_buyback_campaign(creator, token_index, budget, start_time, end_time,
-   *                          min_interval, max_slippage_bps, source_token, target_token) */
-  createBuybackCampaign: (p: CreateBuybackCampaignParams): xdr.ScVal[] => [
-    addr(p.creator),
-    u32(p.token_index),
-    i128(p.budget),
-    u64(p.start_time),
-    u64(p.end_time),
-    u64(p.min_interval),
-    u32(p.max_slippage_bps),
-    addr(p.source_token),
-    addr(p.target_token),
-  ],
-
-  /** get_buyback_campaign(campaign_id) */
-  getBuybackCampaign: (campaignId: bigint): xdr.ScVal[] => [u64(campaignId)],
 
   /** update_governance_config(admin, quorum_percent, approval_percent) */
   updateGovernanceConfig: (p: UpdateGovernanceConfigParams): xdr.ScVal[] => [

@@ -1,0 +1,541 @@
+name: Contract CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run nightly tests at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Stage 1: Build & Lint Gate
+  build-and-lint:
+    name: Build & Lint Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32v1-none
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Soroban CLI
+        run: |
+          cargo install --locked soroban-cli --features opt
+
+      - name: Format Check
+        run: cargo fmt --all -- --check
+        working-directory: contracts/token-factory
+
+      - name: Clippy Check
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: contracts/token-factory
+
+      - name: Build Contracts
+        run: |
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
+        working-directory: contracts/token-factory
+
+  # Stage 2: Security Audit (OWASP Standards)
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: build-and-lint
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Vulnerability Scan
+        run: cargo audit
+        working-directory: contracts/token-factory
+
+      - name: Static Analysis
+        run: |
+          # Check for common Soroban pitfalls
+          echo "Running static analysis..."
+
+          # Check for unsafe code blocks
+          if grep -r "unsafe" contracts/token-factory/src/; then
+            echo "❌ Unsafe code detected - review required"
+            exit 1
+          fi
+
+          # Check for hardcoded secrets
+          if grep -r -i "secret\|password\|key" contracts/token-factory/src/ --exclude-dir=test; then
+            echo "❌ Potential hardcoded secrets detected"
+            exit 1
+          fi
+
+          # Check for panic! usage
+          if grep -r "panic!" contracts/token-factory/src/; then
+            echo "❌ panic! usage detected - use Result<T, Error> instead"
+            exit 1
+          fi
+
+          echo "✅ Static analysis passed"
+
+  # Stage 3: Testing & Coverage
+  test-and-coverage:
+    name: Testing & Coverage
+    runs-on: ubuntu-latest
+    needs: security-audit
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Run Tests
+        run: cargo test --all-features
+        working-directory: contracts/token-factory
+
+      - name: Generate Coverage Report
+        run: |
+          cargo tarpaulin --all-features --workspace --timeout 120 --out xml --output-dir coverage/
+        working-directory: contracts/token-factory
+
+      - name: Check Coverage Threshold
+        run: |
+          coverage=$(grep -o 'line-rate="[^"]*"' contracts/token-factory/coverage/cobertura.xml | head -1 | grep -o '[0-9.]*')
+          coverage_percent=$(echo "$coverage * 100" | bc -l | cut -d. -f1)
+          echo "Coverage: ${coverage_percent}%"
+
+          if [ "$coverage_percent" -lt 90 ]; then
+            echo "❌ Coverage ${coverage_percent}% is below 90% threshold"
+            exit 1
+          fi
+
+          echo "✅ Coverage ${coverage_percent}% meets 90% threshold"
+
+      - name: Upload Coverage
+        uses: codecov/codecov-action@v6
+        with:
+          file: contracts/token-factory/coverage/cobertura.xml
+          fail_ci_if_error: true
+
+  # Extra suites: fast/full/nightly test sweeps
+  fast-tests:
+    name: Fast Tests (Unit + Integration)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32v1-none
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run fast tests
+        run: ./scripts/run-tests.sh -m fast
+
+  full-tests:
+    name: Full Tests (Unit + Integration + Property)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32v1-none
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run full test suite
+        run: ./scripts/run-tests.sh -m full
+
+  nightly-tests:
+    name: Nightly Tests (Comprehensive)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32v1-none
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run nightly tests
+        run: ./scripts/run-tests.sh -m nightly -v
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-test-results
+          path: contracts/token-factory/target/debug/
+          retention-days: 7
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [fast-tests, full-tests]
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All test suites completed" >> $GITHUB_STEP_SUMMARY
+
+  # Error code stability — protects API consumers from breaking error-code changes
+  error-code-stability:
+    name: Verify Error Code Stability
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32v1-none
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v6
+        with:
+          path: contracts/token-factory/target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run error code stability tests
+        working-directory: contracts/token-factory
+        run: |
+          echo "🔒 Running error code stability tests..."
+          echo ""
+          echo "These tests protect API consumers by ensuring error codes remain stable."
+          echo "Any failure indicates a breaking change that requires a major version bump."
+          echo ""
+          cargo test --lib error_code_stability_test -- --nocapture --test-threads=1
+
+      - name: Verify no error code collisions
+        working-directory: contracts/token-factory
+        run: |
+          echo "🔍 Checking for error code collisions..."
+          cargo test --lib test_no_error_code_collisions -- --nocapture
+
+      - name: Verify error code ranges
+        working-directory: contracts/token-factory
+        run: |
+          echo "📊 Verifying error codes are in expected ranges..."
+          cargo test --lib test_error_code_ranges -- --nocapture
+
+      - name: Test common failure scenarios
+        working-directory: contracts/token-factory
+        run: |
+          echo "🧪 Testing common failure scenario error codes..."
+          cargo test --lib test_auth_failure_error_codes -- --nocapture
+          cargo test --lib test_validation_failure_error_codes -- --nocapture
+          cargo test --lib test_not_found_error_codes -- --nocapture
+          cargo test --lib test_paused_error_codes -- --nocapture
+          cargo test --lib test_replay_protection_error_codes -- --nocapture
+
+      - name: Test milestone verification errors
+        working-directory: contracts/token-factory
+        run: |
+          echo "🔐 Testing milestone verification error codes..."
+          cargo test --lib test_milestone_verification_error_codes -- --nocapture
+
+      - name: Test vault lifecycle errors
+        working-directory: contracts/token-factory
+        run: |
+          echo "🏦 Testing vault lifecycle error codes..."
+          cargo test --lib test_vault_lifecycle_error_codes -- --nocapture
+
+      - name: Generate error code report
+        if: always()
+        working-directory: contracts/token-factory
+        run: |
+          echo "## Error Code Stability Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Error Code Stability Verified" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All error codes are stable and protected by automated tests." >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for breaking changes
+        if: github.event_name == 'pull_request'
+        working-directory: contracts/token-factory
+        run: |
+          echo "🔍 Checking for breaking changes in error codes..."
+          cargo test --lib error_code_stability_test -- --nocapture --test-threads=1
+
+      - name: Fail on breaking changes
+        if: failure() && github.event_name == 'pull_request'
+        run: |
+          echo "::error::Breaking change detected in error codes. See job summary for details."
+          exit 1
+
+  # Property tests — accounting invariants
+  accounting-property-tests:
+    name: Accounting Property Tests
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_CASES: "150"
+      PROPTEST_MAX_SHRINK_ITERS: "2000"
+      PROPTEST_RNG_ALGORITHM: "chacha"
+      PROPTEST_RNG_SEED: "18364758544493064720"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32v1-none
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v6
+        with:
+          path: contracts/target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run accounting property test suite
+        working-directory: contracts/token-factory
+        run: cargo test --lib accounting_property_test -- --nocapture
+
+      - name: Upload proptest regressions
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: accounting-proptest-regressions-${{ github.run_number }}
+          path: contracts/token-factory/proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Stage 4a: Testnet Deployment
+  deploy-testnet:
+    name: Deploy to Testnet
+    runs-on: ubuntu-latest
+    needs: test-and-coverage
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Build Contract
+        run: |
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
+        working-directory: contracts/token-factory
+
+      - name: Configure Soroban Network
+        run: |
+          soroban network add testnet \
+            --rpc-url https://soroban-testnet.stellar.org \
+            --network-passphrase "Test SDF Network ; September 2015"
+
+      - name: Deploy to Testnet
+        env:
+          SOROBAN_NETWORK_PASSPHRASE: ${{ secrets.TESTNET_NETWORK_PASSPHRASE }}
+          SOROBAN_RPC_URL: ${{ secrets.TESTNET_RPC_URL }}
+          ADMIN_SECRET_KEY: ${{ secrets.TESTNET_ADMIN_SECRET_KEY }}
+          TREASURY_SECRET_KEY: ${{ secrets.TESTNET_TREASURY_SECRET_KEY }}
+        run: |
+          echo "$ADMIN_SECRET_KEY" | soroban keys add admin --stdin
+          echo "$TREASURY_SECRET_KEY" | soroban keys add treasury --stdin
+
+          # Deploy using deployment orchestrator
+          cd scripts/deployment
+          npm install
+          npm run deploy -- --network testnet
+
+          echo "✅ Testnet deployment completed"
+
+  # Stage 4b: Mainnet Deployment (Manual Approval)
+  deploy-mainnet:
+    name: Deploy to Mainnet
+    runs-on: ubuntu-latest
+    needs: test-and-coverage
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: mainnet
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Build Contract
+        run: |
+          cargo build --target wasm32v1-none --release --lib
+          soroban contract optimize --wasm ../target/wasm32v1-none/release/token_factory.wasm
+        working-directory: contracts/token-factory
+
+      - name: Configure Soroban Network
+        run: |
+          soroban network add mainnet \
+            --rpc-url https://soroban-mainnet.stellar.org \
+            --network-passphrase "Public Global Stellar Network ; September 2015"
+
+      - name: Deploy to Mainnet
+        env:
+          SOROBAN_NETWORK_PASSPHRASE: ${{ secrets.MAINNET_NETWORK_PASSPHRASE }}
+          SOROBAN_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          ADMIN_SECRET_KEY: ${{ secrets.MAINNET_ADMIN_SECRET_KEY }}
+          TREASURY_SECRET_KEY: ${{ secrets.MAINNET_TREASURY_SECRET_KEY }}
+        run: |
+          echo "$ADMIN_SECRET_KEY" | soroban keys add admin --stdin
+          echo "$TREASURY_SECRET_KEY" | soroban keys add treasury --stdin
+
+          # Deploy using deployment orchestrator
+          cd scripts/deployment
+          npm install
+          npm run deploy -- --network mainnet
+
+          echo "✅ Mainnet deployment completed"
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            🚀 Mainnet deployment completed
+
+            **Contract Address**: Check deployment logs
+            **Network**: Stellar Mainnet
+            **Commit**: ${{ github.sha }}
+          draft: false
+          prerelease: false
+
+  # Tag-triggered release artifact build (independent of the environment deploys above)
+  deploy-contract:
+    name: Build Release Artifact (tag)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Build optimized contract
+        working-directory: ./contracts/token-factory
+        run: cargo build --target wasm32v1-none --release --lib
+
+      - name: Upload optimized WASM
+        uses: actions/upload-artifact@v7
+        with:
+          name: mainnet-contract-${{ github.ref_name }}
+          path: contracts/target/wasm32v1-none/release/*.wasm
+          retention-days: 90

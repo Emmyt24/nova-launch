@@ -916,6 +916,53 @@ pub fn emit_stream_metadata_updated(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Recurring Stream Events (Issue #1765)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Emit recurring stream created event.
+///
+/// Topics: ("rstrm_cr", recurring_stream_id). Payload: (creator, recipient,
+/// amount_per_period, first_child_stream_id).
+pub fn emit_recurring_stream_created(
+    env: &Env,
+    recurring_stream_id: u64,
+    creator: &Address,
+    recipient: &Address,
+    amount_per_period: i128,
+    first_child_stream_id: u64,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_cr"), recurring_stream_id),
+        (creator, recipient, amount_per_period, first_child_stream_id),
+    );
+}
+
+/// Emit recurring stream period-triggered event (a new child stream was created).
+///
+/// Topics: ("rstrm_trg", recurring_stream_id). Payload: (child_stream_id, period_index).
+pub fn emit_recurring_period_triggered(
+    env: &Env,
+    recurring_stream_id: u64,
+    child_stream_id: u64,
+    period_index: u32,
+) {
+    env.events().publish(
+        (symbol_short!("rstrm_trg"), recurring_stream_id),
+        (child_stream_id, period_index),
+    );
+}
+
+/// Emit recurring stream cancelled event.
+///
+/// Topics: ("rstrm_cxl", recurring_stream_id). Payload: (canceller,).
+pub fn emit_recurring_stream_cancelled(env: &Env, recurring_stream_id: u64, canceller: &Address) {
+    env.events().publish(
+        (symbol_short!("rstrm_cxl"), recurring_stream_id),
+        (canceller.clone(),),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Proposal/Governance Events
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1339,6 +1386,42 @@ pub fn emit_campaign_cancelled(
         (cancelled_by, budget_remaining),
     );
 }
+
+/// Emit buyback step settled event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: bb_stp_v1
+///
+/// **Topics** (indexed):
+/// - Event name: "bb_stp_v1"
+/// - campaign_id: u64 - The campaign identifier
+///
+/// **Payload** (non-indexed):
+/// - executor: Address   - Address that executed the step
+/// - spent: i128         - Budget spent on this step, in stroops
+/// - bought: i128        - Target tokens acquired by the swap
+/// - burned: i128        - Target tokens actually burned
+/// - step_number: u32    - 1-based index of this step within the campaign
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+///
+/// Emitted once per successful `execute_buyback_step` call, after the campaign
+/// record has been committed. `bought` and `burned` are reported separately so
+/// off-chain consumers can detect a burn shortfall without re-deriving it.
+pub fn emit_buyback_step_settled(
+    env: &Env,
+    campaign_id: u64,
+    executor: &Address,
+    spent: i128,
+    bought: i128,
+    burned: i128,
+    step_number: u32,
+) {
+    env.events().publish(
+        (symbol_short!("bb_stp_v1"), campaign_id),
+        (executor, spent, bought, burned, step_number),
+    );
+}
 /// Emit asset fractionalized event
 pub fn emit_asset_fractionalized(
     env: &Env,
@@ -1565,10 +1648,10 @@ pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Addr
 /// Emit AdminTransferProposed event (two-step transfer - step 1)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: adm_prp_v1
+/// **Event Name**: adm_prp1
 ///
 /// **Topics** (indexed):
-/// - Event name: "adm_prp_v1"
+/// - Event name: "adm_prp1"
 ///
 /// **Payload** (non-indexed):
 /// - current_admin: Address - The admin proposing the transfer
@@ -1577,16 +1660,16 @@ pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Addr
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admin: &Address) {
     env.events()
-        .publish((symbol_short!("adm_prp_v1"),), (current_admin.clone(), new_admin.clone()));
+        .publish((symbol_short!("adm_prp1"),), (current_admin.clone(), new_admin.clone()));
 }
 
 /// Emit AdminTransferAccepted event (two-step transfer - step 2)
 ///
 /// **Schema Version**: 1
-/// **Event Name**: adm_acc_v1
+/// **Event Name**: adm_acc1
 ///
 /// **Topics** (indexed):
-/// - Event name: "adm_acc_v1"
+/// - Event name: "adm_acc1"
 ///
 /// **Payload** (non-indexed):
 /// - old_admin: Address - The previous admin
@@ -1595,7 +1678,7 @@ pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admi
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &Address) {
     env.events()
-        .publish((symbol_short!("adm_acc_v1"),), (old_admin.clone(), new_admin.clone()));
+        .publish((symbol_short!("adm_acc1"),), (old_admin.clone(), new_admin.clone()));
 }
 
 /// Emit trusted caller registered event
@@ -1816,4 +1899,127 @@ pub fn emit_multisig_cancelled(env: &Env, proposal_id: u64, canceller: &Address)
 pub fn emit_multisig_executed(env: &Env, proposal_id: u64, executor: &Address) {
     env.events()
         .publish((symbol_short!("ms_exe_v1"), proposal_id), (executor,));
+}
+
+// ── Gas-bounded batch scheduler (#1625) ─────────────────────────────────────
+
+/// Emitted when a scheduled batch is split by the gas-bounded scheduler: a
+/// chunk of `executed_count` items committed now, `remaining_count` deferred
+/// to a continuation the tenant can resume on a later ledger.
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_sch1
+pub fn emit_batch_scheduled(env: &Env, tenant: &Address, executed_count: u32, remaining_count: u32) {
+    env.events().publish(
+        (symbol_short!("bch_sch1"), tenant.clone()),
+        (executed_count, remaining_count),
+    );
+}
+
+/// Emitted when a batch continuation finishes draining (its last chunk committed).
+///
+/// **Schema Version**: 1
+/// **Event Name**: bch_don1
+pub fn emit_batch_continuation_completed(env: &Env, tenant: &Address) {
+    let ledger = env.ledger().sequence();
+    env.events()
+        .publish((symbol_short!("bch_don1"), tenant.clone()), (ledger,));
+}
+
+// ── Cross-contract atomic settlement (#1624) ────────────────────────────────
+
+/// Emitted when a reservation is created by `prepare_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_prep1
+pub fn emit_settlement_prepared(
+    env: &Env,
+    reservation_id: u64,
+    proposal_id: u64,
+    token_index: u32,
+    recipient: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("stl_prep1"), reservation_id),
+        (proposal_id, token_index, recipient.clone(), amount),
+    );
+}
+
+/// Emitted when a reservation is finalized (minted) by `commit_settlement`.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_cmt1
+pub fn emit_settlement_committed(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_cmt1"), reservation_id), (proposal_id,));
+}
+
+/// Emitted when a reservation is released without minting — via an explicit
+/// `abort_settlement` call (`reason_code == 0`) or because
+/// `commit_settlement` itself failed (`reason_code` is the mint error code).
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_abrt1
+pub fn emit_settlement_aborted(env: &Env, reservation_id: u64, proposal_id: u64, reason_code: u32) {
+    env.events().publish(
+        (symbol_short!("stl_abrt1"), reservation_id),
+        (proposal_id, reason_code),
+    );
+}
+
+/// Emitted when a stuck (never committed or aborted) reservation is
+/// force-released by `cleanup_stuck_reservation` after its timeout window.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stl_tmo1
+pub fn emit_settlement_timeout_cleanup(env: &Env, reservation_id: u64, proposal_id: u64) {
+    env.events()
+        .publish((symbol_short!("stl_tmo1"), reservation_id), (proposal_id,));
+}
+
+// ── Staking (#1757) ──────────────────────────────────────────────────────
+
+/// Emitted when a new staking pool is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_crt1
+pub fn emit_staking_pool_created(
+    env: &Env,
+    pool_id: u64,
+    token_index: u32,
+    reward_token_index: u32,
+    reward_rate: i128,
+) {
+    env.events().publish(
+        (symbol_short!("stk_crt1"), pool_id),
+        (token_index, reward_token_index, reward_rate),
+    );
+}
+
+/// Emitted when a user stakes into a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_dep1
+pub fn emit_staked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_dep1"), pool_id), (user.clone(), amount));
+}
+
+/// Emitted when a user unstakes from a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_wd1
+pub fn emit_unstaked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_wd1"), pool_id), (user.clone(), amount));
+}
+
+/// Emitted when a user claims accrued staking rewards.
+///
+/// **Schema Version**: 1
+/// **Event Name**: stk_clm1
+pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
 }

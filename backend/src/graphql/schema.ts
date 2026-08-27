@@ -1,8 +1,8 @@
 /**
  * GraphQL schema (SDL) for the Nova Launch API.
  *
- * Exposes the four core domain objects already served by the REST layer:
- *   Token, Stream, Proposal (governance), Campaign
+ * Exposes the core domain objects already served by the REST layer:
+ *   Token, Stream, Proposal (governance)
  *
  * Design decisions:
  *  - BigInt fields are serialised as String to avoid JS precision loss.
@@ -126,41 +126,6 @@ export const typeDefs = /* GraphQL */ `
     timestamp: DateTime!
   }
 
-  # ── Campaign ───────────────────────────────────────────────────────────────
-
-  enum CampaignStatus {
-    ACTIVE
-    PAUSED
-    COMPLETED
-    CANCELLED
-  }
-
-  enum CampaignType {
-    BUYBACK
-    AIRDROP
-    LIQUIDITY
-  }
-
-  type Campaign {
-    id: ID!
-    campaignId: Int!
-    tokenId: String!
-    creator: String!
-    type: CampaignType!
-    status: CampaignStatus!
-    targetAmount: String!
-    currentAmount: String!
-    executionCount: Int!
-    startTime: DateTime!
-    endTime: DateTime
-    metadata: String
-    txHash: String!
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    completedAt: DateTime
-    cancelledAt: DateTime
-  }
-
   # ── Root Query ─────────────────────────────────────────────────────────────
 
   type Query {
@@ -192,17 +157,6 @@ export const typeDefs = /* GraphQL */ `
     # Current FIFO execution queue (status = QUEUED), ordered by queue time.
     # Optionally narrowed to a single proposalType.
     governanceQueue(proposalType: ProposalType): [Proposal!]!
-
-    # Campaign queries
-    campaign(campaignId: Int!): Campaign
-    campaigns(
-      tokenId: String
-      creator: String
-      status: CampaignStatus
-      type: CampaignType
-      limit: Int
-      offset: Int
-    ): [Campaign!]!
   }
 
   # ── Real-time event payloads ────────────────────────────────────────────────
@@ -285,11 +239,5 @@ export const typeDefs = /* GraphQL */ `
 
     # Emitted when a vesting vault matures. Optionally filter to a recipient.
     vaultMatured(recipientAddress: String): VaultMaturedEvent!
-
-    # Emitted when a buyback campaign step completes on-chain. Optionally
-    # filter to a specific campaign. Unlike the events above, this stream is
-    # not tenant scoped — buyback campaigns are keyed by token address, not
-    # creator — so any authenticated connection receives all matching events.
-    campaignStepExecuted(campaignId: Int): CampaignStepExecutedEvent!
   }
 `;

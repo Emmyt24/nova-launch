@@ -1,145 +1,112 @@
-import React, { useEffect, useState } from 'react';
+/**
+ * Stream dashboard for the payment-streaming/vesting feature (Issue #1765).
+ * Distinct from `Vaults/VaultDashboard.tsx` — a new, parallel component.
+ */
+import { useCallback, useEffect, useState } from 'react';
 import { useWallet } from '../../hooks/useWallet';
 import { streamsApi } from '../../services/streamsApi';
-import type { StreamProjection, StreamStats } from '../../types';
-import { truncateAddress } from '../../hooks/useVaultContract';
+import { claimStream, getStream } from '../../hooks/useStreamContract';
+import type { PaymentStreamMetadata, PaymentStreamOnChain } from '../../types';
 
-export const StreamDashboard: React.FC = () => {
+interface Row {
+  meta: PaymentStreamMetadata;
+  onChain: PaymentStreamOnChain | null;
+}
+
+export default function StreamDashboard() {
   const { wallet } = useWallet();
   const address = wallet.address;
-  const [streams, setStreams] = useState<StreamProjection[]>([]);
-  const [stats, setStats] = useState<StreamStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
 
-  const fetchData = async () => {
+  const load = useCallback(async () => {
     if (!address) return;
     setLoading(true);
+    setError(null);
     try {
-      const [streamsData, statsData] = await Promise.all([
-        streamsApi.getByCreator(address),
-        streamsApi.getStats(address)
-      ]);
-      setStreams(streamsData);
-      setStats(statsData);
-      setError(null);
+      const metas = await streamsApi.getByRecipient(address);
+      const onChain = await Promise.all(metas.map((m) => getStream(m.streamId).catch(() => null)));
+      setRows(metas.map((meta, i) => ({ meta, onChain: onChain[i] })));
     } catch (err) {
-      setError('Failed to fetch stream data');
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Failed to load streams');
     } finally {
       setLoading(false);
     }
-  };
+  }, [address]);
 
   useEffect(() => {
-    fetchData();
-  }, [address]);
+    load();
+  }, [load]);
+
+  const handleClaim = async (streamId: string) => {
+    if (!address) return;
+    setClaimingId(streamId);
+    try {
+      await claimStream(streamId, address, wallet.network as 'testnet' | 'mainnet');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Claim failed');
+    } finally {
+      setClaimingId(null);
+    }
+  };
 
   if (!address) {
     return (
-      <div className="p-8 text-center">
-        <h2 className="text-xl font-semibold mb-4">Streams Dashboard</h2>
-        <p className="text-gray-600">Please connect your wallet to view your streams.</p>
+      <div role="status" className="p-6 text-center text-gray-500">
+        Connect your wallet to view your payment streams.
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div role="status" aria-live="polite" className="p-6 text-center text-gray-500">
+        Loading streams…
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="p-6 text-center text-gray-500 border border-dashed rounded-xl">
+        No payment streams found for this address.
       </div>
     );
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Streams Dashboard</h1>
-        <button 
-          onClick={fetchData}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-        >
-          Refresh
-        </button>
-      </div>
-
-      {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <StatCard title="Total Streams" value={stats.totalStreams} />
-          <StatCard title="Active Streams" value={stats.activeStreams} />
-          <StatCard title="Claimed Volume" value={`${stats.claimedVolume} USDC`} />
-          <StatCard title="Cancelled Volume" value={`${stats.cancelledVolume} USDC`} />
-        </div>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {error && (
+        <p role="alert" className="lg:col-span-3 text-red-600">
+          {error}
+        </p>
       )}
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-          <h2 className="font-semibold text-gray-800">Your Streams</h2>
-        </div>
-        
-        {loading ? (
-          <div className="p-12 text-center text-gray-500">Loading streams...</div>
-        ) : streams.length === 0 ? (
-          <div className="p-12 text-center text-gray-500">
-            {error ? error : "No streams found for this wallet."}
+      {rows.map(({ meta, onChain }) => {
+        const total = onChain ? BigInt(onChain.totalAmount) : 0n;
+        const claimed = onChain ? BigInt(onChain.claimedAmount) : 0n;
+        const remaining = total - claimed;
+        return (
+          <div key={meta.streamId} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+            <h3 className="font-semibold">{meta.title || `Stream #${meta.streamId}`}</h3>
+            {meta.description && <p className="text-sm text-gray-500">{meta.description}</p>}
+            <p className="text-sm mt-2">
+              Claimed {claimed.toString()} / {total.toString()}
+            </p>
+            <button
+              type="button"
+              disabled={claimingId === meta.streamId || !onChain || onChain.cancelled || remaining <= 0n}
+              aria-disabled={claimingId === meta.streamId}
+              onClick={() => handleClaim(meta.streamId)}
+              className="mt-3 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm disabled:opacity-50"
+            >
+              {claimingId === meta.streamId ? 'Claiming…' : 'Claim'}
+            </button>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">
-                  <th className="px-6 py-3">Stream ID</th>
-                  <th className="px-6 py-3">Recipient</th>
-                  <th className="px-6 py-3">Amount</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3">Created At</th>
-                  <th className="px-6 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {streams.map((stream) => (
-                  <tr key={stream.id} className="hover:bg-gray-50 transition">
-                    <td className="px-6 py-4 font-mono text-sm text-gray-900">
-                      {stream.streamId}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
-                      {truncateAddress(stream.recipient)}
-                    </td>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">
-                      {stream.amount} USDC
-                    </td>
-                    <td className="px-6 py-4">
-                      <StatusBadge status={stream.status} />
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-500">
-                      {new Date(stream.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4">
-                      <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                        View Details
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+        );
+      })}
     </div>
   );
-};
-
-const StatCard: React.FC<{ title: string; value: string | number }> = ({ title, value }) => (
-  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-    <p className="text-sm font-medium text-gray-500 mb-1">{title}</p>
-    <p className="text-2xl font-bold text-gray-900">{value}</p>
-  </div>
-);
-
-const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
-  const styles = {
-    CREATED: 'bg-green-100 text-green-800',
-    CLAIMED: 'bg-blue-100 text-blue-800',
-    CANCELLED: 'bg-red-100 text-red-800',
-  }[status] || 'bg-gray-100 text-gray-800';
-
-  return (
-    <span className={`px-2 py-1 rounded-full text-xs font-medium ${styles}`}>
-      {status}
-    </span>
-  );
-};
+}

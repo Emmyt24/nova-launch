@@ -76,9 +76,9 @@ describe("Authentication middleware", () => {
   // We only care about the auth layer (401 vs not-401).
   const app = createApp({ env: ENV, redis: mockRedis() });
 
-  it("returns 401 for /api/tokens without a token", async () => {
+  it("allows unauthenticated access to /api/tokens (requiresAuth: false)", async () => {
     const res = await request(app).get("/api/tokens");
-    expect(res.status).toBe(401);
+    expect(res.status).not.toBe(401);
   });
 
   it("returns 401 for /api/admin without a token", async () => {
@@ -86,9 +86,9 @@ describe("Authentication middleware", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 for an invalid token", async () => {
+  it("returns 401 for an invalid token on a protected route (/api/admin)", async () => {
     const res = await request(app)
-      .get("/api/tokens")
+      .get("/api/admin")
       .set("Authorization", "Bearer invalid.token");
     expect(res.status).toBe(401);
   });
@@ -98,6 +98,50 @@ describe("Authentication middleware", () => {
       .get("/api/tokens")
       .set("Authorization", `Bearer ${validToken()}`);
     // Auth passed; proxy to non-existent backend → 502 or ECONNREFUSED → 502
+    expect(res.status).not.toBe(401);
+  });
+});
+
+// ── Per-route requiresAuth flag matrix ───────────────────────────────────────
+
+describe("Per-route requiresAuth flag", () => {
+  const app = createApp({ env: ENV, redis: mockRedis() });
+
+  // requiresAuth: false — reachable without a token
+  it("allows unauthenticated GET /api/leaderboard (requiresAuth: false)", async () => {
+    const res = await request(app).get("/api/leaderboard");
+    expect(res.status).not.toBe(401);
+  });
+
+  it("allows unauthenticated GET /api/search (requiresAuth: false)", async () => {
+    const res = await request(app).get("/api/search");
+    expect(res.status).not.toBe(401);
+  });
+
+  // requiresAuth: false — also works with a valid token
+  it("accepts a valid token on a public route (/api/tokens)", async () => {
+    const res = await request(app)
+      .get("/api/tokens")
+      .set("Authorization", `Bearer ${validToken()}`);
+    expect(res.status).not.toBe(401);
+  });
+
+  // requiresAuth: true — rejects without a token
+  it("rejects unauthenticated GET /api/governance (requiresAuth: true)", async () => {
+    const res = await request(app).get("/api/governance");
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects unauthenticated GET /api/webhooks (requiresAuth: true)", async () => {
+    const res = await request(app).get("/api/webhooks");
+    expect(res.status).toBe(401);
+  });
+
+  // requiresAuth: true — passes with a valid token
+  it("allows authenticated GET /api/admin (requiresAuth: true)", async () => {
+    const res = await request(app)
+      .get("/api/admin")
+      .set("Authorization", `Bearer ${validToken()}`);
     expect(res.status).not.toBe(401);
   });
 });

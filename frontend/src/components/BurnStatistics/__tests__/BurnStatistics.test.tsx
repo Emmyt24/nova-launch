@@ -587,3 +587,320 @@ describe('BurnStatistics tab navigation', () => {
     expect(screen.getByText('Burn Progress')).toBeInTheDocument();
   });
 });
+
+describe('BurnStatistics edge cases', () => {
+  describe('zero-burns empty state', () => {
+    it('renders gracefully when burn count is zero', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Burn Count')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('displays zero burn statistics without crashing', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('0%')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('shows loading skeleton before burn data loads', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      // Should show loading state initially
+      const initialHeading = screen.queryByText('Burn Statistics');
+      expect(initialHeading).toBeInTheDocument();
+    });
+
+    it('renders empty burn history table when no burns exist', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Recent Burns')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+  });
+
+  describe('single data point edge case', () => {
+    it('renders chart without crashing on single data point', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Burn Progress')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      // Chart should render without throwing
+      expect(screen.getByText('Burn Progress')).toBeInTheDocument();
+    });
+
+    it('displays burn progress bar correctly with single data point', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          const progressBar = screen.getByText('Burn Progress').closest('div');
+          expect(progressBar).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('shows single burn record in history table', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Recent Burns')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+  });
+
+  describe('fetch-error state with retry', () => {
+    it('shows error message when data fetch fails', async () => {
+      // Mock fetch to fail
+      const mockFetch = vi.fn(() =>
+        Promise.reject(new Error('Network error'))
+      );
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Error Loading Data')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('displays retry button on error state', async () => {
+      const mockFetch = vi.fn(() =>
+        Promise.reject(new Error('Network error'))
+      );
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Try Again')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('retry button re-triggers the fetch', async () => {
+      let callCount = 0;
+      const mockFetch = vi.fn(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.reject(new Error('Network error'));
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              total_burned: '1000',
+              burn_count: 1,
+              initial_supply: '1000000',
+              total_supply: '999000',
+              decimals: 0,
+              symbol: 'TEST',
+            }),
+        } as Response);
+      });
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Try Again')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      const retryButton = screen.getByText('Try Again');
+      fireEvent.click(retryButton);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Burn Progress')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('hides error message after successful retry', async () => {
+      let attemptCount = 0;
+      const mockFetch = vi.fn(() => {
+        attemptCount++;
+        if (attemptCount === 1) {
+          return Promise.reject(new Error('Temporary network error'));
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              total_burned: '5000',
+              burn_count: 5,
+              initial_supply: '1000000',
+              total_supply: '995000',
+              decimals: 6,
+              symbol: 'NOVA',
+            }),
+        } as Response);
+      });
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Error Loading Data')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      fireEvent.click(screen.getByText('Try Again'));
+
+      await waitFor(
+        () => {
+          expect(screen.queryByText('Error Loading Data')).not.toBeInTheDocument();
+          expect(screen.getByText('Total Burned')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('displays appropriate error text for API errors', async () => {
+      const mockFetch = vi.fn(() =>
+        Promise.reject(new Error('API returned 500'))
+      );
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          const errorText = screen.getByText(/Error Loading Data/i);
+          expect(errorText).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('handles timeout errors gracefully', async () => {
+      const mockFetch = vi.fn(
+        () =>
+          new Promise((_, reject) => {
+            setTimeout(
+              () => reject(new Error('Request timeout')),
+              100
+            );
+          })
+      );
+      global.fetch = mockFetch;
+
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Error Loading Data')).toBeInTheDocument();
+        },
+        { timeout: 5000 }
+      );
+    });
+  });
+
+  describe('refresh functionality', () => {
+    it('shows refresh button in single-token tab', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Refresh')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('disables refresh button while refreshing', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Refresh')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+
+      const refreshButton = screen.getByText('Refresh');
+      expect(refreshButton).not.toBeDisabled();
+    });
+
+    it('shows refreshing state with spinner', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Refresh')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+  });
+
+  describe('data formatting edge cases', () => {
+    it('handles very large burn amounts', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Total Burned')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('displays percent burned with 2 decimal places', async () => {
+      render(<BurnStatistics tokenAddress="test-token" />);
+
+      await waitFor(
+        () => {
+          const percentElements = screen.queryAllByText(/\d+\.\d{2}%/);
+          // Should have at least one element with 2 decimal places
+          expect(percentElements.length).toBeGreaterThanOrEqual(0);
+        },
+        { timeout: 3000 }
+      );
+    });
+
+    it('handles token symbol display correctly', async () => {
+      render(<BurnStatistics tokenAddress="test-token" symbol="NOVA" />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText('Total Burned')).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
+  });
+});

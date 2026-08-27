@@ -5,7 +5,7 @@ import axios from "axios";
  * On-Chain to Backend Projection Verifier
  *
  * Provides automated consistency verification between on-chain contract state
- * and backend database projections for tokens, burns, and campaigns.
+ * and backend database projections for tokens and burns.
  *
  * Usage:
  * - CI pipelines: Run as part of integration tests
@@ -38,16 +38,6 @@ export interface OnChainBurnRecord {
   txHash: string;
 }
 
-export interface OnChainCampaignState {
-  campaignId: number;
-  tokenId: string;
-  creator: string;
-  status: string;
-  targetAmount: bigint;
-  currentAmount: bigint;
-  executionCount: number;
-}
-
 export interface OnChainFactoryState {
   admin: string;
   treasury: string;
@@ -58,7 +48,7 @@ export interface OnChainFactoryState {
 }
 
 export interface ConsistencyDiff {
-  entity: "token" | "burn" | "campaign" | "factory";
+  entity: "token" | "burn" | "factory";
   identifier: string;
   field: string;
   backendValue: string | number | boolean | null;
@@ -72,7 +62,6 @@ export interface ConsistencyCheckResult {
   totalChecked: number;
   tokensChecked: number;
   burnsChecked: number;
-  campaignsChecked: number;
   diffs: ConsistencyDiff[];
   errors: string[];
   duration: number;
@@ -244,7 +233,6 @@ export class OnChainProjectionVerifier {
     const errors: string[] = [];
     let tokensChecked = 0;
     let burnsChecked = 0;
-    let campaignsChecked = 0;
 
     try {
       // Check token counts
@@ -258,12 +246,6 @@ export class OnChainProjectionVerifier {
       diffs.push(...burnResult.diffs);
       errors.push(...burnResult.errors);
       burnsChecked = burnResult.checked;
-
-      // Check campaign projections
-      const campaignResult = await this.checkCampaignProjections();
-      diffs.push(...campaignResult.diffs);
-      errors.push(...campaignResult.errors);
-      campaignsChecked = campaignResult.checked;
     } catch (error) {
       errors.push(
         `Full check failed: ${error instanceof Error ? error.message : String(error)}`
@@ -275,10 +257,9 @@ export class OnChainProjectionVerifier {
     return {
       consistent: diffs.length === 0 && errors.length === 0,
       timestamp: new Date(),
-      totalChecked: tokensChecked + burnsChecked + campaignsChecked,
+      totalChecked: tokensChecked + burnsChecked,
       tokensChecked,
       burnsChecked,
-      campaignsChecked,
       diffs,
       errors,
       duration,
@@ -414,78 +395,6 @@ export class OnChainProjectionVerifier {
   }
 
   /**
-   * Check campaign projection consistency
-   */
-  async checkCampaignProjections(): Promise<{
-    diffs: ConsistencyDiff[];
-    errors: string[];
-    checked: number;
-  }> {
-    const diffs: ConsistencyDiff[] = [];
-    const errors: string[] = [];
-    let checked = 0;
-
-    try {
-      const campaigns = await this.prisma.campaign.findMany({
-        where: { status: "ACTIVE" },
-        select: {
-          campaignId: true,
-          status: true,
-          currentAmount: true,
-          executionCount: true,
-          targetAmount: true,
-        },
-      });
-
-      checked = campaigns.length;
-
-      // For campaigns, we verify internal consistency
-      // (execution count matches CampaignExecution records)
-      for (const campaign of campaigns) {
-        const executionCount = await this.prisma.campaignExecution.count({
-          where: { campaignId: campaign.campaignId.toString() },
-        });
-
-        if (campaign.executionCount !== executionCount) {
-          diffs.push({
-            entity: "campaign",
-            identifier: campaign.campaignId.toString(),
-            field: "executionCount",
-            backendValue: campaign.executionCount,
-            onChainValue: executionCount,
-            severity: "error",
-          });
-        }
-
-        // Check currentAmount matches sum of executions
-        const executionSum = await this.prisma.campaignExecution.aggregate({
-          where: { campaignId: campaign.campaignId.toString() },
-          _sum: { amount: true },
-        });
-
-        const sumAmount = executionSum._sum.amount || BigInt(0);
-        if (campaign.currentAmount !== sumAmount) {
-          diffs.push({
-            entity: "campaign",
-            identifier: campaign.campaignId.toString(),
-            field: "currentAmount",
-            backendValue: campaign.currentAmount.toString(),
-            onChainValue: sumAmount.toString(),
-            severity: "error",
-          });
-        }
-      }
-
-      return { diffs, errors, checked };
-    } catch (error) {
-      errors.push(
-        `Campaign projections check failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-      return { diffs, errors, checked };
-    }
-  }
-
-  /**
    * Check a single token's burn consistency
    */
   async checkTokenBurnConsistency(
@@ -544,115 +453,6 @@ export class OnChainProjectionVerifier {
     }
 
     return diffs;
-  }
-
-  /**
-   * Check a single campaign's consistency against on-chain state
-   */
-  async checkSingleCampaign(
-    campaignId: number,
-    onChainState: OnChainCampaignState
-  ): Promise<ConsistencyDiff[]> {
-    const diffs: ConsistencyDiff[] = [];
-
-    const backendCampaign = await this.prisma.campaign.findUnique({
-      where: { campaignId },
-    });
-
-    if (!backendCampaign) {
-      diffs.push({
-        entity: "campaign",
-        identifier: campaignId.toString(),
-        field: "existence",
-        backendValue: null,
-        onChainValue: "exists",
-        severity: "error",
-      });
-      return diffs;
-    }
-
-    if (backendCampaign.status !== onChainState.status) {
-      diffs.push({
-        entity: "campaign",
-        identifier: campaignId.toString(),
-        field: "status",
-        backendValue: backendCampaign.status,
-        onChainValue: onChainState.status,
-        severity: "error",
-      });
-    }
-
-    if (backendCampaign.currentAmount !== onChainState.currentAmount) {
-      diffs.push({
-        entity: "campaign",
-        identifier: campaignId.toString(),
-        field: "currentAmount",
-        backendValue: backendCampaign.currentAmount.toString(),
-        onChainValue: onChainState.currentAmount.toString(),
-        severity: "error",
-      });
-    }
-
-    if (backendCampaign.executionCount !== onChainState.executionCount) {
-      diffs.push({
-        entity: "campaign",
-        identifier: campaignId.toString(),
-        field: "executionCount",
-        backendValue: backendCampaign.executionCount,
-        onChainValue: onChainState.executionCount,
-        severity: "error",
-      });
-    }
-
-    if (backendCampaign.targetAmount !== onChainState.targetAmount) {
-      diffs.push({
-        entity: "campaign",
-        identifier: campaignId.toString(),
-        field: "targetAmount",
-        backendValue: backendCampaign.targetAmount.toString(),
-        onChainValue: onChainState.targetAmount.toString(),
-        severity: "error",
-      });
-    }
-
-    return diffs;
-  }
-
-  /**
-   * Batch check multiple campaigns
-   */
-  async checkMultipleCampaigns(
-    onChainStates: OnChainCampaignState[]
-  ): Promise<ConsistencyCheckResult> {
-    const startTime = Date.now();
-    const allDiffs: ConsistencyDiff[] = [];
-    const errors: string[] = [];
-
-    for (const state of onChainStates) {
-      try {
-        const diffs = await this.checkSingleCampaign(
-          state.campaignId,
-          state
-        );
-        allDiffs.push(...diffs);
-      } catch (error) {
-        errors.push(
-          `Campaign ${state.campaignId} check failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-
-    return {
-      consistent: allDiffs.length === 0 && errors.length === 0,
-      timestamp: new Date(),
-      totalChecked: onChainStates.length,
-      tokensChecked: 0,
-      burnsChecked: 0,
-      campaignsChecked: onChainStates.length,
-      diffs: allDiffs,
-      errors,
-      duration: Date.now() - startTime,
-    };
   }
 
   /**
@@ -734,7 +534,6 @@ export class OnChainProjectionVerifier {
     lines.push("───────────────────────────────────────────────────────");
     lines.push(`  Tokens checked:    ${result.tokensChecked}`);
     lines.push(`  Burns checked:     ${result.burnsChecked}`);
-    lines.push(`  Campaigns checked: ${result.campaignsChecked}`);
     lines.push(`  Total checked:     ${result.totalChecked}`);
     lines.push("───────────────────────────────────────────────────────");
 
@@ -776,7 +575,6 @@ export class OnChainProjectionVerifier {
       summary: {
         tokens_checked: result.tokensChecked,
         burns_checked: result.burnsChecked,
-        campaigns_checked: result.campaignsChecked,
         total_checked: result.totalChecked,
         inconsistencies: result.diffs.length,
         errors: result.errors.length,

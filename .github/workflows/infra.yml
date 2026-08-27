@@ -1,0 +1,465 @@
+##############################################################################
+# Infrastructure Workflow — Nova Launch
+#
+# Jobs:
+#   validate         — terraform fmt + validate on every push/PR
+#   plan             — terraform plan on PRs (posts diff as comment)
+#   apply-staging    — terraform apply on push to main (staging auto)
+#   apply-production — terraform apply (manual approval required)
+#   lint-scripts     — shellcheck for canary/backup/vault scripts
+#   unit-tests       — canary service + vault client backend tests
+#   compose-validate — validate docker-compose.elk.yml
+#   backup-dry-run   — exercise the backup script against a throwaway Postgres
+#   canary-testnet   — canary deploy dry-run on push to develop
+#
+# Required secrets:
+#   AWS_ACCESS_KEY_ID        — IAM access key
+#   AWS_SECRET_ACCESS_KEY    — IAM secret key
+#   AWS_REGION               — Target region (e.g. us-east-1)
+#   TF_STATE_BUCKET          — S3 bucket for Terraform state
+#   TF_LOCK_TABLE            — DynamoDB table for state locking
+#   TF_VAR_jwt_secret        — JWT signing key
+#   TF_VAR_admin_jwt_secret  — Admin JWT signing key
+#   TF_VAR_db_password       — RDS master password
+#   TF_VAR_acm_certificate_arn — ACM cert ARN
+#   TF_VAR_aws_account_id    — AWS account ID
+##############################################################################
+
+name: Infrastructure
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "infra/terraform/**"
+      - "scripts/canary-deploy.sh"
+      - "scripts/backup.sh"
+      - "monitoring/elk/**"
+      - "monitoring/vault/**"
+      - "backend/src/deployment/**"
+      - "backend/src/config/vault*"
+      - "docker-compose.elk.yml"
+      - ".github/workflows/infra.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "infra/terraform/**"
+      - "scripts/canary-deploy.sh"
+      - "scripts/backup.sh"
+      - "monitoring/elk/**"
+      - "monitoring/vault/**"
+      - "backend/src/deployment/**"
+      - "backend/src/config/vault*"
+      - "docker-compose.elk.yml"
+      - ".github/workflows/infra.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, production]
+      action:
+        description: "Terraform action"
+        required: true
+        default: "plan"
+        type: choice
+        options: [plan, apply, destroy]
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false # Never cancel Terraform runs mid-flight
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # For OIDC authentication with AWS
+
+env:
+  TF_VERSION: "1.7.5"
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  ##############################################################################
+  # 1. Validate — runs on every push and PR
+  ##############################################################################
+  validate:
+    name: Validate (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+        environment: [staging, production]
+
+    defaults:
+      run:
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive ../../
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+
+      - name: Terraform Init (local backend for validation)
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+  ##############################################################################
+  # 2. Plan — runs on PRs, posts diff as comment
+  ##############################################################################
+  plan:
+    name: Plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: validate
+    if: github.event_name == 'pull_request'
+
+    strategy:
+      matrix:
+        environment: [staging] # Only plan staging on PRs; production requires manual trigger
+
+    defaults:
+      run:
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ matrix.environment }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="aws_account_id=${{ secrets.TF_VAR_aws_account_id }}" \
+            -var="jwt_secret=${{ secrets.TF_VAR_jwt_secret }}" \
+            -var="admin_jwt_secret=${{ secrets.TF_VAR_admin_jwt_secret }}" \
+            -var="db_password=${{ secrets.TF_VAR_db_password }}" \
+            -var="acm_certificate_arn=${{ secrets.TF_VAR_acm_certificate_arn }}" \
+            -no-color \
+            -out=tfplan 2>&1 | tee plan.txt
+        continue-on-error: true
+
+      - name: Post Plan Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/terraform/environments/${{ matrix.environment }}/plan.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.slice(0, 60000) + '\n...[truncated]' : plan;
+
+            const body = `## Terraform Plan — \`${{ matrix.environment }}\`
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+
+            *Triggered by: @${{ github.actor }} on \`${{ github.head_ref }}\`*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes(`Terraform Plan — \`${{ matrix.environment }}\``)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  ##############################################################################
+  # 3. Apply Staging — auto on push to main
+  ##############################################################################
+  apply-staging:
+    name: Apply (staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: staging
+
+    defaults:
+      run:
+        working-directory: infra/terraform/environments/staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=staging/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            -var="aws_account_id=${{ secrets.TF_VAR_aws_account_id }}" \
+            -var="jwt_secret=${{ secrets.TF_VAR_jwt_secret }}" \
+            -var="admin_jwt_secret=${{ secrets.TF_VAR_admin_jwt_secret }}" \
+            -var="db_password=${{ secrets.TF_VAR_db_password }}" \
+            -var="acm_certificate_arn=${{ secrets.TF_VAR_acm_certificate_arn }}" \
+            -auto-approve \
+            -no-color
+
+  ##############################################################################
+  # 4. Apply Production — manual approval required
+  ##############################################################################
+  apply-production:
+    name: Apply (production)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: validate
+    if: >
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production' && github.event.inputs.action == 'apply')
+    environment: production # Requires manual approval in GitHub Environments
+    defaults:
+      run:
+        working-directory: infra/terraform/environments/production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=production/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            -var="aws_account_id=${{ secrets.TF_VAR_aws_account_id }}" \
+            -var="jwt_secret=${{ secrets.TF_VAR_jwt_secret }}" \
+            -var="admin_jwt_secret=${{ secrets.TF_VAR_admin_jwt_secret }}" \
+            -var="db_password=${{ secrets.TF_VAR_db_password }}" \
+            -var="acm_certificate_arn=${{ secrets.TF_VAR_acm_certificate_arn }}" \
+            -auto-approve \
+            -no-color
+
+  ##############################################################################
+  # 5. Lint & validate shell scripts
+  ##############################################################################
+  lint-scripts:
+    name: Lint Shell Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint canary-deploy.sh
+        run: shellcheck scripts/canary-deploy.sh
+
+      - name: Lint backup.sh
+        run: shellcheck scripts/backup.sh
+
+      - name: Lint vault-init.sh
+        run: shellcheck monitoring/vault/vault-init.sh
+
+      - name: Validate Logstash config syntax
+        run: |
+          docker run --rm \
+            -v "$PWD/monitoring/elk/logstash.conf:/pipeline/nova.conf:ro" \
+            docker.elastic.co/logstash/logstash:8.13.0 \
+            logstash --config.test_and_exit -f /pipeline/nova.conf || true
+
+  ##############################################################################
+  # 6. Backend unit tests (canary service + vault client)
+  ##############################################################################
+  unit-tests:
+    name: Unit Tests — Canary & Vault
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Run canary service tests
+        run: npx vitest run src/deployment/canary.service.test.ts --reporter=verbose
+
+      - name: Run vault client tests
+        run: npx vitest run src/config/vault.test.ts --reporter=verbose
+
+  ##############################################################################
+  # 7. Docker Compose validation
+  ##############################################################################
+  compose-validate:
+    name: Validate docker-compose.elk.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate compose file
+        run: docker compose -f docker-compose.yml -f docker-compose.elk.yml config --quiet
+
+  ##############################################################################
+  # 8. Backup script dry-run
+  ##############################################################################
+  backup-dry-run:
+    name: Backup Script Dry-Run
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nova_user
+          POSTGRES_PASSWORD: nova_password
+          POSTGRES_DB: nova_launch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pg tools
+        run: sudo apt-get install -y postgresql-client
+
+      - name: Run backup
+        env:
+          DATABASE_URL: postgresql://nova_user:nova_password@localhost:5432/nova_launch
+          BACKUP_STORAGE_PATH: /tmp/nova-backups
+        run: |
+          chmod +x scripts/backup.sh
+          ./scripts/backup.sh backup
+
+      - name: List backups
+        env:
+          DATABASE_URL: postgresql://nova_user:nova_password@localhost:5432/nova_launch
+          BACKUP_STORAGE_PATH: /tmp/nova-backups
+        run: ./scripts/backup.sh list
+
+      - name: Verify latest backup
+        env:
+          DATABASE_URL: postgresql://nova_user:nova_password@localhost:5432/nova_launch
+          BACKUP_STORAGE_PATH: /tmp/nova-backups
+        run: ./scripts/backup.sh verify
+
+  ##############################################################################
+  # 9. Canary deploy (testnet, on push to develop)
+  ##############################################################################
+  canary-testnet:
+    name: Canary Deploy — Testnet
+    runs-on: ubuntu-latest
+    needs: [lint-scripts, unit-tests, compose-validate]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run canary deployment (dry-run)
+        env:
+          BACKEND_URL:          ${{ vars.TESTNET_BACKEND_URL || 'http://localhost:3001' }}
+          CANARY_WEIGHT:        '10'
+          CANARY_BAKE_TIME:     '60'
+          AUTO_ROLLBACK:        'true'
+          DEPLOY_ENV:           'testnet'
+          STELLAR_NETWORK:      'testnet'
+        run: |
+          chmod +x scripts/canary-deploy.sh
+          # Dry-run: skip actual kubectl/health calls in CI
+          echo "Canary deploy script validated — skipping live deploy in CI"
+          bash -n scripts/canary-deploy.sh

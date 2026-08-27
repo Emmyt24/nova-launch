@@ -59,16 +59,18 @@ router.post(
         },
       });
 
-      res.status(201).json(successResponse({ id: report.id }));
+      const correlationId = (req as any).correlationId;
+      res.status(201).json(successResponse({ id: report.id }, correlationId));
     } catch (error) {
       console.error('Error storing error report:', error);
+      const correlationId = (req as any).correlationId;
       res
         .status(500)
         .json(
           errorResponse({
             code: 'ERROR_REPORT_FAILED',
             message: 'Failed to store error report',
-          })
+          }, correlationId)
         );
     }
   }

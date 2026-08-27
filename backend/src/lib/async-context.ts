@@ -25,6 +25,10 @@ interface RequestContext {
   transactionId?: string;
   /** Parsed incoming W3C `traceparent` context, when present on the request. */
   traceContext?: TraceContext;
+  /** Current tenant, when the request has been scoped to one (see `runWithTenant`). */
+  tenantId?: string;
+  /** When true, tenant-scoped Prisma queries skip the automatic `tenantId` filter (see `runBypassing`). */
+  bypassTenant?: boolean;
 }
 
 export const asyncContext = new AsyncLocalStorage<RequestContext>();
@@ -39,6 +43,14 @@ export function getTransactionId(): string | undefined {
 
 export function getTraceContext(): TraceContext | undefined {
   return asyncContext.getStore()?.traceContext;
+}
+
+export function getTenantId(): string | undefined {
+  return asyncContext.getStore()?.tenantId;
+}
+
+export function isBypassingTenant(): boolean {
+  return asyncContext.getStore()?.bypassTenant ?? false;
 }
 
 export function runWithContext<T>(

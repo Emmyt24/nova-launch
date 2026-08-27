@@ -7,11 +7,16 @@ import { successResponse, errorResponse } from "../../utils/response";
 
 const router = Router();
 
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
+
 // Validation schemas
 const userFilterSchema = z.object({
   banned: z.enum(["true", "false"]).optional(),
   role: z.enum(["user", "admin", "super_admin"]).optional(),
   search: z.string().optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+  offset: z.string().regex(/^\d+$/).optional(),
 });
 
 const userUpdateSchema = z.object({
@@ -46,10 +51,23 @@ router.get(
         );
       }
 
+      const limit = Math.min(
+        filters.limit ? parseInt(filters.limit) : DEFAULT_LIMIT,
+        MAX_LIMIT
+      );
+      const offset = filters.offset ? parseInt(filters.offset) : 0;
+      const total = users.length;
+      users = users.slice(offset, offset + limit);
+
       res.json(
         successResponse({
           users,
-          total: users.length,
+          pagination: {
+            total,
+            limit,
+            offset,
+            hasMore: offset + limit < total,
+          },
         })
       );
     } catch (error) {
@@ -58,7 +76,7 @@ router.get(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid filters",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }
@@ -157,7 +175,7 @@ router.patch(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid update data",
-            details: error.errors,
+            details: error.issues,
           })
         );
       }

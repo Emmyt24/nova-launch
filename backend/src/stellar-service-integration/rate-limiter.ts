@@ -110,7 +110,6 @@ export function isRetryableError(error: any): boolean {
     const msg = error.message.toLowerCase();
     if (msg.includes('timeout')) return true;
     if (msg.includes('network')) return true;
-    if (msg.includes('not found') && msg.includes('transaction')) return true;
     // Sequence mismatch errors (TX_BAD_SEQ)
     if (msg.includes('bad_seq')) return true;
     if (msg.includes('tx_bad_seq')) return true;

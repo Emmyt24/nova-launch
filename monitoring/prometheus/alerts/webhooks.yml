@@ -25,6 +25,7 @@ groups:
           description: >
             Webhook failure rate is {{ $value | humanizePercentage }} for
             event type {{ $labels.event_type }}.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Webhook retry storm
@@ -41,6 +42,7 @@ groups:
           description: >
             More than 10 webhook retries/second for {{ $labels.event_type }}.
             Downstream endpoint may be down.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Background job failures
@@ -61,6 +63,7 @@ groups:
           description: >
             Job {{ $labels.job_name }} failure rate is
             {{ $value | humanizePercentage }}.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Job queue growing
@@ -76,3 +79,4 @@ groups:
           description: >
             Queue {{ $labels.queue_name }} has {{ $value }} pending jobs.
             Workers may be stalled.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"

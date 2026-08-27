@@ -25,7 +25,7 @@ const TENANT_FILTERED_OPS = new Set([
 ]);
 
 const baseClient =
-  globalForPrisma._basepisma ??
+  globalForPrisma._baseprisma ??
   new PrismaClient({
     log:
       process.env.NODE_ENV === "development"
@@ -38,7 +38,7 @@ const baseClient =
     },
   });
 
-export const prisma = baseClient.$extends({
+const extendedClient = baseClient.$extends({
   query: {
     $allModels: {
       async $allOperations({ model, operation, args, query }: any) {
@@ -62,10 +62,26 @@ export const prisma = baseClient.$extends({
   },
 });
 
-export type ExtendedPrismaClient = typeof prisma;
+export type ExtendedPrismaClient = typeof extendedClient;
+
+/**
+ * The tenant-scoped client, typed as the plain `PrismaClient` it wraps so it
+ * remains a drop-in replacement everywhere `PrismaClient` is already the
+ * expected parameter type. `$extends()` returns a structurally different
+ * type that's missing `$on`/`$use` — callers that genuinely need those
+ * (query middleware, event listeners) should use `baseClient` instead.
+ */
+export const prisma = extendedClient as unknown as PrismaClient;
+
+/**
+ * The un-extended, non-tenant-scoped client. Use only for infrastructure
+ * that hooks into `$on`/`$use` (connection-pool metrics, query tracing) —
+ * application code should use `prisma`.
+ */
+export { baseClient };
 
 if (process.env.NODE_ENV !== "production") {
-  globalForPrisma._basepisma = baseClient;
+  globalForPrisma._baseprisma = baseClient;
 }
 
 export default prisma;

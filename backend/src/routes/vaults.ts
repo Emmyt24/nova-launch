@@ -71,24 +71,55 @@ router.get("/:id/withdrawals", async (req, res) => {
 
   const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
   const cursor = req.query.cursor as string | undefined;
+  const status = req.query.status as string | undefined;
+
+  // Validate status filter if provided
+  const validStatuses = ["CLAIMED", "CANCELLED"];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json(
+      errorResponse({
+        code: "INVALID_INPUT",
+        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+      })
+    );
+  }
 
   try {
     const vault = await streamProjectionService.getStreamById(id);
     if (!vault) return res.status(404).json(errorResponse({ code: "NOT_FOUND", message: "Vault not found" }));
 
-    // TODO: Replace with actual withdrawal transaction queries once transaction history is available
-    // For now, return empty withdrawals if vault hasn't been claimed yet
-    const withdrawals = vault.claimedAt
-      ? [{
-          id: `${id}-claim`,
-          vaultId: id,
-          amount: vault.amount,
-          timestamp: vault.claimedAt.toISOString(),
-          txHash: vault.txHash,
-          recipient: vault.recipient,
-        }]
-      : [];
+    // Query withdrawal transactions from the stream projection.
+    // A withdrawal transaction represents a claim or cancellation of a vault.
+    const withdrawals: any[] = [];
 
+    if (vault.claimedAt && (!status || status === "CLAIMED")) {
+      withdrawals.push({
+        id: `${id}-claim-${vault.txHash}`,
+        vaultId: id,
+        transactionType: "CLAIMED",
+        amount: vault.amount,
+        timestamp: vault.claimedAt.toISOString(),
+        txHash: vault.txHash,
+        recipient: vault.recipient,
+      });
+    }
+
+    if (vault.cancelledAt && (!status || status === "CANCELLED")) {
+      withdrawals.push({
+        id: `${id}-cancel-${vault.txHash}`,
+        vaultId: id,
+        transactionType: "CANCELLED",
+        amount: vault.amount,
+        timestamp: vault.cancelledAt.toISOString(),
+        txHash: vault.txHash,
+        recipient: vault.recipient,
+      });
+    }
+
+    // Sort by timestamp descending (most recent first)
+    withdrawals.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    // Implement cursor-based pagination
     const startIndex = cursor ? Math.max(0, parseInt(atob(cursor), 10)) : 0;
     const paginatedWithdrawals = withdrawals.slice(startIndex, startIndex + limit);
     const nextIndex = startIndex + limit;

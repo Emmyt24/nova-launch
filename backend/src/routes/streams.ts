@@ -1,121 +1,166 @@
-import { Router } from "express";
-import { StreamStatus } from "@prisma/client";
-import { streamProjectionService } from "../services/streamProjectionService";
+/**
+ * Streams route for the payment-streaming/vesting feature (Issue #1765).
+ *
+ * Distinct from `routes/vaults.ts`, which backs the pre-existing Vaults
+ * feature's ingestion pipeline (`streamProjectionService` etc.) — see that
+ * file's naming-history note. This route only serves off-chain descriptive
+ * metadata (`streamMetadataService`) for streams created via the
+ * token-factory contract's `streaming` module; it does not ingest on-chain
+ * events itself.
+ */
+
+import { Router, Request, Response } from "express";
+import { z } from "zod";
 import { successResponse, errorResponse } from "../utils/response";
+import {
+  getStreamMetadata,
+  listStreamMetadataByCreator,
+  listStreamMetadataByRecipient,
+  upsertStreamMetadata,
+  StreamMetadataAuthError,
+  type PaymentStreamMetadataDto,
+} from "../services/streamMetadataService";
 
 const router = Router();
 
-function parseListOpts(query: any) {
-  const limit = Math.min(parseInt(query.limit as string) || 50, 200);
-  const offset = parseInt(query.offset as string) || 0;
-  const status = query.status as StreamStatus | undefined;
-  if (status && !Object.values(StreamStatus).includes(status)) {
-    return { error: `Invalid status. Must be one of: ${Object.values(StreamStatus).join(", ")}` };
+function parseStreamId(raw: string): bigint | null {
+  if (!/^\d+$/.test(raw)) return null;
+  try {
+    return BigInt(raw);
+  } catch {
+    return null;
   }
-  return { limit, offset, status };
 }
 
-/** Max streams per page for keyset pagination (mirrors the on-chain contract limit). */
-const MAX_KEYSET_LIMIT = 50;
-
-function parseKeysetOpts(query: any) {
-  const limit = Math.min(parseInt(query.limit as string) || MAX_KEYSET_LIMIT, MAX_KEYSET_LIMIT);
-  const status = query.status as StreamStatus | undefined;
-  if (status && !Object.values(StreamStatus).includes(status)) {
-    return { error: `Invalid status. Must be one of: ${Object.values(StreamStatus).join(", ")}` };
-  }
-
-  let cursor: number | undefined;
-  if (query.cursor !== undefined) {
-    const parsed = parseInt(query.cursor as string);
-    if (isNaN(parsed)) {
-      return { error: "Invalid cursor. Must be the numeric streamId of the last item from the previous page." };
-    }
-    cursor = parsed;
-  }
-
-  return { limit, cursor, status };
+// `streamId` is a Prisma BigInt — JSON.stringify (used by res.json) throws on
+// BigInt, so every response must serialize it to a string first.
+function serialize(record: PaymentStreamMetadataDto): Record<string, unknown> {
+  return { ...record, streamId: record.streamId.toString() };
 }
+function serializeAll(
+  records: PaymentStreamMetadataDto[]
+): Record<string, unknown>[] {
+  return records.map(serialize);
+}
+
+const upsertMetadataSchema = z.object({
+  creator: z.string().min(1),
+  recipient: z.string().min(1),
+  title: z.string().max(200).optional(),
+  description: z.string().max(2000).optional(),
+  tags: z.array(z.string().max(50)).max(20).optional(),
+});
 
 /**
- * GET /api/streams/stats/:address?
- * Stream statistics for an address (creator or recipient), or global.
+ * GET /api/streams/:streamId/metadata
+ * Off-chain metadata for a single stream (null data if none has been set).
  */
-router.get("/stats/:address?", async (req, res) => {
+router.get("/:streamId/metadata", async (req: Request, res: Response) => {
+  const streamId = parseStreamId(req.params.streamId);
+  if (streamId === null) {
+    return res
+      .status(400)
+      .json(
+        errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
+      );
+  }
+
   try {
-    const stats = await streamProjectionService.getStreamStats(req.params.address);
-    res.json(successResponse(stats));
-  } catch {
-    res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch stream stats" }));
+    const metadata = await getStreamMetadata(streamId);
+    res.json(successResponse(metadata ? serialize(metadata) : null));
+  } catch (error) {
+    console.error("[streams] GET /:streamId/metadata error:", error);
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch stream metadata",
+      })
+    );
   }
 });
 
 /**
- * GET /api/streams/creator/:address?status=CREATED&limit=50&offset=0
- * Streams created by address.
- */
-router.get("/creator/:address", async (req, res) => {
-  const opts = parseListOpts(req.query);
-  if ("error" in opts) return res.status(400).json(errorResponse({ code: "INVALID_INPUT", message: opts.error! }));
-  try {
-    const streams = await streamProjectionService.getStreamsByCreator(req.params.address, opts);
-    res.json(successResponse(streams));
-  } catch {
-    res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch creator streams" }));
-  }
-});
-
-/**
- * GET /api/streams/creator/:address/paginated?status=CREATED&cursor=123&limit=50
+ * PUT /api/streams/:streamId/metadata
  *
- * Keyset (cursor-based) pagination over streams created by `address`, ordered
- * by `streamId` ascending. Use this instead of the offset-based
- * `/creator/:address` endpoint for wallets with large stream collections:
- * offset pagination can skip or duplicate rows when streams are created
- * between page fetches, while this cursor always resumes strictly after the
- * last `streamId` returned. Mirrors the on-chain `list_streams_paginated`
- * keyset entry point. Pass `nextCursor` from the previous response as
- * `cursor` to fetch the next page; stop once `hasMore` is `false`.
+ * Create or update a stream's off-chain metadata. On first write, `creator`
+ * and `recipient` are recorded; subsequent writes must be made with the same
+ * `creator` or are rejected with 403.
  */
-router.get("/creator/:address/paginated", async (req, res) => {
-  const opts = parseKeysetOpts(req.query);
-  if ("error" in opts) return res.status(400).json(errorResponse({ code: "INVALID_INPUT", message: opts.error! }));
+router.put("/:streamId/metadata", async (req: Request, res: Response) => {
+  const streamId = parseStreamId(req.params.streamId);
+  if (streamId === null) {
+    return res
+      .status(400)
+      .json(
+        errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
+      );
+  }
+
+  const parsed = upsertMetadataSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json(
+      errorResponse({
+        code: "VALIDATION_ERROR",
+        message: "Invalid request body",
+        details: parsed.error.issues,
+      })
+    );
+  }
+
   try {
-    const page = await streamProjectionService.getStreamsByCreatorKeyset(req.params.address, opts);
-    res.json(successResponse(page));
-  } catch {
-    res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch creator streams" }));
+    const metadata = await upsertStreamMetadata({ streamId, ...parsed.data });
+    res.json(successResponse(serialize(metadata)));
+  } catch (error) {
+    if (error instanceof StreamMetadataAuthError) {
+      return res
+        .status(403)
+        .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
+    }
+    console.error("[streams] PUT /:streamId/metadata error:", error);
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to update stream metadata",
+      })
+    );
   }
 });
 
 /**
- * GET /api/streams/recipient/:address?status=CREATED&limit=50&offset=0
- * Streams where address is the recipient.
+ * GET /api/streams/creator/:address
+ * All streams (metadata) created by an address.
  */
-router.get("/recipient/:address", async (req, res) => {
-  const opts = parseListOpts(req.query);
-  if ("error" in opts) return res.status(400).json(errorResponse({ code: "INVALID_INPUT", message: opts.error! }));
+router.get("/creator/:address", async (req: Request, res: Response) => {
   try {
-    const streams = await streamProjectionService.getStreamsByRecipient(req.params.address, opts);
-    res.json(successResponse(streams));
-  } catch {
-    res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch recipient streams" }));
+    const streams = await listStreamMetadataByCreator(req.params.address);
+    res.json(successResponse(serializeAll(streams)));
+  } catch (error) {
+    console.error("[streams] GET /creator/:address error:", error);
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch creator streams",
+      })
+    );
   }
 });
 
 /**
- * GET /api/streams/:id
- * Single stream by on-chain streamId.
+ * GET /api/streams/recipient/:address
+ * All streams (metadata) where an address is the recipient.
  */
-router.get("/:id", async (req, res) => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) return res.status(400).json(errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" }));
+router.get("/recipient/:address", async (req: Request, res: Response) => {
   try {
-    const stream = await streamProjectionService.getStreamById(id);
-    if (!stream) return res.status(404).json(errorResponse({ code: "NOT_FOUND", message: "Stream not found" }));
-    res.json(successResponse(stream));
-  } catch {
-    res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch stream" }));
+    const streams = await listStreamMetadataByRecipient(req.params.address);
+    res.json(successResponse(serializeAll(streams)));
+  } catch (error) {
+    console.error("[streams] GET /recipient/:address error:", error);
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch recipient streams",
+      })
+    );
   }
 });
 

@@ -1,7 +1,9 @@
 import pinataSDK from "@pinata/sdk";
 import NodeCache from "node-cache";
+import { Counter } from "prom-client";
 import { CircuitBreaker, registerCircuitBreaker } from "../circuitBreaker.js";
-import { verifyCIDContent, verifyMetadataCID } from "./cidVerification.js";
+import { register } from "../metrics/index.js";
+import { CIDMismatchError, verifyCIDContent, verifyMetadataCID } from "./cidVerification.js";
 import { pinataQueue, type PinataQueueMetrics } from "./pinataQueue.js";
 import { gatewayRouter } from "./gatewayRouter.js";
 

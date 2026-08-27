@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { EventReplayService } from '../../services/eventReplayService';
-import { validateEnv } from '../../config/env';
+import { authenticateAdmin, requireSuperAdmin } from '../../middleware/auth';
 
 const router = Router();
 const replayService = new EventReplayService();
-const _env = validateEnv();
 
 /**
  * POST /admin/event-replay
@@ -29,14 +28,8 @@ const _env = validateEnv();
  *     duration: number
  *   }
  */
-router.post('/event-replay', async (req: Request, res: Response) => {
+router.post('/event-replay', authenticateAdmin, requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    // Validate admin authorization (should be enforced by middleware)
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== _env.JWT_SECRET) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
     const {
       startLedger,
       endLedger,
@@ -78,14 +71,8 @@ router.post('/event-replay', async (req: Request, res: Response) => {
  *
  * Response: Same as /event-replay
  */
-router.post('/event-replay/clear-and-rebuild', async (req: Request, res: Response) => {
+router.post('/event-replay/clear-and-rebuild', authenticateAdmin, requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    // Validate admin authorization
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== _env.JWT_SECRET) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
     const { confirm, startLedger } = req.query;
 
     if (confirm !== 'yes') {

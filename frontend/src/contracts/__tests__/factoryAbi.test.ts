@@ -17,7 +17,7 @@ import { FACTORY_METHODS } from '../factoryAbi';
 // ---------------------------------------------------------------------------
 const LIB_RS_PATH = resolve(
   __dirname,
-  '../../../../../contracts/token-factory/src/lib.rs'
+  '../../../../contracts/token-factory/src/lib.rs'
 );
 
 function getContractExports(): Set<string> {

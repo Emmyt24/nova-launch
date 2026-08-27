@@ -57,11 +57,8 @@ pub fn validate_admin(env: &Env) -> Result<(), Error> {
         return Err(Error::MissingAdmin);
     }
 
-    // Get admin address and verify it's valid
-    // In Soroban, if the address exists in storage, it's already validated by the SDK
-    // The get_admin() call will panic if the address is corrupted, which is appropriate
-    // for storage corruption scenarios
-    let _admin = storage::get_admin(env);
+    // get_admin now returns Option; since we just confirmed has_admin, the unwrap is safe.
+    let _admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
 
     Ok(())
 }
@@ -95,21 +92,8 @@ pub fn validate_admin(env: &Env) -> Result<(), Error> {
 /// ```
 #[allow(dead_code)]
 pub fn validate_treasury(env: &Env) -> Result<(), Error> {
-    // Get treasury address - will panic if not set, which we catch as MissingTreasury
-    // In Soroban, storage::get_treasury() will panic if the key doesn't exist
-    // We need to check existence first
-
-    // Note: storage module doesn't have has_treasury(), so we attempt to get it
-    // and handle the panic by checking if admin is set (as a proxy for initialization)
-    if !storage::has_admin(env) {
-        // If admin isn't set, treasury won't be either (initialization incomplete)
-        return Err(Error::MissingTreasury);
-    }
-
-    // Get treasury address - if this succeeds, the address is valid
-    // Soroban SDK validates addresses when storing/retrieving them
-    let _treasury = storage::get_treasury(env);
-
+    // get_treasury now returns Option, which cleanly handles the pre-init case.
+    storage::get_treasury(env).ok_or(Error::MissingTreasury)?;
     Ok(())
 }
 
@@ -147,14 +131,14 @@ pub fn validate_treasury(env: &Env) -> Result<(), Error> {
 /// validate_fees(&env)?; // Returns Err(Error::InvalidBaseFee)
 /// ```
 pub fn validate_fees(env: &Env) -> Result<(), Error> {
-    // Check base_fee first (fail-fast optimization)
-    let base_fee = storage::get_base_fee(env);
+    // Check base_fee first (fail-fast optimization). Returns None before init.
+    let base_fee = storage::get_base_fee(env).ok_or(Error::InvalidBaseFee)?;
     if base_fee < 0 {
         return Err(Error::InvalidBaseFee);
     }
 
     // Check metadata_fee
-    let metadata_fee = storage::get_metadata_fee(env);
+    let metadata_fee = storage::get_metadata_fee(env).ok_or(Error::InvalidMetadataFee)?;
     if metadata_fee < 0 {
         return Err(Error::InvalidMetadataFee);
     }

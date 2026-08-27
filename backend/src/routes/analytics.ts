@@ -130,13 +130,13 @@ router.get(
           name: t.name,
           symbol: t.symbol,
           burned: t.burned || "0",
-          creator: t.creator,
+          creator: t.creatorAddress,
         }));
 
       // Creator leaderboard
       const creatorMap = new Map<string, number>();
       for (const t of tokens) {
-        creatorMap.set(t.creator, (creatorMap.get(t.creator) ?? 0) + 1);
+        creatorMap.set(t.creatorAddress, (creatorMap.get(t.creatorAddress) ?? 0) + 1);
       }
       const topCreators = [...creatorMap.entries()]
         .sort((a, b) => b[1] - a[1])

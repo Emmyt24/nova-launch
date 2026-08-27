@@ -230,7 +230,15 @@ pub fn get_delegation(env: &Env, delegator: &Address) -> Option<DelegationRecord
 ///
 /// Snapshots are used by governance proposals to fix vote power at a
 /// specific point in time, preventing flash-loan style manipulation.
+///
+/// # Security
+/// `address.require_auth()` is called before any state mutation so that
+/// only the address itself can force a persistent-storage write on its
+/// behalf, closing the storage-spam griefing vector described in issue #1685.
 pub fn take_snapshot(env: &Env, address: &Address) -> Result<(), Error> {
+    // Auth: only the address itself may trigger a snapshot write for its own record
+    address.require_auth();
+
     let power = storage::get_vote_power(env, address);
     let ledger = env.ledger().sequence();
     snapshot_and_emit(env, address, power, ledger);

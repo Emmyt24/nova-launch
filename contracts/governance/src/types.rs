@@ -47,6 +47,11 @@ pub enum DataKey {
     Proposal(u32),
     /// Vote cast by a specific voter on a specific proposal
     Vote(u32, Address),
+
+    // ── Cross-contract settlement (#1624) ───────────────────────────────
+    /// Address of the deployed token-factory contract this governance
+    /// instance is authorized to disburse treasury payouts through.
+    TokenFactory,
 }
 
 // ─── Delegation structs ────────────────────────────────────────────────────
@@ -96,6 +101,19 @@ pub struct GovernanceProposal {
     pub votes_against: i128,
     pub payload: soroban_sdk::Bytes,
     pub status: ProposalStatus,
+    /// Treasury payout to disburse through token-factory on execution, if any.
+    pub disbursement: Option<Disbursement>,
+}
+
+/// A treasury payout a passed proposal disburses through token-factory's
+/// two-phase settlement protocol (`prepare_settlement` → `commit_settlement`)
+/// when executed. See `settlement::execute_disbursement`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Disbursement {
+    pub recipient: Address,
+    pub token_index: u32,
+    pub amount: i128,
 }
 
 /// Status of a governance proposal.
@@ -172,4 +190,10 @@ pub enum FinalizationError {
     AlreadyFinalized = 3,
     AlreadyExecuted = 4,
     ProposalNotPassed = 5,
+    /// Checked arithmetic overflow during vote-total or threshold computation
+    ArithmeticOverflow = 6,
+    /// Proposal has a disbursement but no token-factory address is configured
+    TokenFactoryNotConfigured = 7,
+    /// token-factory rejected or failed to commit the settlement
+    DisbursementFailed = 8,
 }

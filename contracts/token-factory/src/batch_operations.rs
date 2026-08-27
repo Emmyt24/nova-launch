@@ -72,8 +72,8 @@ pub fn batch_reveal(
 
     // ── Phase 1 (stage): validate every item and compute its final token
     // index. Nothing is written to storage here. ───────────────────────────
-    let base_fee = storage::get_base_fee(env);
-    let metadata_fee = storage::get_metadata_fee(env);
+    let base_fee = storage::get_base_fee(env).ok_or(Error::InvalidBaseFee)?;
+    let metadata_fee = storage::get_metadata_fee(env).ok_or(Error::InvalidMetadataFee)?;
     let start_index = storage::get_token_count(env);
 
     let mut required_fee: i128 = 0;
@@ -156,8 +156,8 @@ pub fn preflight_batch_reveal(
         return Err(Error::BatchTooLarge);
     }
 
-    let base_fee = storage::get_base_fee(env);
-    let metadata_fee = storage::get_metadata_fee(env);
+    let base_fee = storage::get_base_fee(env).ok_or(Error::InvalidBaseFee)?;
+    let metadata_fee = storage::get_metadata_fee(env).ok_or(Error::InvalidMetadataFee)?;
 
     let mut results = Vec::new(env);
     let mut required_fee: i128 = 0;
@@ -403,7 +403,7 @@ pub fn preflight_batch_settle(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn validate_token_params(env: &Env, params: &TokenCreationParams) -> Result<(), Error> {
+pub(crate) fn validate_token_params(env: &Env, params: &TokenCreationParams) -> Result<(), Error> {
     if params.name.len() == 0 || params.name.len() > 32 {
         return Err(Error::InvalidTokenParams);
     }

@@ -105,8 +105,8 @@ fn test_e2e_proposal_vote_fail_quorum_miss() {
     let events = EventAssertions::new(&test_env.env);
     let state = StateAssertions::new(&test_env.env);
     
-    let initial_base_fee = storage::get_base_fee(&test_env.env);
-    let initial_metadata_fee = storage::get_metadata_fee(&test_env.env);
+    let initial_base_fee = storage::get_base_fee(&test_env.env).unwrap();
+    let initial_metadata_fee = storage::get_metadata_fee(&test_env.env).unwrap();
     
     // ─────────────────────────────────────────────────────────────────────
     // Step 1: Create Proposal
@@ -161,8 +161,8 @@ fn test_e2e_proposal_queue_cancel_execute_reject() {
     let events = EventAssertions::new(&test_env.env);
     let state = StateAssertions::new(&test_env.env);
     
-    let initial_base_fee = storage::get_base_fee(&test_env.env);
-    let initial_metadata_fee = storage::get_metadata_fee(&test_env.env);
+    let initial_base_fee = storage::get_base_fee(&test_env.env).unwrap();
+    let initial_metadata_fee = storage::get_metadata_fee(&test_env.env).unwrap();
     
     // ─────────────────────────────────────────────────────────────────────
     // Step 1: Create Proposal
@@ -246,7 +246,7 @@ fn test_e2e_multiple_proposals_independent_execution() {
     let actors = ActorGenerator::new(&test_env.env);
     let vote_helper = VoteHelper::new(&test_env.env);
     
-    let initial_base_fee = storage::get_base_fee(&test_env.env);
+    let initial_base_fee = storage::get_base_fee(&test_env.env).unwrap();
     
     // Create two proposals
     let proposal_id_1 = ProposalBuilder::new(&test_env.env, &test_env.admin)

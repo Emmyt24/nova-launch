@@ -10,18 +10,20 @@ import adminRoutes from "./routes/admin";
 import analyticsRoutes from "./routes/analytics";
 import leaderboardRoutes from "./routes/leaderboard";
 import tokenRoutes from "./routes/tokens";
-import dividendRoutes from "./routes/dividends";
 import statsRoutes from "./routes/stats";
 import governanceRoutes from "./routes/governance";
-import campaignRoutes from "./routes/campaigns";
 import errorRoutes from "./routes/errors";
-import streamRoutes from "./routes/streams";
 import vaultRoutes from "./routes/vaults";
+import campaignRoutes from "./routes/campaigns";
 import versionRoutes from "./routes/version";
 import searchRoutes from "./routes/search";
 import exportRoutes from "./routes/export";
 import stellarRoutes from "./routes/stellar";
 import deployStatusRoutes from "./routes/deployStatus";
+import discoveryRoutes from "./routes/discovery";
+import webhooksRoutes from "./routes/webhooks";
+import webhooksDeadletterRoutes from "./routes/webhooks-deadletter";
+import eventsRoutes from "./routes/events";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
@@ -32,12 +34,15 @@ import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
 import { registerPoolMetrics } from "./lib/metrics/poolMetrics";
 import { registerPrismaTracing } from "./lib/metrics/prismaTracing";
-import { prisma } from "./lib/prisma";
+import { prisma, baseClient } from "./lib/prisma";
 import stellarEventListener from "./services/stellarEventListener";
 import websocketService from "./services/websocket";
 import jobQueue from "./services/jobQueue";
 import { streamReconciliationService } from "./services/streamReconciliation";
 import "./services/streamDivergenceAlerting";
+import sagaCoordinator from "./services/sagaCoordinator";
+import "./services/sagas/batchDeployGovernanceSaga";
+import { runProjectionSnapshotJob } from "./services/projectionSnapshotJob";
 
 dotenv.config();
 
@@ -77,8 +82,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Initialize database and pool metrics
 Database.initialize();
-registerPoolMetrics(prisma);
-registerPrismaTracing(prisma);
+registerPoolMetrics(baseClient);
+registerPrismaTracing(baseClient);
 
 // ---------------------------------------------------------------------------
 // Versioned API router (v1)
@@ -101,18 +106,20 @@ v1Router.use("/admin", limiter, adminRoutes);
 v1Router.use("/analytics", limiter, analyticsRoutes);
 v1Router.use("/leaderboard", limiter, leaderboardRoutes);
 v1Router.use("/tokens", limiter, tokenRoutes);
-v1Router.use("/dividends", limiter, dividendRoutes);
 v1Router.use("/stats", limiter, statsRoutes);
 v1Router.use("/governance", limiter, governanceRoutes);
-v1Router.use("/campaigns", limiter, campaignRoutes);
 v1Router.use("/errors", limiter, errorRoutes);
-v1Router.use("/streams", limiter, streamRoutes);
 v1Router.use("/vaults", limiter, vaultRoutes);
+v1Router.use("/campaigns", limiter, campaignRoutes);
 v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
 v1Router.use("/stellar", limiter, stellarRoutes);
 v1Router.use("/deploy", limiter, deployStatusRoutes);
+v1Router.use("/discovery", discoveryRoutes);
+v1Router.use("/webhooks", limiter, webhooksRoutes);
+v1Router.use("/webhooks-deadletter", limiter, webhooksDeadletterRoutes);
+v1Router.use("/events", eventsRoutes);
 v1Router.use("/graphql", graphqlRouter);
 v1Router.use("/docs", openApiRouter);
 
@@ -236,9 +243,27 @@ const server = app.listen(PORT, async () => {
     const reconciliationInterval = parseInt(
       process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000" // 5 minutes default
     );
-    jobQueue.scheduleRecurring("stream_reconciliation", {}, reconciliationInterval);
+    jobQueue.scheduleRecurring(
+      "stream_reconciliation",
+      {},
+      reconciliationInterval
+    );
     console.log(
       `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
+    );
+  }
+
+  // Register and schedule periodic cross-projection snapshot capture if enabled
+  jobQueue.register("projection_snapshot", async () => {
+    await runProjectionSnapshotJob(prisma);
+  });
+  if (process.env.ENABLE_PROJECTION_SNAPSHOTS === "true") {
+    const snapshotInterval = parseInt(
+      process.env.PROJECTION_SNAPSHOT_INTERVAL_MS || "1800000" // 30 minutes default
+    );
+    jobQueue.scheduleRecurring("projection_snapshot", {}, snapshotInterval);
+    console.log(
+      `📋 Projection snapshot capture scheduled every ${snapshotInterval}ms`
     );
   }
 
@@ -247,6 +272,9 @@ const server = app.listen(PORT, async () => {
 
   // Attach GraphQL subscriptions (graphql-ws) on the /graphql WS path
   attachGraphqlSubscriptions(server);
+
+  // Resume or compensate any sagas left in-flight by a prior process restart
+  await sagaCoordinator.recoverInterruptedSagas();
 
   // Start event listener only after server (and DB) are ready
   if (process.env.ENABLE_EVENT_LISTENER === "true") {

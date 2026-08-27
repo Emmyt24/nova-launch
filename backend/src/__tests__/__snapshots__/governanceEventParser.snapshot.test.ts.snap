@@ -1,0 +1,105 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Cancelled — proposal.update payload shape 1`] = `
+{
+  "data": {
+    "cancelReason": "Proposal no longer needed",
+    "cancelledAt": 2024-01-16T09:00:00.000Z,
+    "canceller": "GCANCELLER1234567890ABCDEFGHIJKLMNOPQRSTUV",
+    "status": "CANCELLED",
+  },
+  "where": {
+    "id": "proposal-uuid-1",
+  },
+}
+`;
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Created — proposal.upsert payload shape 1`] = `
+{
+  "create": {
+    "createdAt": 2024-01-15T12:00:00.000Z,
+    "description": "Proposal to increase the protocol fee from 1% to 2%",
+    "endTime": 2024-01-22T12:00:00.000Z,
+    "metadata": "{"category":"fee_adjustment"}",
+    "proposalId": 1,
+    "proposalType": "PARAMETER_CHANGE",
+    "proposer": "GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12345",
+    "quorum": 1000000000000n,
+    "startTime": 2024-01-15T12:00:00.000Z,
+    "status": "ACTIVE",
+    "threshold": 500000000000n,
+    "title": "Increase Protocol Fee",
+    "tokenId": "CTOKEN1234567890ABCDEFGHIJKLMN",
+    "txHash": "deadbeef0001000000000000000000000000000000000000000000000000cafe",
+  },
+  "update": {},
+  "where": {
+    "proposalId": 1,
+  },
+}
+`;
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Executed — proposalExecution.create + proposal.update payload shapes 1`] = `
+{
+  "executionCreate": {
+    "data": {
+      "executedAt": 2024-01-23T10:00:00.000Z,
+      "executor": "GEXECUTOR1234567890ABCDEFGHIJKLMNOPQRSTUV",
+      "gasUsed": 50000n,
+      "proposalId": "proposal-uuid-1",
+      "returnData": "0x01",
+      "success": true,
+      "txHash": "deadbeef0004000000000000000000000000000000000000000000000000cafe",
+    },
+  },
+  "proposalUpdate": {
+    "data": {
+      "executedAt": 2024-01-23T10:00:00.000Z,
+      "status": "EXECUTED",
+    },
+    "where": {
+      "id": "proposal-uuid-1",
+    },
+  },
+}
+`;
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Expired — proposal.update payload shape (status → EXPIRED) 1`] = `
+{
+  "data": {
+    "status": "EXPIRED",
+  },
+  "where": {
+    "id": "proposal-uuid-1",
+  },
+}
+`;
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Queued — proposal.update payload shape (status → QUEUED) 1`] = `
+{
+  "data": {
+    "status": "QUEUED",
+  },
+  "where": {
+    "id": "proposal-uuid-1",
+  },
+}
+`;
+
+exports[`GovernanceEventParser — snapshot regression suite > snapshot: Voted — vote.upsert payload shape 1`] = `
+{
+  "create": {
+    "proposalId": "proposal-uuid-1",
+    "reason": "I support this proposal for better tokenomics",
+    "support": true,
+    "timestamp": 2024-01-15T13:00:00.000Z,
+    "txHash": "deadbeef0002000000000000000000000000000000000000000000000000cafe",
+    "voter": "GVOTER12345678901234567890ABCDEFGHIJKLMNOPQR",
+    "weight": 250000000000n,
+  },
+  "update": {},
+  "where": {
+    "txHash": "deadbeef0002000000000000000000000000000000000000000000000000cafe",
+  },
+}
+`;

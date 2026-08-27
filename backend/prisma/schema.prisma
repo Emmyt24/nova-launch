@@ -23,6 +23,12 @@ model Token {
   metadataUri   String?
   /// When false the token is hidden from the public discovery endpoint.
   isPublic      Boolean       @default(true)
+  /// Admin flag: when true the token has been flagged for review.
+  flagged       Boolean       @default(false)
+  /// Soft-delete flag: when true the token is hidden from admin listings by default.
+  deleted       Boolean       @default(false)
+  /// Arbitrary JSON metadata attached by admins (e.g. description, verified flag).
+  metadata      Json?         @default("{}")
   /// Organisational category for marketplace filtering.
   category      TokenCategory @default(OTHER)
   /// Stellar network this token was deployed on.
@@ -33,6 +39,7 @@ model Token {
   burnRecords    BurnRecord[]
   analytics      Analytics[]
   dividendPools  DividendPool[]
+  governanceRegistration TokenGovernanceRegistration?
 
   @@index([address])
   @@index([creator])
@@ -118,10 +125,24 @@ enum StepStatus {
 model User {
   id         String   @id @default(uuid())
   address    String   @unique
+  /// Admin role for the platform. "user" = regular user, "admin" = admin, "super_admin" = super admin.
+  role       UserRole @default(user)
+  /// Whether this user has been banned from the platform.
+  banned     Boolean  @default(false)
   createdAt  DateTime @default(now())
   lastActive DateTime @updatedAt
 
+  adminAuditLogs AdminAuditLog[]
+
   @@index([address])
+  @@index([role])
+  @@index([banned])
+}
+
+enum UserRole {
+  user
+  admin
+  super_admin
 }
 
 model Analytics {
@@ -252,6 +273,27 @@ enum StreamStatus {
   CREATED
   CLAIMED
   CANCELLED
+}
+
+/// Off-chain metadata cache for the payment-streaming/vesting feature
+/// (Issue #1765) — a distinct feature from the `Stream` model above, which
+/// backs the pre-existing Vaults ingestion pipeline. `streamId` here refers
+/// to the token-factory contract's `streaming` module stream id, not a
+/// Vaults stream. Deliberately named `PaymentStream*` (not `Stream*`) to
+/// avoid any naming collision with the Vaults models/services.
+model PaymentStreamMetadata {
+  id          String   @id @default(uuid())
+  streamId    BigInt   @unique
+  creator     String
+  recipient   String
+  title       String?
+  description String?
+  tags        String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([creator])
+  @@index([recipient])
 }
 
 model Proposal {
@@ -419,7 +461,28 @@ enum CampaignStatus {
   CANCELLED
 }
 
-/// Stores durable state for long-running backend services.
+/// Audit trail for admin actions performed via the admin dashboard.
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  adminId     String
+  action      String
+  resource    String
+  resourceId  String
+  beforeState Json?
+  afterState  Json?
+  ipAddress   String
+  userAgent   String
+  timestamp   DateTime @default(now())
+
+  admin User @relation(fields: [adminId], references: [id])
+
+  @@index([adminId])
+  @@index([action])
+  @@index([resource])
+  @@index([timestamp])
+}
+
+/// Tracks durable state for long-running backend services.
 /// Used by StellarEventListener to persist the last processed event cursor
 /// so it can resume correctly after restarts without missing or replaying events.
 model IntegrationState {
@@ -447,4 +510,116 @@ model IPFSPin {
   @@index([pinned])
   @@index([failureCount])
   @@index([tokenAddress])
+}
+
+/// Durable state for the SagaCoordinator (#1621). Persists the step index and
+/// per-step context of a multi-step, cross-contract operation so an in-flight
+/// saga survives a process restart and can be resumed forward or compensated
+/// (rolled back in reverse step order) correctly rather than being lost.
+model SagaExecution {
+  id                   String                @id @default(uuid())
+  /// Identifies which saga definition this execution is running (e.g. "batch_deploy_with_governance_registration").
+  sagaType             String
+  status               SagaStatus            @default(RUNNING)
+  /// Index of the next step to execute (forward) or the step compensation is currently undoing.
+  currentStepIndex     Int                   @default(0)
+  stepCount            Int
+  /// Arbitrary saga-specific input/intermediate state (step results accumulate here as the saga progresses).
+  context              Json
+  compensationStatus   SagaCompensationStatus @default(NOT_STARTED)
+  /// Highest step index compensation has completed undoing so far — makes compensation resumable/idempotent.
+  compensatedStepIndex Int?
+  error                String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  completedAt          DateTime?
+
+  @@index([status])
+  @@index([sagaType])
+}
+
+enum SagaStatus {
+  RUNNING
+  COMPLETED
+  COMPENSATING
+  COMPENSATED
+  FAILED
+}
+
+enum SagaCompensationStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+/// Marks a deployed token as registered for governance participation (voting
+/// eligibility). Written by the batch-deploy-plus-governance-registration saga
+/// as its second step; deleted by that step's compensation if a later step
+/// in the same saga fails and the whole operation must be undone.
+model TokenGovernanceRegistration {
+  id           String   @id @default(uuid())
+  tokenId      String   @unique
+  registeredAt DateTime @default(now())
+
+  token Token @relation(fields: [tokenId], references: [id])
+
+  @@index([tokenId])
+}
+
+/// Point-in-time capture of a single projection type's full state at a given
+/// ledger height (#1620). Lets the replay engine resume from the nearest
+/// usable snapshot instead of always replaying from ledger zero. See
+/// docs/PROJECTION_SNAPSHOTS.md for the payload format and versioning
+/// strategy, including why STREAM and VAULT currently snapshot the same
+/// underlying table.
+model ProjectionSnapshot {
+  id             String         @id @default(uuid())
+  projectionType ProjectionType
+  /// Ledger height this snapshot represents — the projection reflects every event up to and including this ledger.
+  ledger         Int
+  /// Full event-store paging cursor at capture time, for precise replay resumption.
+  cursor         String
+  /// Payload schema version — see docs/PROJECTION_SNAPSHOTS.md for the compatibility policy across versions.
+  formatVersion  Int            @default(1)
+  /// The captured projection rows (shape depends on projectionType — see docs/PROJECTION_SNAPSHOTS.md).
+  data           Json
+  createdAt      DateTime       @default(now())
+
+  @@unique([projectionType, ledger])
+  @@index([projectionType, ledger])
+}
+
+enum ProjectionType {
+  CAMPAIGN
+  GOVERNANCE
+  STREAM
+  VAULT
+}
+
+/// Frontend ErrorBoundary reports, enriched with whatever Stellar transaction
+/// context (txHash/ledger/wallet/route) was in flight when the render error
+/// was caught. Never stores private keys, seed phrases, or signed payloads.
+model ErrorReport {
+  id              String   @id @default(uuid())
+  message         String
+  stack           String?
+  componentStack  String?
+  txHash          String?
+  ledgerSequence  Int?
+  walletAddress   String?
+  route           String?
+  network         String?
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([txHash])
+  @@index([walletAddress])
+}
+
+/// Per-tenant GraphQL query complexity budget override. Allows fine-tuning
+/// complexity limits for individual tenants beyond the global default.
+model TenantComplexityBudget {
+  tenantId         String   @id
+  complexityBudget Int
+  updatedAt        DateTime @updatedAt
 }

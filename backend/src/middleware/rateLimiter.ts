@@ -216,7 +216,8 @@ export function webhookUserRateLimiter(
 ): void {
   const user = (req as any).user;
   if (!user?.walletAddress) {
-    return res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({ error: "Authentication required" });
+    return;
   }
 
   createRateLimiter(getRedis(), {

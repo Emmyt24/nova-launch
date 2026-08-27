@@ -36,6 +36,12 @@ pub const BASE_QUORUM_WEIGHT: u32 = 60;
 /// Maximum number of participation snapshots retained.
 pub const MAX_SNAPSHOTS: u32 = 10;
 
+/// Default supply change threshold percentage that triggers recalculation (10%).
+pub const DEFAULT_SUPPLY_CHANGE_THRESHOLD_PCT: u32 = 10;
+
+/// Maximum supply change threshold percentage (50%).
+pub const MAX_SUPPLY_CHANGE_THRESHOLD_PCT: u32 = 50;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// A participation snapshot for a single proposal period.
@@ -68,6 +74,12 @@ pub enum DynamicQuorumKey {
     Snapshot(u32),
     /// Total number of snapshots recorded.
     SnapshotCount,
+    /// Last known token supply for reactive recalculation trigger.
+    LastKnownSupply,
+    /// Last supply change event ID that triggered recalculation (for idempotency).
+    LastTriggerEventId,
+    /// Supply change threshold percentage for reactive recalculation.
+    SupplyChangeThresholdPct,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -96,7 +108,7 @@ pub fn record_participation(
     eligible_voters: u32,
 ) -> Result<u32, Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -205,6 +217,92 @@ pub fn get_snapshot(env: &Env, snapshot_id: u32) -> Option<ParticipationSnapshot
     snap.filter(|s| s.snapshot_id == snapshot_id)
 }
 
+/// Return the current supply change threshold percentage for reactive recalculation.
+pub fn get_supply_change_threshold(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DynamicQuorumKey::SupplyChangeThresholdPct)
+        .unwrap_or(DEFAULT_SUPPLY_CHANGE_THRESHOLD_PCT)
+}
+
+/// Set the supply change threshold percentage (admin only, must be ≤ MAX_SUPPLY_CHANGE_THRESHOLD_PCT).
+pub fn set_supply_change_threshold(env: &Env, admin: &Address, threshold_pct: u32) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
+        return Err(Error::Unauthorized);
+    }
+
+    if threshold_pct > MAX_SUPPLY_CHANGE_THRESHOLD_PCT {
+        return Err(Error::InvalidParameters);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DynamicQuorumKey::SupplyChangeThresholdPct, &threshold_pct);
+
+    emit_threshold_updated(env, threshold_pct);
+    Ok(())
+}
+
+/// Check if a supply change should trigger reactive quorum recalculation.
+///
+/// Called by mint/burn operations with the new total supply.
+/// Triggers recalculation if:
+/// 1. Supply change exceeds configured threshold percentage
+/// 2. Event has not been previously processed (idempotency via event_id)
+///
+/// # Arguments
+/// * `env`      – The contract environment.
+/// * `event_id` – Unique identifier for this supply change event (for idempotency).
+/// * `new_supply` – The new token supply after mint/burn.
+pub fn check_and_trigger_reactive_recalculation(
+    env: &Env,
+    event_id: u64,
+    new_supply: i128,
+) -> Result<(), Error> {
+    let last_event = get_last_trigger_event_id(env);
+    if last_event == event_id {
+        // Already processed this event, skip (idempotent)
+        return Ok(());
+    }
+
+    let last_supply = get_last_known_supply(env).unwrap_or(0);
+    let threshold_pct = get_supply_change_threshold(env);
+
+    // Calculate percentage change
+    let supply_changed = if new_supply > last_supply {
+        new_supply - last_supply
+    } else {
+        last_supply - new_supply
+    };
+
+    // Avoid division by zero
+    if last_supply == 0 {
+        // First time recording supply, just store it
+        set_last_known_supply(env, new_supply);
+        set_last_trigger_event_id(env, event_id);
+        return Ok(());
+    }
+
+    let pct_change = ((supply_changed as u128 * 100) / last_supply.unsigned_abs() as u128) as u32;
+
+    if pct_change >= threshold_pct {
+        // Trigger immediate recalculation by recording a fresh participation snapshot
+        // that uses the current governance config as the new baseline
+        let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+        let _ = record_participation(env, &admin, env.ledger().sequence() as u64, 50, 100)?;
+
+        emit_reactive_recalculation_triggered(env, event_id, pct_change);
+    }
+
+    // Always update known supply and event_id for tracking
+    set_last_known_supply(env, new_supply);
+    set_last_trigger_event_id(env, event_id);
+
+    Ok(())
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn get_snapshot_by_store_index(env: &Env, store_index: u32) -> Option<ParticipationSnapshot> {
@@ -230,6 +328,31 @@ fn clamp_quorum(value: u32) -> u32 {
     value.max(MIN_QUORUM_PERCENT).min(MAX_QUORUM_PERCENT)
 }
 
+fn get_last_known_supply(env: &Env) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&DynamicQuorumKey::LastKnownSupply)
+}
+
+fn set_last_known_supply(env: &Env, supply: i128) {
+    env.storage()
+        .persistent()
+        .set(&DynamicQuorumKey::LastKnownSupply, &supply);
+}
+
+fn get_last_trigger_event_id(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DynamicQuorumKey::LastTriggerEventId)
+        .unwrap_or(0)
+}
+
+fn set_last_trigger_event_id(env: &Env, event_id: u64) {
+    env.storage()
+        .persistent()
+        .set(&DynamicQuorumKey::LastTriggerEventId, &event_id);
+}
+
 fn emit_participation_recorded(
     env: &Env,
     snapshot_id: u32,
@@ -239,6 +362,20 @@ fn emit_participation_recorded(
     env.events().publish(
         (symbol_short!("part_rec"), snapshot_id),
         (proposal_id, participation_pct),
+    );
+}
+
+fn emit_reactive_recalculation_triggered(env: &Env, event_id: u64, pct_change: u32) {
+    env.events().publish(
+        (symbol_short!("qrm_trig"), event_id),
+        pct_change,
+    );
+}
+
+fn emit_threshold_updated(env: &Env, threshold_pct: u32) {
+    env.events().publish(
+        (symbol_short!("qrm_thr"),),
+        threshold_pct,
     );
 }
 
@@ -568,5 +705,151 @@ mod tests {
         assert_eq!(effective, 38);
         assert!(effective >= MIN_QUORUM_PERCENT);
         assert!(effective <= MAX_QUORUM_PERCENT);
+    }
+
+    // ── Reactive recalculation tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_large_supply_change_triggers_reactive_recalculation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let initial_supply = 100_000_000i128;
+        let threshold_pct = 10u32;
+
+        env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, threshold_pct).unwrap()
+        });
+
+        // Record initial supply
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 1, initial_supply).unwrap()
+        });
+
+        // Trigger a 15% supply increase (exceeds 10% threshold)
+        let new_supply = (initial_supply as f64 * 1.15) as i128;
+        let before_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
+        });
+
+        let after_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+        // Should have recorded a new participation snapshot due to reactive trigger
+        assert!(after_count > before_count);
+    }
+
+    #[test]
+    fn test_small_supply_change_does_not_trigger() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let initial_supply = 100_000_000i128;
+        let threshold_pct = 10u32;
+
+        env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, threshold_pct).unwrap()
+        });
+
+        // Record initial supply
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 1, initial_supply).unwrap()
+        });
+
+        let before_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+
+        // Trigger only 5% supply change (below 10% threshold)
+        let new_supply = (initial_supply as f64 * 1.05) as i128;
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
+        });
+
+        let after_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+        // Should NOT have recorded a new snapshot (no trigger below threshold)
+        assert_eq!(after_count, before_count);
+    }
+
+    #[test]
+    fn test_reactive_recalculation_is_idempotent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let initial_supply = 100_000_000i128;
+        let threshold_pct = 10u32;
+
+        env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, threshold_pct).unwrap()
+        });
+
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 1, initial_supply).unwrap()
+        });
+
+        let new_supply = (initial_supply as f64 * 1.15) as i128;
+
+        // First trigger with event_id=2 should record a snapshot
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
+        });
+        let first_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+
+        // Second trigger with same event_id=2 should NOT record another snapshot
+        env.as_contract(&contract_id, || {
+            check_and_trigger_reactive_recalculation(&env, 2, new_supply).unwrap()
+        });
+        let second_count = env.as_contract(&contract_id, || get_snapshot_count(&env));
+
+        // Snapshot count should be unchanged (idempotent)
+        assert_eq!(first_count, second_count);
+    }
+
+    #[test]
+    fn test_supply_change_threshold_configuration() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let default_threshold = env.as_contract(&contract_id, || {
+            get_supply_change_threshold(&env)
+        });
+        assert_eq!(default_threshold, DEFAULT_SUPPLY_CHANGE_THRESHOLD_PCT);
+
+        // Update threshold
+        env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, 20u32).unwrap()
+        });
+
+        let updated_threshold = env.as_contract(&contract_id, || {
+            get_supply_change_threshold(&env)
+        });
+        assert_eq!(updated_threshold, 20u32);
+    }
+
+    #[test]
+    fn test_supply_change_threshold_above_max_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let result = env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &admin, MAX_SUPPLY_CHANGE_THRESHOLD_PCT + 1)
+        });
+        assert_eq!(result, Err(Error::InvalidParameters));
+    }
+
+    #[test]
+    fn test_supply_change_unauthorized_threshold_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, contract_id) = setup(&env);
+        let non_admin = Address::generate(&env);
+
+        let result = env.as_contract(&contract_id, || {
+            set_supply_change_threshold(&env, &non_admin, 15u32)
+        });
+        assert_eq!(result, Err(Error::Unauthorized));
     }
 }

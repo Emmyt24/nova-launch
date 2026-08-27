@@ -45,10 +45,16 @@ export interface ThresholdAlert {
   message: string;
 }
 
+export interface ThresholdSet {
+  NORMAL: number;
+  WARNING: number;
+  CRITICAL: number;
+}
+
 /**
  * Projection Lag Thresholds (in milliseconds)
  */
-export const PROJECTION_LAG_THRESHOLDS = {
+export const PROJECTION_LAG_THRESHOLDS: ThresholdSet = {
   /**
    * Normal operating lag
    * Typical: 2-5 seconds for Horizon delivery + processing
@@ -71,14 +77,14 @@ export const PROJECTION_LAG_THRESHOLDS = {
    * Requires immediate operator attention
    */
   CRITICAL: 60000,
-} as const;
+};
 
 /**
  * Event-specific lag tolerances
  * Some event types may have legitimate reasons for higher lag
  * (e.g., webhook delivery, complex projection calculations)
  */
-export const EVENT_LAG_TOLERANCES: Record<string, Partial<typeof PROJECTION_LAG_THRESHOLDS>> = {
+export const EVENT_LAG_TOLERANCES: Record<string, ThresholdSet> = {
   // Token events typically process quickly
   token_created: {
     NORMAL: 5000,
@@ -127,7 +133,7 @@ export const EVENT_LAG_TOLERANCES: Record<string, Partial<typeof PROJECTION_LAG_
  */
 export function getLagThresholdsForEventKind(
   eventKind: string
-): typeof PROJECTION_LAG_THRESHOLDS {
+): ThresholdSet {
   return EVENT_LAG_TOLERANCES[eventKind] || PROJECTION_LAG_THRESHOLDS;
 }
 

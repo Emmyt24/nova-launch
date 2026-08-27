@@ -1,361 +1,232 @@
-//! Recurring payment stream creation and management.
+//! Recurring payment streams (Issue #1765).
 //!
-//! This module provides functionality to create recurring payment streams that automatically
-//! create child streams at fixed intervals. Each period creates an independent, claimable stream.
+//! Builds on top of [`crate::streaming`] to auto-create child streams at
+//! fixed ledger intervals. Explicitly bounded — [`MAX_RECURRING_PERIODS`]
+//! total periods and [`MAX_TRACKED_CHILD_STREAMS`] tracked child ids per
+//! recurring stream — so a single `RecurringStream` record's storage cost
+//! and the gas cost of triggering it stay predictable regardless of how long
+//! the schedule has been running.
+//!
+//! Each period's child stream is an "instant vest": `start_time == cliff_time`
+//! and `end_time == start_time + 1`, so it becomes fully claimable a moment
+//! after creation rather than vesting linearly over the period. The period
+//! *cadence* itself (gated by `period_ledgers`/`current_period_start_ledger`,
+//! in ledger-sequence units) is what spaces the payments out — the child
+//! stream is just the payout for that period, not a sub-schedule.
 
-use crate::events;
-use crate::storage;
-use crate::types::{Error, RecurringStream, RecurringStreamParams, Vault, VaultStatus};
 use soroban_sdk::{Address, Env, Vec};
 
-/// Maximum number of periods for a recurring stream
-const MAX_TOTAL_PERIODS: u32 = 10_000;
+use crate::stream_types::{MAX_RECURRING_PERIODS, MAX_TRACKED_CHILD_STREAMS};
+use crate::types::{Error, RecurringStream, RecurringStreamParams, StreamParams};
+use crate::{events, storage, streaming};
 
-/// Maximum number of child streams to track
-const MAX_CHILD_STREAMS: u32 = 1_000;
-
-/// Create a new recurring payment stream.
-///
-/// This creates a recurring stream that will automatically create child vaults
-/// at regular intervals. Each child vault is independent and claimable by the recipient.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `creator` - Address creating the recurring stream (must authorize)
-/// * `params` - RecurringStreamParams defining the payment schedule
-///
-/// # Returns
-/// Returns the recurring stream ID
+/// Create a recurring stream and its first child stream (period 0).
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the creator
-/// * `Error::InvalidParameters` - Invalid stream parameters
-/// * `Error::ContractPaused` - Contract is paused
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::InvalidAmount` - `amount_per_period <= 0`
+/// * `Error::InvalidParameters` - `period_ledgers == 0`, or `total_periods == 0` without `auto_renew`
+/// * `Error::RecurringStreamLimitReached` - `total_periods > MAX_RECURRING_PERIODS`
+/// * `Error::TokenNotFound` - `token_index` is not a registered token
 pub fn create_recurring_stream(
     env: &Env,
     creator: &Address,
     params: &RecurringStreamParams,
+    token_index: u32,
 ) -> Result<u64, Error> {
     creator.require_auth();
 
-    // Check if contract is paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
+    if params.amount_per_period <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+    if params.period_ledgers == 0 {
+        return Err(Error::InvalidParameters);
+    }
+    if params.total_periods > MAX_RECURRING_PERIODS {
+        return Err(Error::RecurringStreamLimitReached);
+    }
+    if params.total_periods == 0 && !params.auto_renew {
+        return Err(Error::InvalidParameters);
+    }
+    if storage::get_token_info(env, token_index).is_none() {
+        return Err(Error::TokenNotFound);
+    }
 
-    // Validate parameters
-    validate_recurring_stream_params(params)?;
+    let recurring_id = storage::increment_recurring_stream_count(env)?;
 
-    // Get current ledger
-    let current_ledger = env.ledger().sequence();
+    let now_ts = env.ledger().timestamp();
+    let first_child_params = StreamParams {
+        recipient: params.recipient.clone(),
+        token_index,
+        total_amount: params.amount_per_period,
+        start_time: now_ts,
+        end_time: now_ts.saturating_add(1),
+        cliff_time: now_ts,
+    };
+    let first_child =
+        streaming::mint_stream(env, creator, &first_child_params, None, Vec::new(env));
 
-    // Get next recurring stream ID
-    let recurring_stream_id = storage::next_recurring_stream_id(env);
-
-    // Create initial recurring stream
     let mut child_streams = Vec::new(env);
+    child_streams.push_back(first_child);
 
-    // Create the first child stream immediately
-    let first_vault_id = create_child_stream(
-        env,
-        creator,
-        recurring_stream_id,
-        &params.recipient,
-        params.amount_per_period,
-        current_ledger,
-        params.period_ledgers,
-        0, // period index
-    )?;
-
-    child_streams.push_back(first_vault_id);
-
-    let recurring_stream = RecurringStream {
-        id: recurring_stream_id,
+    let recurring = RecurringStream {
+        id: recurring_id,
         creator: creator.clone(),
         recipient: params.recipient.clone(),
         amount_per_period: params.amount_per_period,
         period_ledgers: params.period_ledgers,
         total_periods: params.total_periods,
         periods_created: 1,
-        current_period_start_ledger: current_ledger,
+        current_period_start_ledger: env.ledger().sequence() as u64,
         auto_renew: params.auto_renew,
         auto_renew_enabled: params.auto_renew,
         cancelled: false,
         child_streams,
     };
+    storage::set_recurring_stream(env, &recurring);
+    storage::add_creator_recurring_stream(env, creator, recurring_id);
 
-    // Store the recurring stream
-    storage::set_recurring_stream(env, recurring_stream_id, &recurring_stream);
-
-    // Record in creator's recurring streams
-    storage::add_creator_recurring_stream(env, creator, recurring_stream_id)?;
-
-    // Emit event
     events::emit_recurring_stream_created(
         env,
-        recurring_stream_id,
+        recurring_id,
         creator,
         &params.recipient,
         params.amount_per_period,
-        params.period_ledgers,
-        params.total_periods,
+        first_child,
     );
 
-    Ok(recurring_stream_id)
+    Ok(recurring_id)
 }
 
-/// Cancel a recurring payment stream.
+/// Create the next period's child stream, if the period has elapsed and the
+/// recurring stream hasn't hit its period/child-tracking bounds.
 ///
-/// Prevents creation of future periods but does not affect already-created child streams.
-/// Only the creator or admin can cancel.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `caller` - Address attempting to cancel
-/// * `recurring_stream_id` - ID of the recurring stream to cancel
-///
-/// # Returns
-/// Returns Ok if cancellation succeeds
+/// Anyone can call this (not just the creator) once a period is due — the
+/// creator's authorization was already captured once, at
+/// [`create_recurring_stream`] time; requiring it again on every period would
+/// defeat the point of "recurring". The child stream is minted via
+/// [`streaming::mint_stream`] rather than [`streaming::create_stream`] for
+/// exactly this reason.
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the creator or admin
-/// * `Error::NotFound` - Recurring stream does not exist
-pub fn cancel_recurring_stream(
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::RecurringStreamNotFound` - No recurring stream with this id
+/// * `Error::RecurringStreamCancelled` - Recurring stream was cancelled
+/// * `Error::RecurringPeriodNotElapsed` - Current period hasn't elapsed yet
+/// * `Error::RecurringStreamLimitReached` - Reached `total_periods` (without
+///   auto-renew) or [`MAX_TRACKED_CHILD_STREAMS`]
+pub fn trigger_recurring_period(
     env: &Env,
     caller: &Address,
     recurring_stream_id: u64,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     caller.require_auth();
 
-    let mut stream = storage::get_recurring_stream(env, recurring_stream_id)
-        .ok_or(Error::NotFound)?;
-
-    // Only creator or admin can cancel
-    if caller != &stream.creator && caller != &storage::get_admin(env) {
-        return Err(Error::Unauthorized);
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
     }
 
-    // Mark as cancelled
-    stream.cancelled = true;
-    stream.auto_renew_enabled = false;
+    let mut recurring = storage::get_recurring_stream(env, recurring_stream_id)
+        .ok_or(Error::RecurringStreamNotFound)?;
 
-    storage::set_recurring_stream(env, recurring_stream_id, &stream);
-
-    events::emit_recurring_stream_cancelled(env, recurring_stream_id, caller);
-
-    Ok(())
-}
-
-/// Disable auto-renewal for a recurring stream.
-///
-/// This prevents new periods from being created after the current period ends.
-/// Existing and in-progress periods remain claimable.
-/// Only the creator can disable auto-renewal.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `caller` - Address attempting to disable auto-renewal
-/// * `recurring_stream_id` - ID of the recurring stream
-///
-/// # Returns
-/// Returns Ok if successful
-///
-/// # Errors
-/// * `Error::Unauthorized` - Caller is not the creator
-/// * `Error::NotFound` - Recurring stream does not exist
-pub fn disable_auto_renewal(
-    env: &Env,
-    caller: &Address,
-    recurring_stream_id: u64,
-) -> Result<(), Error> {
-    caller.require_auth();
-
-    let mut stream = storage::get_recurring_stream(env, recurring_stream_id)
-        .ok_or(Error::NotFound)?;
-
-    // Only creator can disable auto-renewal
-    if caller != &stream.creator {
-        return Err(Error::Unauthorized);
+    if recurring.cancelled {
+        return Err(Error::RecurringStreamCancelled);
     }
 
-    stream.auto_renew_enabled = false;
-
-    storage::set_recurring_stream(env, recurring_stream_id, &stream);
-
-    events::emit_auto_renewal_disabled(env, recurring_stream_id);
-
-    Ok(())
-}
-
-/// Tick a recurring stream to create the next period if needed.
-///
-/// This is called automatically by the ledger and creates a new child stream
-/// when the current period has ended.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `recurring_stream_id` - ID of the recurring stream to tick
-///
-/// # Returns
-/// Returns the new child stream ID if a new period was created, None if no action was needed
-///
-/// # Errors
-/// * `Error::NotFound` - Recurring stream does not exist
-pub fn tick_recurring_stream(env: &Env, recurring_stream_id: u64) -> Result<Option<u64>, Error> {
-    let mut stream = storage::get_recurring_stream(env, recurring_stream_id)
-        .ok_or(Error::NotFound)?;
-
-    if stream.cancelled {
-        return Ok(None);
-    }
-
-    let current_ledger = env.ledger().sequence();
-
-    // Check if current period has ended
-    let period_end_ledger = stream
+    let now_ledger = env.ledger().sequence() as u64;
+    let due_at = recurring
         .current_period_start_ledger
-        .checked_add(stream.period_ledgers)
+        .checked_add(recurring.period_ledgers)
         .ok_or(Error::ArithmeticError)?;
-
-    if current_ledger < period_end_ledger {
-        // Current period hasn't ended yet
-        return Ok(None);
+    if now_ledger < due_at {
+        return Err(Error::RecurringPeriodNotElapsed);
     }
 
-    // Check if we should create a new period
-    let should_create_next = if stream.total_periods == 0 {
-        // Unlimited periods with auto-renewal
-        stream.auto_renew_enabled
-    } else {
-        // Limited periods
-        stream.auto_renew_enabled && stream.periods_created < stream.total_periods
+    let within_total =
+        recurring.total_periods == 0 || recurring.periods_created < recurring.total_periods;
+    if !within_total && !recurring.auto_renew_enabled {
+        return Err(Error::RecurringStreamLimitReached);
+    }
+    if recurring.child_streams.len() >= MAX_TRACKED_CHILD_STREAMS {
+        return Err(Error::RecurringStreamLimitReached);
+    }
+
+    let first_child_id = recurring
+        .child_streams
+        .get(0)
+        .ok_or(Error::RecurringStreamNotFound)?;
+    let token_index = storage::get_stream(env, first_child_id)
+        .ok_or(Error::RecurringStreamNotFound)?
+        .token_index;
+
+    let now_ts = env.ledger().timestamp();
+    let child_params = StreamParams {
+        recipient: recurring.recipient.clone(),
+        token_index,
+        total_amount: recurring.amount_per_period,
+        start_time: now_ts,
+        end_time: now_ts.saturating_add(1),
+        cliff_time: now_ts,
     };
+    let child_id =
+        streaming::mint_stream(env, &recurring.creator, &child_params, None, Vec::new(env));
 
-    if !should_create_next {
-        return Ok(None);
-    }
-
-    // Check child streams limit
-    if stream.child_streams.len() as u32 >= MAX_CHILD_STREAMS {
-        return Err(Error::InvalidParameters);
-    }
-
-    // Create next child stream
-    let next_period_index = stream.periods_created;
-    let new_vault_id = create_child_stream(
-        env,
-        &stream.creator,
-        recurring_stream_id,
-        &stream.recipient,
-        stream.amount_per_period,
-        period_end_ledger,
-        stream.period_ledgers,
-        next_period_index,
-    )?;
-
-    // Update recurring stream
-    stream.periods_created = stream
+    recurring.child_streams.push_back(child_id);
+    recurring.periods_created = recurring
         .periods_created
         .checked_add(1)
         .ok_or(Error::ArithmeticError)?;
-    stream.current_period_start_ledger = period_end_ledger;
-    stream.child_streams.push_back(new_vault_id);
+    recurring.current_period_start_ledger = now_ledger;
+    storage::set_recurring_stream(env, &recurring);
 
-    storage::set_recurring_stream(env, recurring_stream_id, &stream);
-
-    events::emit_recurring_stream_period_created(env, recurring_stream_id, next_period_index, new_vault_id);
-
-    Ok(Some(new_vault_id))
-}
-
-/// Internal helper to create a child stream (vault) for a recurring stream period.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `creator` - The creator of the recurring stream (becomes vault creator)
-/// * `recurring_stream_id` - ID of the parent recurring stream
-/// * `recipient` - Payment recipient
-/// * `amount` - Amount for this period
-/// * `start_ledger` - Ledger when this period starts
-/// * `period_ledgers` - Duration of the period in ledgers
-/// * `period_index` - Which period this is (0-indexed)
-///
-/// # Returns
-/// Returns the new vault ID
-///
-/// # Errors
-/// * Various vault creation errors
-fn create_child_stream(
-    env: &Env,
-    creator: &Address,
-    recurring_stream_id: u64,
-    recipient: &Address,
-    amount: i128,
-    start_ledger: u64,
-    period_ledgers: u64,
-    period_index: u32,
-) -> Result<u64, Error> {
-    // Get next vault ID
-    let vault_id = storage::increment_vault_count(env)?;
-
-    let end_ledger = start_ledger
-        .checked_add(period_ledgers)
-        .ok_or(Error::ArithmeticError)?;
-
-    // Create vault for this period
-    let vault = Vault {
-        id: vault_id,
-        token: Address::from_contract_id(env, &soroban_sdk::ContractId::from_array(
-            env,
-            &[0u8; 32],
-        )), // Placeholder - actual token would be passed in params
-        owner: recipient.clone(),
-        creator: creator.clone(),
-        total_amount: amount,
-        claimed_amount: 0,
-        unlock_time: end_ledger,
-        milestone_hash: soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
-        status: VaultStatus::Created,
-        created_at: env.ledger().timestamp(),
-        verifier: None,
-        milestone_verified: false,
-    };
-
-    storage::set_vault(env, &vault)?;
-
-    events::emit_recurring_stream_child_created(
+    events::emit_recurring_period_triggered(
         env,
         recurring_stream_id,
-        period_index,
-        vault_id,
-        recipient,
-        amount,
+        child_id,
+        recurring.periods_created,
     );
 
-    Ok(vault_id)
+    Ok(child_id)
 }
 
-/// Validate recurring stream parameters.
-fn validate_recurring_stream_params(params: &RecurringStreamParams) -> Result<(), Error> {
-    // Validate amount
-    if params.amount_per_period <= 0 {
-        return Err(Error::InvalidParameters);
+/// Cancel a recurring stream. Already-created child streams are unaffected —
+/// this only stops future periods from being triggered.
+///
+/// # Errors
+/// * `Error::ContractPaused` - Factory is paused
+/// * `Error::RecurringStreamNotFound` - No recurring stream with this id
+/// * `Error::Unauthorized` - Caller is neither the creator nor the contract admin
+/// * `Error::RecurringStreamCancelled` - Already cancelled
+pub fn cancel_recurring_stream(
+    env: &Env,
+    actor: &Address,
+    recurring_stream_id: u64,
+) -> Result<(), Error> {
+    actor.require_auth();
+
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
     }
 
-    // Validate period length
-    if params.period_ledgers == 0 {
-        return Err(Error::InvalidParameters);
+    let mut recurring = storage::get_recurring_stream(env, recurring_stream_id)
+        .ok_or(Error::RecurringStreamNotFound)?;
+
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *actor != recurring.creator && *actor != admin {
+        return Err(Error::Unauthorized);
+    }
+    if recurring.cancelled {
+        return Err(Error::RecurringStreamCancelled);
     }
 
-    // Validate total periods
-    if params.total_periods > MAX_TOTAL_PERIODS && params.total_periods != 0 {
-        return Err(Error::InvalidParameters);
-    }
+    recurring.cancelled = true;
+    recurring.auto_renew_enabled = false;
+    storage::set_recurring_stream(env, &recurring);
 
-    // If auto_renew is false, must have a positive total_periods
-    if !params.auto_renew && params.total_periods == 0 {
-        return Err(Error::InvalidParameters);
-    }
+    events::emit_recurring_stream_cancelled(env, recurring_stream_id, actor);
 
     Ok(())
 }
@@ -363,131 +234,234 @@ fn validate_recurring_stream_params(params: &RecurringStreamParams) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
 
-    #[test]
-    fn test_create_recurring_stream() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let creator = Address::random(&env);
-        let recipient = Address::random(&env);
-
-        let params = RecurringStreamParams {
-            recipient: recipient.clone(),
-            amount_per_period: 1_000_000,
-            period_ledgers: 1000,
-            total_periods: 10,
-            auto_renew: false,
+    fn setup(env: &Env) -> u32 {
+        let admin = Address::generate(env);
+        storage::set_admin(env, &admin);
+        let token = crate::types::TokenInfo {
+            address: Address::generate(env),
+            creator: admin.clone(),
+            name: soroban_sdk::String::from_str(env, "Test"),
+            symbol: soroban_sdk::String::from_str(env, "TST"),
+            decimals: 7,
+            total_supply: 1_000_000_000,
+            initial_supply: 1_000_000_000,
+            max_supply: None,
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: 0,
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
         };
-
-        let stream_id = create_recurring_stream(&env, &creator, &params).expect("Failed to create recurring stream");
-
-        assert_eq!(stream_id, 0); // First recurring stream
-
-        let stream = storage::get_recurring_stream(&env, stream_id).expect("Stream not found");
-        assert_eq!(stream.creator, creator);
-        assert_eq!(stream.recipient, recipient);
-        assert_eq!(stream.amount_per_period, 1_000_000);
-        assert_eq!(stream.period_ledgers, 1000);
-        assert_eq!(stream.total_periods, 10);
-        assert_eq!(stream.periods_created, 1); // First period created immediately
-        assert_eq!(stream.child_streams.len(), 1);
-        assert!(!stream.cancelled);
+        storage::set_token_info(env, 0, &token);
+        0
     }
 
-    #[test]
-    fn test_cancel_recurring_stream_by_creator() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let creator = Address::random(&env);
-        let recipient = Address::random(&env);
-
-        let params = RecurringStreamParams {
+    fn recurring_params(recipient: &Address) -> RecurringStreamParams {
+        RecurringStreamParams {
             recipient: recipient.clone(),
-            amount_per_period: 500_000,
-            period_ledgers: 500,
+            amount_per_period: 100,
+            period_ledgers: 10,
             total_periods: 5,
-            auto_renew: true,
-        };
-
-        let stream_id = create_recurring_stream(&env, &creator, &params).expect("Failed to create");
-
-        // Cancel by creator
-        cancel_recurring_stream(&env, &creator, stream_id).expect("Failed to cancel");
-
-        let stream = storage::get_recurring_stream(&env, stream_id).expect("Stream not found");
-        assert!(stream.cancelled);
-        assert!(!stream.auto_renew_enabled);
-    }
-
-    #[test]
-    fn test_disable_auto_renewal() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let creator = Address::random(&env);
-        let recipient = Address::random(&env);
-
-        let params = RecurringStreamParams {
-            recipient: recipient.clone(),
-            amount_per_period: 1_000_000,
-            period_ledgers: 1000,
-            total_periods: 0, // Unlimited
-            auto_renew: true,
-        };
-
-        let stream_id = create_recurring_stream(&env, &creator, &params).expect("Failed to create");
-
-        let stream_before = storage::get_recurring_stream(&env, stream_id).expect("Stream not found");
-        assert!(stream_before.auto_renew_enabled);
-
-        // Disable auto-renewal
-        disable_auto_renewal(&env, &creator, stream_id).expect("Failed to disable");
-
-        let stream_after = storage::get_recurring_stream(&env, stream_id).expect("Stream not found");
-        assert!(!stream_after.auto_renew_enabled);
-        assert!(!stream_after.cancelled); // Not cancelled, just auto-renew disabled
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, ")]
-    fn test_create_recurring_stream_invalid_amount() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let creator = Address::random(&env);
-        let recipient = Address::random(&env);
-
-        let params = RecurringStreamParams {
-            recipient: recipient.clone(),
-            amount_per_period: -1, // Invalid: negative amount
-            period_ledgers: 1000,
-            total_periods: 10,
             auto_renew: false,
-        };
-
-        let _ = create_recurring_stream(&env, &creator, &params);
+        }
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, ")]
-    fn test_create_recurring_stream_zero_period() {
+    fn create_recurring_stream_rejects_zero_period_ledgers() {
         let env = Env::default();
         env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.period_ledgers = 0;
+            let result = create_recurring_stream(&env, &creator, &p, token_index);
+            assert_eq!(result, Err(Error::InvalidParameters));
+        });
+    }
 
-        let creator = Address::random(&env);
-        let recipient = Address::random(&env);
+    #[test]
+    fn create_recurring_stream_rejects_over_max_periods() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.total_periods = MAX_RECURRING_PERIODS + 1;
+            let result = create_recurring_stream(&env, &creator, &p, token_index);
+            assert_eq!(result, Err(Error::RecurringStreamLimitReached));
+        });
+    }
 
-        let params = RecurringStreamParams {
-            recipient: recipient.clone(),
-            amount_per_period: 1_000_000,
-            period_ledgers: 0, // Invalid: zero period
-            total_periods: 10,
-            auto_renew: false,
-        };
+    #[test]
+    fn create_recurring_stream_creates_first_child() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
 
-        let _ = create_recurring_stream(&env, &creator, &params);
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 1);
+            assert_eq!(recurring.child_streams.len(), 1);
+        });
+    }
+
+    #[test]
+    fn trigger_before_period_elapsed_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        // Each auth-requiring call gets its own `as_contract` frame — the
+        // same address calling `require_auth()` twice within one frame
+        // (even under `mock_all_auths`) trips this soroban-sdk version's
+        // "frame is already authorized" guard.
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            (creator, id)
+        });
+
+        env.ledger().with_mut(|li| li.sequence_number = 105); // only 5 elapsed, period is 10
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
+        assert_eq!(result, Err(Error::RecurringPeriodNotElapsed));
+    }
+
+    #[test]
+    fn trigger_after_period_elapsed_succeeds_and_anyone_can_call() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            env.ledger().with_mut(|li| li.sequence_number = 100);
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+
+            env.ledger().with_mut(|li| li.sequence_number = 110);
+            // Recipient (not creator) triggers — should succeed without creator's
+            // live signature, since mint_stream (not create_stream) is used.
+            let child_id = trigger_recurring_period(&env, &recipient, id).unwrap();
+            assert!(child_id > 0);
+
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 2);
+            assert_eq!(recurring.child_streams.len(), 2);
+        });
+    }
+
+    #[test]
+    fn trigger_stops_at_total_periods_without_auto_renew() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.ledger().with_mut(|li| li.sequence_number = 0);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.total_periods = 2;
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            (creator, id)
+        });
+
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        }); // period 2 (of 2)
+
+        env.ledger().with_mut(|li| li.sequence_number = 20);
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
+        assert_eq!(result, Err(Error::RecurringStreamLimitReached));
+    }
+
+    #[test]
+    fn trigger_after_cancel_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.ledger().with_mut(|li| li.sequence_number = 0);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            (creator, id)
+        });
+
+        env.as_contract(&contract_id, || {
+            cancel_recurring_stream(&env, &creator, id).unwrap()
+        });
+
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
+        assert_eq!(result, Err(Error::RecurringStreamCancelled));
+    }
+
+    #[test]
+    fn cancel_requires_creator_or_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let attacker = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+
+            let result = cancel_recurring_stream(&env, &attacker, id);
+            assert_eq!(result, Err(Error::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn cancel_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = recurring_params(&recipient);
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            (creator, id)
+        });
+
+        env.as_contract(&contract_id, || {
+            cancel_recurring_stream(&env, &creator, id).unwrap()
+        });
+        let result = env.as_contract(&contract_id, || cancel_recurring_stream(&env, &creator, id));
+        assert_eq!(result, Err(Error::RecurringStreamCancelled));
     }
 }

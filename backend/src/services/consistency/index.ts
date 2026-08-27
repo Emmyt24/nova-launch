@@ -5,7 +5,6 @@ export {
   runAndPrintConsistencyCheck,
   type OnChainTokenState,
   type OnChainBurnRecord,
-  type OnChainCampaignState,
   type OnChainFactoryState,
   type ConsistencyDiff,
   type ConsistencyCheckResult,

@@ -9,7 +9,6 @@ vi.mock("../lib/prisma", () => ({
   prisma: {
     token: { findMany: vi.fn(), count: vi.fn() },
     proposal: { findMany: vi.fn(), count: vi.fn() },
-    campaign: { findMany: vi.fn(), count: vi.fn() },
   },
 }));
 
@@ -38,29 +37,16 @@ const mockProposal = {
   createdAt: new Date("2024-02-01"),
 };
 
-const mockCampaign = {
-  id: "camp-1",
-  campaignId: 1,
-  tokenId: "tok-1",
-  creator: "GCREATOR1",
-  status: "ACTIVE",
-  createdAt: new Date("2024-03-01"),
-};
-
 function setupMocks(opts: {
   tokens?: typeof mockToken[];
   tokenCount?: number;
   proposals?: typeof mockProposal[];
   proposalCount?: number;
-  campaigns?: typeof mockCampaign[];
-  campaignCount?: number;
 }) {
   vi.mocked(prisma.token.findMany).mockResolvedValue(opts.tokens ?? []);
   vi.mocked(prisma.token.count).mockResolvedValue(opts.tokenCount ?? 0);
   vi.mocked(prisma.proposal.findMany).mockResolvedValue(opts.proposals ?? []);
   vi.mocked(prisma.proposal.count).mockResolvedValue(opts.proposalCount ?? 0);
-  vi.mocked(prisma.campaign.findMany).mockResolvedValue(opts.campaigns ?? []);
-  vi.mocked(prisma.campaign.count).mockResolvedValue(opts.campaignCount ?? 0);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -79,8 +65,6 @@ describe("GET /api/search", () => {
       tokenCount: 1,
       proposals: [mockProposal],
       proposalCount: 1,
-      campaigns: [mockCampaign],
-      campaignCount: 1,
     });
 
     const res = await request(app).get("/api/search?q=stellar");
@@ -90,8 +74,7 @@ describe("GET /api/search", () => {
     expect(res.body.query).toBe("stellar");
     expect(res.body.tokens).toHaveLength(1);
     expect(res.body.proposals).toHaveLength(1);
-    expect(res.body.campaigns).toHaveLength(1);
-    expect(res.body.totals).toEqual({ tokens: 1, proposals: 1, campaigns: 1 });
+    expect(res.body.totals).toEqual({ tokens: 1, proposals: 1 });
   });
 
   it("serialises token totalSupply as string", async () => {
@@ -109,15 +92,12 @@ describe("GET /api/search", () => {
       tokenCount: 1,
       proposals: [mockProposal],
       proposalCount: 1,
-      campaigns: [mockCampaign],
-      campaignCount: 1,
     });
 
     const res = await request(app).get("/api/search?q=stellar");
 
     expect(res.body.tokens[0].type).toBe("token");
     expect(res.body.proposals[0].type).toBe("proposal");
-    expect(res.body.campaigns[0].type).toBe("campaign");
   });
 
   // ── types filter ────────────────────────────────────────────────────────────
@@ -130,9 +110,7 @@ describe("GET /api/search", () => {
     expect(res.status).toBe(200);
     expect(res.body.tokens).toHaveLength(1);
     expect(res.body.proposals).toHaveLength(0);
-    expect(res.body.campaigns).toHaveLength(0);
     expect(prisma.proposal.findMany).not.toHaveBeenCalled();
-    expect(prisma.campaign.findMany).not.toHaveBeenCalled();
   });
 
   it("searches only proposals when types=proposals", async () => {
@@ -143,18 +121,6 @@ describe("GET /api/search", () => {
     expect(res.status).toBe(200);
     expect(res.body.proposals).toHaveLength(1);
     expect(prisma.token.findMany).not.toHaveBeenCalled();
-    expect(prisma.campaign.findMany).not.toHaveBeenCalled();
-  });
-
-  it("searches only campaigns when types=campaigns", async () => {
-    setupMocks({ campaigns: [mockCampaign], campaignCount: 1 });
-
-    const res = await request(app).get("/api/search?q=creator&types=campaigns");
-
-    expect(res.status).toBe(200);
-    expect(res.body.campaigns).toHaveLength(1);
-    expect(prisma.token.findMany).not.toHaveBeenCalled();
-    expect(prisma.proposal.findMany).not.toHaveBeenCalled();
   });
 
   it("accepts multiple types in comma-separated list", async () => {
@@ -165,7 +131,6 @@ describe("GET /api/search", () => {
     expect(res.status).toBe(200);
     expect(res.body.tokens).toHaveLength(1);
     expect(res.body.proposals).toHaveLength(1);
-    expect(prisma.campaign.findMany).not.toHaveBeenCalled();
   });
 
   it("silently ignores unknown type values", async () => {
@@ -246,24 +211,6 @@ describe("GET /api/search", () => {
     );
   });
 
-  it("searches campaigns by tokenId, creator, and metadata", async () => {
-    setupMocks({ campaigns: [mockCampaign], campaignCount: 1 });
-
-    await request(app).get("/api/search?q=GCREATOR1&types=campaigns");
-
-    expect(prisma.campaign.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          OR: [
-            { tokenId: { contains: "GCREATOR1", mode: "insensitive" } },
-            { creator: { contains: "GCREATOR1", mode: "insensitive" } },
-            { metadata: { contains: "GCREATOR1", mode: "insensitive" } },
-          ],
-        },
-      })
-    );
-  });
-
   // ── caching ─────────────────────────────────────────────────────────────────
 
   it("caches results and returns cached flag on second request", async () => {
@@ -311,8 +258,6 @@ describe("GET /api/search", () => {
     vi.mocked(prisma.token.count).mockRejectedValue(new Error("DB down"));
     vi.mocked(prisma.proposal.findMany).mockResolvedValue([]);
     vi.mocked(prisma.proposal.count).mockResolvedValue(0);
-    vi.mocked(prisma.campaign.findMany).mockResolvedValue([]);
-    vi.mocked(prisma.campaign.count).mockResolvedValue(0);
 
     const res = await request(app).get("/api/search?q=error-test");
 
@@ -331,8 +276,7 @@ describe("GET /api/search", () => {
     expect(res.status).toBe(200);
     expect(res.body.tokens).toEqual([]);
     expect(res.body.proposals).toEqual([]);
-    expect(res.body.campaigns).toEqual([]);
-    expect(res.body.totals).toEqual({ tokens: 0, proposals: 0, campaigns: 0 });
+    expect(res.body.totals).toEqual({ tokens: 0, proposals: 0 });
   });
 
   // ── response shape ──────────────────────────────────────────────────────────

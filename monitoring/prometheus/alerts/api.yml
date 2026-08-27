@@ -26,6 +26,7 @@ groups:
             Error rate is {{ $value | humanizePercentage }} over the last 5 minutes
             (threshold: 5%). Investigate application logs immediately.
           runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/high-error-rate.md"
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=2"
 
       # -----------------------------------------------------------------------
       # Elevated 4xx rate (possible abuse / misconfigured client)
@@ -46,6 +47,7 @@ groups:
           description: >
             4xx rate is {{ $value | humanizePercentage }} over the last 5 minutes.
             May indicate client misconfiguration or abuse.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=2"
 
       # -----------------------------------------------------------------------
       # Slow API responses
@@ -64,6 +66,7 @@ groups:
           description: >
             P95 latency is {{ $value | humanizeDuration }} on route {{ $labels.route }}.
             Threshold: 2 seconds.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Very slow API responses (SLA breach)
@@ -82,6 +85,7 @@ groups:
           description: >
             P99 latency is {{ $value | humanizeDuration }} on route {{ $labels.route }}.
             SLA breach threshold: 10 seconds.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Backend service down
@@ -98,3 +102,4 @@ groups:
             The backend API ({{ $labels.instance }}) has been unreachable for
             more than 1 minute.
           runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/backend-down.md"
+          dashboard_url: "https://grafana.example.com/d/nova-overview?viewPanel=1"

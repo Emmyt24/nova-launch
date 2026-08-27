@@ -21,6 +21,7 @@ groups:
           description: >
             CPU usage is {{ $value | humanize }}% on {{ $labels.instance }}.
             Threshold: 80%.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       - alert: CriticalCPUUsage
         expr: |
@@ -34,6 +35,7 @@ groups:
           description: >
             CPU usage is {{ $value | humanize }}% on {{ $labels.instance }}.
             Immediate action required.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # High memory usage
@@ -52,6 +54,7 @@ groups:
           summary: "High memory usage on {{ $labels.instance }}"
           description: >
             Memory usage is {{ $value | humanize }}% on {{ $labels.instance }}.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       - alert: CriticalMemoryUsage
         expr: |
@@ -68,6 +71,7 @@ groups:
           description: >
             Memory usage is {{ $value | humanize }}% on {{ $labels.instance }}.
             OOM risk imminent.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Disk space
@@ -87,6 +91,7 @@ groups:
           description: >
             Only {{ $value | humanize }}% disk space remaining on
             {{ $labels.mountpoint }}.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       - alert: CriticalDiskSpace
         expr: |
@@ -102,6 +107,7 @@ groups:
           summary: "Critical disk space on {{ $labels.instance }} ({{ $labels.mountpoint }})"
           description: >
             Only {{ $value | humanize }}% disk space remaining. Service may fail.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Node.js process memory
@@ -120,6 +126,7 @@ groups:
           summary: "Node.js heap usage high on {{ $labels.instance }}"
           description: >
             Node.js heap is {{ $value | humanize }}% full. Memory leak suspected.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Database connection pool
@@ -136,6 +143,7 @@ groups:
           description: >
             {{ $value | humanizePercentage }} of DB connections are active.
             Pool exhaustion imminent.
+          dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Container restarts
@@ -154,3 +162,4 @@ groups:
           description: >
             Container {{ $labels.name }} has restarted more than twice in the
             last 10 minutes.
+          dashboard_url: "https://grafana.example.com/d/nova-infra?viewPanel=1"

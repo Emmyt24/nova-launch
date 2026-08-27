@@ -15,7 +15,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Frontend clients under test
 import { searchTokens } from "../../services/tokenSearchApi";
-import { campaignApi } from "../../services/campaignApi";
 import { fetchProposals } from "../../services/governanceApi";
 import { fetchLeaderboard } from "../../services/leaderboardApi";
 import { webhookApi } from "../../services/webhookApi";
@@ -68,30 +67,6 @@ const TOKEN_SEARCH_PAYLOAD = {
     sortBy: "created",
     sortOrder: "desc",
   },
-};
-
-const CAMPAIGN_RECORD = {
-  id: "camp_1",
-  campaignId: 42,
-  tokenId: "CABC123",
-  creator: "GCREATOR",
-  type: "BURN",
-  status: "ACTIVE",
-  targetAmount: "500000",
-  currentAmount: "100000",
-  executionCount: 2,
-  progress: 20,
-  startTime: "2025-01-01T00:00:00.000Z",
-  createdAt: "2025-01-01T00:00:00.000Z",
-  updatedAt: "2025-01-02T00:00:00.000Z",
-};
-
-const CAMPAIGN_STATS_PAYLOAD = {
-  totalCampaigns: 10,
-  activeCampaigns: 3,
-  completedCampaigns: 6,
-  totalVolume: "9000000",
-  totalExecutions: 42,
 };
 
 const GOVERNANCE_VOTE = {
@@ -237,75 +212,6 @@ describe("Token Search API contract", () => {
     expect(typeof token.totalSupply).toBe("string");
     expect(typeof token.initialSupply).toBe("string");
     expect(typeof token.totalBurned).toBe("string");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Campaign contract tests
-// ---------------------------------------------------------------------------
-
-describe("Campaign API contract", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("getById returns a campaign record", async () => {
-    mockFetch(CAMPAIGN_RECORD);
-    const result = await campaignApi.getById(42);
-
-    expect(result).toMatchObject({
-      id: expect.any(String),
-      campaignId: expect.any(Number),
-      tokenId: expect.any(String),
-      creator: expect.any(String),
-      type: expect.any(String),
-      status: expect.any(String),
-      targetAmount: expect.any(String),
-      currentAmount: expect.any(String),
-      executionCount: expect.any(Number),
-      progress: expect.any(Number),
-      startTime: expect.any(String),
-      createdAt: expect.any(String),
-      updatedAt: expect.any(String),
-    });
-  });
-
-  it("getByToken returns an array of campaign records", async () => {
-    mockFetch([CAMPAIGN_RECORD]);
-    const result = await campaignApi.getByToken("CABC123");
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0].tokenId).toBe("CABC123");
-  });
-
-  it("getStats returns campaign statistics", async () => {
-    mockFetch(CAMPAIGN_STATS_PAYLOAD);
-    const result = await campaignApi.getStats();
-
-    expect(result).toMatchObject({
-      totalCampaigns: expect.any(Number),
-      activeCampaigns: expect.any(Number),
-      completedCampaigns: expect.any(Number),
-      totalVolume: expect.any(String),
-      totalExecutions: expect.any(Number),
-    });
-  });
-
-  it("getExecutions returns paginated executions", async () => {
-    mockFetch({ executions: [], total: 0 });
-    const result = await campaignApi.getExecutions(42);
-
-    expect(result).toMatchObject({
-      executions: expect.any(Array),
-      total: expect.any(Number),
-    });
-  });
-
-  it("optional fields (endTime, completedAt, cancelledAt) may be absent", async () => {
-    // Record without optional fields – client must not crash
-    const minimal = { ...CAMPAIGN_RECORD };
-    mockFetch(minimal);
-    const result = await campaignApi.getById(42);
-    expect(result.endTime).toBeUndefined();
-    expect(result.completedAt).toBeUndefined();
-    expect(result.cancelledAt).toBeUndefined();
   });
 });
 

@@ -1,317 +1,152 @@
-//! Oracle Integration Tests
+//! Oracle price-feed integration tests.
 //!
-//! Covers the full lifecycle of the oracle price-feed feature:
-//! configuration, authorization, price submission, price retrieval,
-//! staleness enforcement, and all error paths.
+//! Covers the acceptance criteria for the oracle primitive: submit/read
+//! happy path, staleness rejection, unauthorized-source rejection,
+//! non-positive-price rejection, and admin authorize/deauthorize.
 
 #![cfg(test)]
+extern crate std;
 
-use crate::{TokenFactory, TokenFactoryClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger as _},
     Address, Env,
 };
 
-// ─── helpers ────────────────────────────────────────────────────────────────
+use crate::{types::Error, TokenFactory, TokenFactoryClient};
 
-fn setup() -> (Env, TokenFactoryClient<'static>, Address, Address) {
-    let env = Env::default();
+const BASE_FEE: i128 = 100_000_000;
+const METADATA_FEE: i128 = 50_000_000;
+const MAX_AGE_SECONDS: u64 = 300;
+
+/// Deploy and initialize the factory, returning `(env, client, admin)`.
+fn setup(env: &Env) -> (TokenFactoryClient<'_>, Address) {
     env.mock_all_auths();
-
     let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
-
-    (env, client, admin, treasury)
-}
-
-// ─── Error code stability ────────────────────────────────────────────────────
-
-#[test]
-fn test_oracle_error_codes_are_stable() {
-    assert_eq!(crate::types::Error::OracleNotFound.0, 55);
-    assert_eq!(crate::types::Error::OraclePriceStale.0, 56);
-    assert_eq!(crate::types::Error::OracleUnauthorized.0, 57);
-    assert_eq!(crate::types::Error::OraclePriceInvalid.0, 58);
-}
-
-// ─── configure_oracle ────────────────────────────────────────────────────────
-
-#[test]
-fn test_configure_oracle_success() {
-    let (_env, client, admin, _) = setup();
-    client.configure_oracle(&admin, &7200, &2);
-
-    let cfg = client.get_oracle_config();
-    assert_eq!(cfg.max_age_seconds, 7200);
-    assert_eq!(cfg.min_sources, 2);
+    let client = TokenFactoryClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let treasury = Address::generate(env);
+    client.initialize(&admin, &treasury, &BASE_FEE, &METADATA_FEE);
+    (client, admin)
 }
 
 #[test]
-fn test_configure_oracle_default_before_setup() {
-    let (_env, client, _admin, _) = setup();
-    // Default config should be returned before any explicit configuration
-    let cfg = client.get_oracle_config();
-    assert_eq!(cfg.max_age_seconds, 3600);
-    assert_eq!(cfg.min_sources, 1);
-}
-
-#[test]
-fn test_configure_oracle_unauthorized() {
-    let (_env, client, _admin, _) = setup();
-    let attacker = Address::generate(&_env);
-    let result = client.try_configure_oracle(&attacker, &3600, &1);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_configure_oracle_zero_max_age_rejected() {
-    let (_env, client, admin, _) = setup();
-    let result = client.try_configure_oracle(&admin, &0, &1);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_configure_oracle_can_be_updated() {
-    let (_env, client, admin, _) = setup();
-    client.configure_oracle(&admin, &3600, &1);
-    client.configure_oracle(&admin, &1800, &3);
-
-    let cfg = client.get_oracle_config();
-    assert_eq!(cfg.max_age_seconds, 1800);
-    assert_eq!(cfg.min_sources, 3);
-}
-
-// ─── set_oracle_authorized ───────────────────────────────────────────────────
-
-#[test]
-fn test_authorize_oracle_source() {
-    let (env, client, admin, _) = setup();
+fn submit_and_read_price_happy_path() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
     let source = Address::generate(&env);
+    let asset = Address::generate(&env);
 
-    assert!(!client.is_oracle_authorized(&source));
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
     client.set_oracle_authorized(&admin, &source, &true);
-    assert!(client.is_oracle_authorized(&source));
+
+    client.submit_price(&source, &asset, &12_345_i128, &7u32);
+
+    let price = client.get_price(&asset);
+    assert_eq!(price.price, 12_345_i128);
+    assert_eq!(price.decimals, 7);
+    assert_eq!(price.timestamp, env.ledger().timestamp());
 }
 
 #[test]
-fn test_deauthorize_oracle_source() {
-    let (env, client, admin, _) = setup();
+fn get_price_rejects_stale_submission() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
     let source = Address::generate(&env);
+    let asset = Address::generate(&env);
 
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
     client.set_oracle_authorized(&admin, &source, &true);
+    client.submit_price(&source, &asset, &1_000_i128, &2u32);
+
+    // Advance the ledger clock past the staleness window.
+    env.ledger().with_mut(|li| {
+        li.timestamp += MAX_AGE_SECONDS + 1;
+    });
+
+    let result = client.try_get_price(&asset);
+    assert_eq!(
+        result,
+        Err(Ok(Error::OraclePriceStale)),
+        "price older than max_age_seconds must be rejected as stale"
+    );
+}
+
+#[test]
+fn submit_price_rejects_unauthorized_source() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let unauthorized_source = Address::generate(&env);
+    let asset = Address::generate(&env);
+
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
+    // Note: unauthorized_source is never authorized.
+
+    let result = client.try_submit_price(&unauthorized_source, &asset, &1_000_i128, &2u32);
+    assert_eq!(
+        result,
+        Err(Ok(Error::OracleUnauthorizedSource)),
+        "unauthorized source must not be able to submit a price"
+    );
+}
+
+#[test]
+fn submit_price_rejects_non_positive_price() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let source = Address::generate(&env);
+    let asset = Address::generate(&env);
+
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
+    client.set_oracle_authorized(&admin, &source, &true);
+
+    let zero_result = client.try_submit_price(&source, &asset, &0_i128, &2u32);
+    assert_eq!(zero_result, Err(Ok(Error::OracleInvalidPrice)));
+
+    let negative_result = client.try_submit_price(&source, &asset, &(-5_i128), &2u32);
+    assert_eq!(negative_result, Err(Ok(Error::OracleInvalidPrice)));
+}
+
+#[test]
+fn admin_can_authorize_and_deauthorize_sources() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let source = Address::generate(&env);
+    let asset = Address::generate(&env);
+
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
+
+    // Authorize, submission succeeds.
+    client.set_oracle_authorized(&admin, &source, &true);
+    client.submit_price(&source, &asset, &500_i128, &2u32);
+
+    // Deauthorize, further submissions are rejected.
     client.set_oracle_authorized(&admin, &source, &false);
-    assert!(!client.is_oracle_authorized(&source));
+    let result = client.try_submit_price(&source, &asset, &600_i128, &2u32);
+    assert_eq!(result, Err(Ok(Error::OracleUnauthorizedSource)));
 }
 
 #[test]
-fn test_authorize_oracle_unauthorized_caller() {
-    let (env, client, _admin, _) = setup();
-    let attacker = Address::generate(&env);
+fn non_admin_cannot_authorize_sources_or_configure_oracle() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let impostor = Address::generate(&env);
     let source = Address::generate(&env);
 
-    let result = client.try_set_oracle_authorized(&attacker, &source, &true);
-    assert!(result.is_err());
+    let configure_result = client.try_configure_oracle(&impostor, &MAX_AGE_SECONDS);
+    assert_eq!(configure_result, Err(Ok(Error::Unauthorized)));
+
+    let authorize_result = client.try_set_oracle_authorized(&impostor, &source, &true);
+    assert_eq!(authorize_result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
-fn test_multiple_sources_can_be_authorized() {
-    let (env, client, admin, _) = setup();
-    let s1 = Address::generate(&env);
-    let s2 = Address::generate(&env);
-    let s3 = Address::generate(&env);
+fn get_price_before_any_submission_is_not_found() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let asset = Address::generate(&env);
 
-    client.set_oracle_authorized(&admin, &s1, &true);
-    client.set_oracle_authorized(&admin, &s2, &true);
+    client.configure_oracle(&admin, &MAX_AGE_SECONDS);
 
-    assert!(client.is_oracle_authorized(&s1));
-    assert!(client.is_oracle_authorized(&s2));
-    assert!(!client.is_oracle_authorized(&s3));
-}
-
-// ─── submit_price ────────────────────────────────────────────────────────────
-
-#[test]
-fn test_submit_price_success() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &1_000_000, &7);
-
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 1_000_000);
-    assert_eq!(data.decimals, 7);
-}
-
-#[test]
-fn test_submit_price_unauthorized_source() {
-    let (env, client, _admin, _) = setup();
-    let source = Address::generate(&env);
-
-    let result = client.try_submit_price(&source, &1_000_000, &7);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_submit_price_zero_rejected() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.set_oracle_authorized(&admin, &source, &true);
-    let result = client.try_submit_price(&source, &0, &7);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_submit_price_negative_rejected() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.set_oracle_authorized(&admin, &source, &true);
-    let result = client.try_submit_price(&source, &-1, &7);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_submit_price_updates_existing() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &1_000_000, &7);
-    client.submit_price(&source, &2_000_000, &7);
-
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 2_000_000);
-}
-
-#[test]
-fn test_submit_price_deauthorized_source_rejected() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &1_000_000, &7);
-
-    // Revoke authorization
-    client.set_oracle_authorized(&admin, &source, &false);
-
-    let result = client.try_submit_price(&source, &2_000_000, &7);
-    assert!(result.is_err());
-}
-
-// ─── get_oracle_price ────────────────────────────────────────────────────────
-
-#[test]
-fn test_get_price_not_found() {
-    let (env, client, _admin, _) = setup();
-    let source = Address::generate(&env);
-
-    let result = client.try_get_oracle_price(&source);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_get_price_fresh() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.configure_oracle(&admin, &3600, &1);
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &5_000_000, &7);
-
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 5_000_000);
-    assert_eq!(data.decimals, 7);
-}
-
-#[test]
-fn test_get_price_stale_rejected() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.configure_oracle(&admin, &60, &1); // 60-second window
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &1_000_000, &7);
-
-    // Advance ledger time past the staleness window
-    env.ledger().with_mut(|l| l.timestamp += 61);
-
-    let result = client.try_get_oracle_price(&source);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_get_price_exactly_at_boundary_is_fresh() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    client.configure_oracle(&admin, &60, &1);
-    client.set_oracle_authorized(&admin, &source, &true);
-    client.submit_price(&source, &1_000_000, &7);
-
-    // Advance to exactly the boundary — should still be valid (age == max_age)
-    env.ledger().with_mut(|l| l.timestamp += 60);
-
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 1_000_000);
-}
-
-#[test]
-fn test_get_price_independent_per_source() {
-    let (env, client, admin, _) = setup();
-    let s1 = Address::generate(&env);
-    let s2 = Address::generate(&env);
-
-    client.configure_oracle(&admin, &3600, &1);
-    client.set_oracle_authorized(&admin, &s1, &true);
-    client.set_oracle_authorized(&admin, &s2, &true);
-
-    client.submit_price(&s1, &1_000_000, &7);
-    client.submit_price(&s2, &2_000_000, &6);
-
-    assert_eq!(client.get_oracle_price(&s1).price, 1_000_000);
-    assert_eq!(client.get_oracle_price(&s2).price, 2_000_000);
-    assert_eq!(client.get_oracle_price(&s1).decimals, 7);
-    assert_eq!(client.get_oracle_price(&s2).decimals, 6);
-}
-
-// ─── Integration: full lifecycle ─────────────────────────────────────────────
-
-#[test]
-fn test_full_oracle_lifecycle() {
-    let (env, client, admin, _) = setup();
-    let source = Address::generate(&env);
-
-    // 1. Configure
-    client.configure_oracle(&admin, &300, &1);
-    assert_eq!(client.get_oracle_config().max_age_seconds, 300);
-
-    // 2. Authorize
-    client.set_oracle_authorized(&admin, &source, &true);
-    assert!(client.is_oracle_authorized(&source));
-
-    // 3. Submit
-    client.submit_price(&source, &42_000_000, &7);
-
-    // 4. Read fresh price
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 42_000_000);
-
-    // 5. Advance time past window → stale
-    env.ledger().with_mut(|l| l.timestamp += 301);
-    assert!(client.try_get_oracle_price(&source).is_err());
-
-    // 6. Re-submit refreshes the price
-    client.submit_price(&source, &43_000_000, &7);
-    let data = client.get_oracle_price(&source);
-    assert_eq!(data.price, 43_000_000);
-
-    // 7. Deauthorize → further submissions rejected
-    client.set_oracle_authorized(&admin, &source, &false);
-    assert!(client.try_submit_price(&source, &44_000_000, &7).is_err());
+    let result = client.try_get_price(&asset);
+    assert_eq!(result, Err(Ok(Error::OraclePriceNotFound)));
 }

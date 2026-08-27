@@ -1,0 +1,20 @@
+{
+  "oldSchema": {
+    "eventType": "burn.executed",
+    "schemaVersion": 1,
+    "properties": {
+      "tokenAddress": { "type": "string" },
+      "amount": { "type": "string" }
+    },
+    "required": ["tokenAddress", "amount"]
+  },
+  "newSchema": {
+    "eventType": "burn.executed",
+    "schemaVersion": 1,
+    "properties": {
+      "tokenAddress": { "type": "number" },
+      "amount": { "type": "string" }
+    },
+    "required": ["tokenAddress", "amount"]
+  }
+}

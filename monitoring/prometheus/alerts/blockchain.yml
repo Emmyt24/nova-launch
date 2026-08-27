@@ -25,6 +25,7 @@ groups:
           description: >
             RPC error rate is {{ $value | humanizePercentage }} on endpoint
             {{ $labels.endpoint }}. Stellar network may be degraded.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Slow RPC calls
@@ -42,6 +43,7 @@ groups:
           summary: "Slow RPC calls to {{ $labels.endpoint }}"
           description: >
             P95 RPC latency is {{ $value | humanizeDuration }} on {{ $labels.endpoint }}.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # High event ingestion lag
@@ -60,6 +62,7 @@ groups:
           description: >
             P95 ingestion lag is {{ $value | humanizeDuration }} for event type
             {{ $labels.event_type }}. Events may be delayed.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Critical event ingestion lag
@@ -78,6 +81,7 @@ groups:
           description: >
             P95 ingestion lag exceeds 2 minutes for {{ $labels.event_type }}.
             Blockchain event pipeline may be stalled.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Token deployment failures
@@ -98,6 +102,7 @@ groups:
           description: >
             Token deployment failure rate is {{ $value | humanizePercentage }}
             on {{ $labels.network }}. Contract or network issue suspected.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"
 
       # -----------------------------------------------------------------------
       # Slow transaction confirmation
@@ -116,3 +121,4 @@ groups:
           description: >
             P95 confirmation time is {{ $value | humanizeDuration }} on
             {{ $labels.network }}. Network congestion suspected.
+          dashboard_url: "https://grafana.example.com/d/nova-blockchain?viewPanel=1"

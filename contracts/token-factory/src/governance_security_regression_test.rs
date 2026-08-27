@@ -1165,9 +1165,9 @@ fn test_all_governance_functions_require_proper_auth() {
 fn test_state_consistency_after_failed_operations() {
     let (env, _admin, _treasury) = setup();
     
-    let initial_base_fee = storage::get_base_fee(&env);
-    let initial_metadata_fee = storage::get_metadata_fee(&env);
-    let initial_treasury = storage::get_treasury(&env);
+    let initial_base_fee = storage::get_base_fee(&env).unwrap();
+    let initial_metadata_fee = storage::get_metadata_fee(&env).unwrap();
+    let initial_treasury = storage::get_treasury(&env).unwrap();
     
     let attacker = Address::generate(&env);
     

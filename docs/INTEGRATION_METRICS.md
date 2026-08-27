@@ -1,47 +1,47 @@
 # Integration Metrics
 
-Production metrics for the Nova Launch integration pipeline. All metrics are registered in `monitoring/metrics/prometheus-config.ts` under the `nova_launch_` prefix.
+Production metrics for the Nova Launch integration pipeline. All metrics are registered in `monitoring/metrics/prometheus-config.ts`.
 
 ---
 
 ## Wallet Submission
 
-### `nova_launch_wallet_submission_total`
+### `wallet_submissions_total`
 **Type:** Counter  
-**Labels:** `action`, `outcome`
+**Labels:** `network`, `status`
 
 Counts every wallet transaction submission attempt.
 
 | Label | Values |
 |-------|--------|
-| `action` | `deploy`, `burn`, `propose`, `vote` |
-| `outcome` | `success`, `simulation_failed`, `wallet_rejected`, `network_error` |
+| `network` | `mainnet`, `testnet`, `futurenet` |
+| `status` | `success`, `failure` |
 
-**Alert suggestion:** `rate(nova_launch_wallet_submission_total{outcome="simulation_failed"}[5m]) / rate(nova_launch_wallet_submission_total[5m]) > 0.1` — simulation failure rate above 10%.
+**Alert suggestion:** `rate(wallet_submissions_total{status="failure"}[5m]) / rate(wallet_submissions_total[5m]) > 0.1` — submission failure rate above 10%.
 
 ---
 
-### `nova_launch_tx_confirmation_duration_seconds`
+### `tx_confirmation_duration_seconds`
 **Type:** Histogram  
-**Labels:** `action`, `outcome`  
-**Buckets:** 1, 3, 5, 10, 20, 30, 60, 120 seconds
+**Labels:** `network`, `status`  
+**Buckets:** 1, 5, 10, 30, 60, 120, 300 seconds
 
 Time from wallet submission to on-chain confirmation.
 
-**Alert suggestion:** `histogram_quantile(0.95, nova_launch_tx_confirmation_duration_seconds_bucket{outcome="success"}) > 30` — p95 confirmation latency above 30 s.
+**Alert suggestion:** `histogram_quantile(0.95, tx_confirmation_duration_seconds_bucket{status="confirmed"}) > 30` — p95 confirmation latency above 30 s.
 
 ---
 
 ## Event Ingestion
 
-### `nova_launch_event_ingestion_lag_seconds`
+### `event_ingestion_lag_seconds`
 **Type:** Histogram  
-**Labels:** `event_kind`  
-**Buckets:** 1, 2, 5, 10, 30, 60, 120, 300 seconds
+**Labels:** `event_type`  
+**Buckets:** 0.5, 1, 2, 5, 10, 30, 60 seconds
 
 Lag between ledger close time and the moment the backend finishes processing the event. Emitted in `StellarEventListener.processEvent()`.
 
-| `event_kind` examples | Description |
+| `event_type` examples | Description |
 |-----------------------|-------------|
 | `token_created` | New token deployed |
 | `token_burned` | Self-burn |
@@ -50,53 +50,52 @@ Lag between ledger close time and the moment the backend finishes processing the
 | `vault_created` | Vault opened |
 | `campaign_created` | Buyback campaign |
 
-**Alert suggestion:** `histogram_quantile(0.99, nova_launch_event_ingestion_lag_seconds_bucket[10m]) > 60` — p99 ingestion lag above 60 s.
+**Alert suggestion:** `histogram_quantile(0.99, event_ingestion_lag_seconds_bucket[10m]) > 60` — p99 ingestion lag above 60 s.
 
 ---
 
-### `nova_launch_events_processed_total`
+### `events_processed_total`
 **Type:** Counter  
-**Labels:** `event_kind`, `outcome`
+**Labels:** `event_type`, `status`
 
-| `outcome` | Meaning |
-|-----------|---------|
+| `status` | Meaning |
+|----------|---------|
 | `success` | Event fully processed and projected |
-| `error` | Processing threw an exception |
+| `failure` | Processing threw an exception |
 
-**Alert suggestion:** `rate(nova_launch_events_processed_total{outcome="error"}[5m]) > 0` — any processing errors.
+**Alert suggestion:** `rate(events_processed_total{status="failure"}[5m]) > 0` — any processing errors.
 
 ---
 
 ## Webhook Reliability
 
-### `nova_launch_webhook_delivery_total`
+### `webhook_deliveries_total`
 **Type:** Counter  
-**Labels:** `event_type`, `outcome`
+**Labels:** `status`, `event_type`
 
-| `outcome` | Meaning |
-|-----------|---------|
+| `status` | Meaning |
+|----------|---------|
 | `success` | Delivered on first or subsequent attempt |
-| `failed` | Non-retryable 4xx response |
-| `exhausted` | All retries consumed without success |
+| `failure` | Non-retryable error or retries exhausted |
 
-**Alert suggestion:** `rate(nova_launch_webhook_delivery_total{outcome="exhausted"}[5m]) > 0` — any exhausted deliveries.
+**Alert suggestion:** `rate(webhook_deliveries_total{status="failure"}[5m]) > 0` — any failed deliveries.
 
 ---
 
-### `nova_launch_webhook_retry_total`
+### `webhook_retries_total`
 **Type:** Counter  
 **Labels:** `event_type`
 
 Counts retry attempts beyond the first. A rising rate indicates persistent endpoint instability.
 
-**Alert suggestion:** `rate(nova_launch_webhook_retry_total[5m]) > 1` — sustained retry pressure.
+**Alert suggestion:** `rate(webhook_retries_total[5m]) > 1` — sustained retry pressure.
 
 ---
 
-### `nova_launch_webhook_delivery_duration_seconds`
+### `webhook_delivery_duration_seconds`
 **Type:** Histogram  
-**Labels:** `event_type`, `outcome`  
-**Buckets:** 0.1, 0.5, 1, 2, 5, 10, 30 seconds
+**Labels:** `status`, `event_type`  
+**Buckets:** 0.1, 0.5, 1, 2, 5, 10 seconds
 
 Time from first delivery attempt to final outcome (success or exhaustion).
 
@@ -124,16 +123,17 @@ All events carry an `action` property (`deploy`, `burn`, `propose`, `vote`) for 
 
 ```promql
 # Wallet submission success rate (5 min window)
-sum(rate(nova_launch_wallet_submission_total{outcome="success"}[5m]))
-/ sum(rate(nova_launch_wallet_submission_total[5m]))
+sum(rate(wallet_submissions_total{status="success"}[5m]))
+/ sum(rate(wallet_submissions_total[5m]))
 
 # p95 confirmation latency
-histogram_quantile(0.95, sum by (le) (rate(nova_launch_tx_confirmation_duration_seconds_bucket[5m])))
+histogram_quantile(0.95, sum by (le) (rate(tx_confirmation_duration_seconds_bucket[5m])))
 
 # p99 ingestion lag
-histogram_quantile(0.99, sum by (le, event_kind) (rate(nova_launch_event_ingestion_lag_seconds_bucket[10m])))
+histogram_quantile(0.99, sum by (le, event_type) (rate(event_ingestion_lag_seconds_bucket[10m])))
 
 # Webhook success rate
-sum(rate(nova_launch_webhook_delivery_total{outcome="success"}[5m]))
-/ sum(rate(nova_launch_webhook_delivery_total[5m]))
+sum(rate(webhook_deliveries_total{status="success"}[5m]))
+/ sum(rate(webhook_deliveries_total[5m]))
 ```
+

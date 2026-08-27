@@ -1,119 +1,45 @@
-//! Oracle Integration — External Price Feeds
+//! Lightweight, permissioned price-feed oracle primitive.
 //!
-//! Provides a lightweight, permissioned price-feed mechanism for the token factory.
-//! Authorized oracle sources push `PriceData` on-chain; consumers read the latest
-//! price and validate it against a configurable staleness window.
+//! Admin configures a max staleness window and authorizes/deauthorizes
+//! price sources. Authorized sources push prices for an `asset` address;
+//! consumers read the latest price via `get_price`, which enforces the
+//! staleness window and rejects non-positive values.
 //!
-//! # Architecture
-//! - **Admin** configures the oracle (max age, authorized sources) via `configure_oracle`
-//!   and `set_oracle_authorized`.
-//! - **Authorized sources** push prices via `submit_price`.
-//! - **Consumers** read prices via `get_price`, which enforces staleness checks.
-//!
-//! # Security
-//! - Only the contract admin can authorize/deauthorize oracle sources.
-//! - Price values must be strictly positive.
-//! - Stale prices (older than `max_age_seconds`) are rejected at read time.
-//! - All mutations emit versioned events for off-chain indexing.
+//! Scope: this module is the oracle primitive only. Any feature that wants
+//! to consume these prices (e.g. an AMM or liquidation flow) must wire that
+//! consumption explicitly in its own PR.
 
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{Address, Env};
 
-use crate::storage;
-use crate::types::{DataKey, Error, OracleConfig, PriceData};
+use crate::types::{Error, OracleConfig, PriceData};
+use crate::{events, storage};
 
-// ─── Storage helpers ─────────────────────────────────────────────────────────
-
-/// Persist the global oracle configuration.
-pub fn set_config(env: &Env, config: &OracleConfig) {
-    env.storage()
-        .instance()
-        .set(&DataKey::OracleConfig, config);
-}
-
-/// Retrieve the global oracle configuration, or a safe default if not yet set.
-pub fn get_config(env: &Env) -> OracleConfig {
-    env.storage()
-        .instance()
-        .get(&DataKey::OracleConfig)
-        .unwrap_or(OracleConfig {
-            max_age_seconds: 3600, // 1 hour default
-            min_sources: 1,
-        })
-}
-
-/// Mark `source` as authorized (true) or deauthorized (false).
-pub fn set_authorized(env: &Env, source: &Address, authorized: bool) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::OracleAuthorized(source.clone()), &authorized);
-}
-
-/// Returns `true` if `source` is an authorized oracle.
-pub fn is_authorized(env: &Env, source: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .get(&DataKey::OracleAuthorized(source.clone()))
-        .unwrap_or(false)
-}
-
-/// Store the latest price submitted by `source`.
-pub fn set_price(env: &Env, source: &Address, data: &PriceData) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::OraclePrice(source.clone()), data);
-}
-
-/// Retrieve the latest price submitted by `source`, if any.
-pub fn get_price_raw(env: &Env, source: &Address) -> Option<PriceData> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::OraclePrice(source.clone()))
-}
-
-// ─── Core logic ──────────────────────────────────────────────────────────────
-
-/// Configure the oracle parameters (admin only).
-///
-/// # Arguments
-/// * `admin` - Must be the contract admin and must authorize.
-/// * `max_age_seconds` - Prices older than this are considered stale.
-/// * `min_sources` - Minimum authorized sources required (currently informational).
+/// Configure the oracle's max staleness window (admin only).
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the contract admin.
-/// * `Error::InvalidParameters` - `max_age_seconds` is zero.
-pub fn configure_oracle(
-    env: &Env,
-    admin: &Address,
-    max_age_seconds: u64,
-    min_sources: u32,
-) -> Result<(), Error> {
+/// * `MissingAdmin` - Factory has not been initialized
+/// * `Unauthorized` - Caller is not the factory admin
+/// * `OracleInvalidConfig` - `max_age_seconds` is zero
+pub fn configure_oracle(env: &Env, admin: &Address, max_age_seconds: u64) -> Result<(), Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
     if max_age_seconds == 0 {
-        return Err(Error::InvalidParameters);
+        return Err(Error::OracleInvalidConfig);
     }
 
-    set_config(env, &OracleConfig { max_age_seconds, min_sources });
-
-    env.events().publish(
-        (symbol_short!("orc_cf_v1"),),
-        (max_age_seconds, min_sources),
-    );
+    storage::set_oracle_config(env, &OracleConfig { max_age_seconds });
+    events::emit_oracle_configured(env, admin, max_age_seconds);
     Ok(())
 }
 
-/// Authorize or deauthorize an oracle price source (admin only).
-///
-/// # Arguments
-/// * `admin` - Must be the contract admin and must authorize.
-/// * `source` - The oracle source address to update.
-/// * `authorized` - `true` to authorize, `false` to revoke.
+/// Authorize or deauthorize `source` as an oracle price submitter (admin only).
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not the contract admin.
+/// * `MissingAdmin` - Factory has not been initialized
+/// * `Unauthorized` - Caller is not the factory admin
 pub fn set_oracle_authorized(
     env: &Env,
     admin: &Address,
@@ -121,81 +47,65 @@ pub fn set_oracle_authorized(
     authorized: bool,
 ) -> Result<(), Error> {
     admin.require_auth();
-    if *admin != storage::get_admin(env) {
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
 
-    set_authorized(env, source, authorized);
-
-    env.events().publish(
-        (symbol_short!("orc_au_v1"), source.clone()),
-        (authorized,),
-    );
+    storage::set_oracle_source_authorized(env, source, authorized);
+    events::emit_oracle_source_authorized(env, admin, source, authorized);
     Ok(())
 }
 
-/// Submit a new price observation (authorized oracle sources only).
-///
-/// The price is stored keyed by the caller's address. Consumers call
-/// `get_price` to retrieve and validate it.
-///
-/// # Arguments
-/// * `source` - The oracle source address (must be authorized, must authorize).
-/// * `price` - Raw price value (must be > 0).
-/// * `decimals` - Decimal places for `price`.
+/// Submit a price observation for `asset` (authorized sources only).
 ///
 /// # Errors
-/// * `Error::OracleUnauthorized` - `source` is not an authorized oracle.
-/// * `Error::OraclePriceInvalid` - `price` is zero or negative.
+/// * `OracleUnauthorizedSource` - `source` has not been authorized by the admin
+/// * `OracleInvalidPrice` - `price` is not strictly positive
 pub fn submit_price(
     env: &Env,
     source: &Address,
+    asset: &Address,
     price: i128,
     decimals: u32,
 ) -> Result<(), Error> {
     source.require_auth();
 
-    if !is_authorized(env, source) {
-        return Err(Error::OracleUnauthorized);
+    if !storage::is_oracle_source_authorized(env, source) {
+        return Err(Error::OracleUnauthorizedSource);
     }
     if price <= 0 {
-        return Err(Error::OraclePriceInvalid);
+        return Err(Error::OracleInvalidPrice);
     }
 
+    let timestamp = env.ledger().timestamp();
     let data = PriceData {
         price,
         decimals,
-        timestamp: env.ledger().timestamp(),
+        timestamp,
     };
-    set_price(env, source, &data);
-
-    env.events().publish(
-        (symbol_short!("orc_pr_v1"), source.clone()),
-        (price, decimals, data.timestamp),
-    );
+    storage::set_oracle_price(env, asset, &data);
+    events::emit_price_submitted(env, asset, source, price, decimals, timestamp);
     Ok(())
 }
 
-/// Retrieve and validate the latest price from `source`.
-///
-/// Enforces the staleness window configured via `configure_oracle`.
-///
-/// # Arguments
-/// * `source` - The oracle source address whose price to read.
-///
-/// # Returns
-/// The latest `PriceData` if present and fresh.
+/// Read the latest price for `asset`, enforcing the configured staleness
+/// window and rejecting non-positive values.
 ///
 /// # Errors
-/// * `Error::OracleNotFound` - No price has been submitted by `source`.
-/// * `Error::OraclePriceStale` - The price is older than `max_age_seconds`.
-pub fn get_price(env: &Env, source: &Address) -> Result<PriceData, Error> {
-    let data = get_price_raw(env, source).ok_or(Error::OracleNotFound)?;
+/// * `OraclePriceNotFound` - No price has ever been submitted for `asset`
+/// * `OracleNotConfigured` - The oracle max-staleness window has not been set
+/// * `OracleInvalidPrice` - The stored price is not strictly positive
+/// * `OraclePriceStale` - The stored price is older than the configured max age
+pub fn get_price(env: &Env, asset: &Address) -> Result<PriceData, Error> {
+    let data = storage::get_oracle_price(env, asset).ok_or(Error::OraclePriceNotFound)?;
+    if data.price <= 0 {
+        return Err(Error::OracleInvalidPrice);
+    }
 
-    let config = get_config(env);
+    let config = storage::get_oracle_config(env).ok_or(Error::OracleNotConfigured)?;
     let now = env.ledger().timestamp();
     let age = now.saturating_sub(data.timestamp);
-
     if age > config.max_age_seconds {
         return Err(Error::OraclePriceStale);
     }

@@ -143,12 +143,12 @@ pub fn list_streams_paginated(
     }
 
     let has_more = pos < index.len();
-    let next_cursor = if has_more {
-        // Cursor is the last returned entry's position, i.e. `pos - 1`.
-        Some(index.get(pos - 1).unwrap())
-    } else {
-        None
-    };
+    // Cursor is the last returned entry's position, i.e. `pos - 1`. Empty on
+    // the last page -- see `PaginatedStreamsResponse::next_cursor`.
+    let mut next_cursor = Vec::new(env);
+    if has_more {
+        next_cursor.push_back(index.get(pos - 1).unwrap());
+    }
 
     PaginatedStreamsResponse {
         streams,

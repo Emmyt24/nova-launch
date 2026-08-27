@@ -8,10 +8,12 @@
  *  - GET /api/discover/tokens — single match
  *  - GET /api/discover/tokens — multi-match with pagination
  *  - GET /api/discover/tokens — unlisted token exclusion (isPublic=false)
+ *  - GET /api/discover/tokens — consistent snapshot across fan-out calls
+ *  - GET /api/discover/tokens — respects the aggregation timeout budget
  *  - PATCH /api/tokens/:address/visibility — owner toggle
  *  - PATCH /api/tokens/:address/visibility — non-owner rejection
  *
- * Issue: #1265
+ * Issue: #1265, #1617
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -21,9 +23,15 @@ import discoveryRoutes, { visibilityRouter, clearDiscoveryCache } from "../disco
 
 // ---------------------------------------------------------------------------
 // Mock prisma
+//
+// $transaction mimics both the array form (`prisma.$transaction([...])`,
+// used for the plain page+count / trending fan-outs) and the interactive
+// callback form (`prisma.$transaction(async (tx) => ...)`, used for the FTS
+// id-lookup + page + count fan-out) that discovery.ts relies on for a
+// consistent snapshot across its fan-out calls.
 // ---------------------------------------------------------------------------
-vi.mock("../../lib/prisma", () => ({
-  prisma: {
+vi.mock("../../lib/prisma", () => {
+  const mockPrisma: any = {
     token: {
       findMany: vi.fn(),
       count:    vi.fn(),
@@ -31,8 +39,13 @@ vi.mock("../../lib/prisma", () => ({
       update:   vi.fn(),
     },
     $queryRawUnsafe: vi.fn(),
-  },
-}));
+  };
+  mockPrisma.$transaction = vi.fn(async (arg: any) => {
+    if (Array.isArray(arg)) return Promise.all(arg);
+    return arg(mockPrisma);
+  });
+  return { prisma: mockPrisma };
+});
 
 // Mock Redis-based rate-limiter so tests don't need a real Redis instance.
 vi.mock("../../middleware/rateLimiter", () => ({
@@ -287,6 +300,38 @@ describe("GET /api/discover/tokens", () => {
     clearDiscoveryCache();
     const res = await request(app).get("/api/discover/tokens?network=mainnet");
     expect(res.status).toBe(200);
+  });
+
+  it("returns a consistent asOf snapshot alongside the fan-out results", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue([baseToken as any]);
+    vi.mocked(prisma.token.count).mockResolvedValue(1);
+
+    const res = await request(app).get("/api/discover/tokens");
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.data.asOf).toBe("string");
+    expect(new Date(res.body.data.asOf).toString()).not.toBe("Invalid Date");
+  });
+
+  it("respects the overall aggregation timeout budget when a fan-out dependency is slow", async () => {
+    process.env.DISCOVERY_AGGREGATION_TIMEOUT_MS = "50";
+    try {
+      vi.mocked(prisma.token.findMany).mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve([baseToken as any]), 2000))
+      );
+      vi.mocked(prisma.token.count).mockResolvedValue(1);
+
+      const start = Date.now();
+      const res = await request(app).get("/api/discover/tokens");
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(503);
+      expect(res.body.error.code).toBe("AGGREGATION_TIMEOUT");
+      // Should degrade well before the slow dependency's 2s resolution.
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      delete process.env.DISCOVERY_AGGREGATION_TIMEOUT_MS;
+    }
   });
 });
 

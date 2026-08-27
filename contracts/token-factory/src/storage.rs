@@ -1,6 +1,10 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{BuybackCampaign, DataKey, Error, FactoryState, StreamCursor, TokenInfo};
+use crate::commit_reveal::{CommitRecord, CommitRevealSession};
+use crate::types::{
+    BridgeLock, BuybackCampaign, DataKey, Error, FactoryState, Reservation,
+    RevealBatchContinuation, SettleBatchContinuation, StreamCursor, TokenInfo,
+};
 
 // ============================================================
 // TTL Bump Constants (#1128)
@@ -56,9 +60,13 @@ pub fn bump_persistent<K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + sorob
 // ============================================================
 
 // Admin management
-pub fn get_admin(env: &Env) -> Address {
+
+/// Return the factory admin address, or `None` if `initialize` has not been
+/// called yet.  Callers in post-initialisation paths should propagate
+/// `Error::MissingAdmin` via `.ok_or(Error::MissingAdmin)?`.
+pub fn get_admin(env: &Env) -> Option<Address> {
     bump_instance(env);
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+    env.storage().instance().get(&DataKey::Admin)
 }
 
 pub fn set_admin(env: &Env, admin: &Address) {
@@ -88,8 +96,12 @@ pub fn has_pending_admin(env: &Env) -> bool {
 }
 
 // Treasury management
-pub fn get_treasury(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Treasury).unwrap()
+
+/// Return the factory treasury address, or `None` if `initialize` has not
+/// been called yet.  Callers in post-initialisation paths should propagate
+/// `Error::MissingTreasury` via `.ok_or(Error::MissingTreasury)?`.
+pub fn get_treasury(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Treasury)
 }
 
 pub fn set_treasury(env: &Env, treasury: &Address) {
@@ -147,16 +159,23 @@ pub fn get_metadata_locked_at(env: &Env) -> Option<u32> {
 }
 
 // Fee management
-pub fn get_base_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::BaseFee).unwrap()
+
+/// Return the base deployment fee in stroops, or `None` if `initialize` has
+/// not been called yet.  Callers in post-initialisation paths should propagate
+/// `Error::InvalidBaseFee` via `.ok_or(Error::InvalidBaseFee)?`.
+pub fn get_base_fee(env: &Env) -> Option<i128> {
+    env.storage().instance().get(&DataKey::BaseFee)
 }
 
 pub fn set_base_fee(env: &Env, fee: i128) {
     env.storage().instance().set(&DataKey::BaseFee, &fee);
 }
 
-pub fn get_metadata_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::MetadataFee).unwrap()
+/// Return the metadata fee in stroops, or `None` if `initialize` has not been
+/// called yet.  Callers in post-initialisation paths should propagate
+/// `Error::InvalidMetadataFee` via `.ok_or(Error::InvalidMetadataFee)?`.
+pub fn get_metadata_fee(env: &Env) -> Option<i128> {
+    env.storage().instance().get(&DataKey::MetadataFee)
 }
 
 pub fn set_metadata_fee(env: &Env, fee: i128) {
@@ -198,10 +217,22 @@ pub fn increment_token_count(env: &Env) -> Result<u32, Error> {
 // Get factory state
 pub fn get_factory_state(env: &Env) -> FactoryState {
     FactoryState {
-        admin: get_admin(env),
-        treasury: get_treasury(env),
-        base_fee: get_base_fee(env),
-        metadata_fee: get_metadata_fee(env),
+        admin: get_admin(env).unwrap_or_else(|| {
+            // Factory not yet initialised; return a zeroed sentinel.
+            // Callers that need a real admin should check `has_admin` first.
+            soroban_sdk::address_payload::AddressPayload::ContractIdHash(
+                soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            )
+            .to_address(env)
+        }),
+        treasury: get_treasury(env).unwrap_or_else(|| {
+            soroban_sdk::address_payload::AddressPayload::ContractIdHash(
+                soroban_sdk::BytesN::from_array(env, &[0u8; 32]),
+            )
+            .to_address(env)
+        }),
+        base_fee: get_base_fee(env).unwrap_or(0),
+        metadata_fee: get_metadata_fee(env).unwrap_or(0),
         paused: is_paused(env),
     }
 }
@@ -800,7 +831,9 @@ pub fn batch_update_fees(env: &Env, base_fee: Option<i128>, metadata_fee: Option
 /// Phase 2 Optimization: Get complete admin state in single call
 /// Avoids multiple storage reads when checking authorization and state
 /// Expected savings: 2,000-3,000 CPU instructions per call
-pub fn get_admin_state(env: &Env) -> (Address, bool) {
+///
+/// Returns `None` for the admin address when the contract is uninitialised.
+pub fn get_admin_state(env: &Env) -> (Option<Address>, bool) {
     let admin = get_admin(env);
     let paused = is_paused(env);
     (admin, paused)
@@ -1076,17 +1109,73 @@ pub fn increment_stream_count(env: &Env) -> Result<u32, Error> {
 }
 
 /// Get stream info by ID
+///
+/// Uses `persistent()` storage (not `temporary()`) — a payment stream must
+/// survive for its full vesting lifetime, which can span months, so it must
+/// not be subject to `temporary()`'s expiry-and-wipe semantics.
 pub fn get_stream(env: &Env, stream_id: u64) -> Option<crate::types::StreamInfo> {
-    env.storage()
-        .temporary()
-        .get(&DataKey::Stream(stream_id.try_into().unwrap()))
+    let key = DataKey::Stream(stream_id.try_into().unwrap());
+    env.storage().persistent().get(&key)
 }
 
 /// Store stream info
 pub fn set_stream(env: &Env, stream_id: u64, stream: &crate::types::StreamInfo) {
+    let key = DataKey::Stream(stream_id.try_into().unwrap());
+    env.storage().persistent().set(&key, stream);
+    bump_persistent(env, &key);
+}
+
+// ── Recurring stream storage functions ─────────────────────────
+
+/// Get the total number of recurring streams created
+pub fn get_recurring_stream_count(env: &Env) -> u64 {
     env.storage()
-        .temporary()
-        .set(&DataKey::Stream(stream_id.try_into().unwrap()), stream);
+        .instance()
+        .get(&DataKey::RecurringStreamCount)
+        .unwrap_or(0)
+}
+
+/// Increment the recurring-stream counter and return the new id
+pub fn increment_recurring_stream_count(env: &Env) -> Result<u64, Error> {
+    let id = get_recurring_stream_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::RecurringStreamCount, &id);
+    Ok(id)
+}
+
+/// Get a recurring stream by id
+pub fn get_recurring_stream(env: &Env, id: u64) -> Option<crate::types::RecurringStream> {
+    env.storage().persistent().get(&DataKey::RecurringStream(id))
+}
+
+/// Store a recurring stream
+pub fn set_recurring_stream(env: &Env, stream: &crate::types::RecurringStream) {
+    let key = DataKey::RecurringStream(stream.id);
+    env.storage().persistent().set(&key, stream);
+    bump_persistent(env, &key);
+}
+
+/// Append a recurring-stream id to a creator's index
+pub fn add_creator_recurring_stream(env: &Env, creator: &Address, recurring_stream_id: u64) {
+    let key = DataKey::CreatorRecurringStreams(creator.clone());
+    let mut ids: soroban_sdk::Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(soroban_sdk::Vec::new(env));
+    ids.push_back(recurring_stream_id);
+    env.storage().persistent().set(&key, &ids);
+}
+
+/// Get all recurring-stream ids created by an address
+pub fn get_creator_recurring_streams(env: &Env, creator: &Address) -> soroban_sdk::Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CreatorRecurringStreams(creator.clone()))
+        .unwrap_or(soroban_sdk::Vec::new(env))
 }
 
 /// Get next stream ID
@@ -1481,6 +1570,41 @@ pub fn set_address_frozen(env: &Env, token_address: &Address, address: &Address,
     }
 }
 
+/// Record the ledger timestamp at which `address` was frozen on `token_address`.
+pub fn set_freeze_timestamp(env: &Env, token_address: &Address, address: &Address, timestamp: u64) {
+    env.storage().persistent().set(
+        &crate::types::DataKey::FreezeTimestamp(token_address.clone(), address.clone()),
+        &timestamp,
+    );
+}
+
+/// Get the ledger timestamp at which `address` was frozen on `token_address`, if any.
+pub fn get_freeze_timestamp(env: &Env, token_address: &Address, address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeTimestamp(
+            token_address.clone(),
+            address.clone(),
+        ))
+        .unwrap_or(0)
+}
+
+/// Set the unfreeze cooldown grace period (seconds) for a token.
+pub fn set_freeze_cooldown(env: &Env, token_address: &Address, cooldown_seconds: u64) {
+    env.storage().persistent().set(
+        &crate::types::DataKey::FreezeCooldown(token_address.clone()),
+        &cooldown_seconds,
+    );
+}
+
+/// Get the unfreeze cooldown grace period (seconds) for a token. Defaults to 0 (no cooldown).
+pub fn get_freeze_cooldown(env: &Env, token_address: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&crate::types::DataKey::FreezeCooldown(token_address.clone()))
+        .unwrap_or(0)
+}
+
 // ── Governance storage functions ───────────────────────────
 
 /// Get governance configuration
@@ -1566,6 +1690,50 @@ pub fn get_valid_proof(env: &Env, milestone_hash: &soroban_sdk::BytesN<32>) -> O
     env.storage()
         .temporary()
         .get(&key)
+}
+
+/// Register an authorized oracle for milestone verification
+pub fn set_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .set(&key, &true);
+}
+
+/// Check if an oracle is authorized for milestone verification
+pub fn get_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) -> Option<bool> {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .get(&key)
+}
+
+/// Remove an oracle from the authorized list
+pub fn remove_authorized_oracle(env: &Env, oracle_id: &soroban_sdk::Bytes) {
+    use soroban_sdk::Symbol;
+    let key = (Symbol::new(env, "authorized_oracle"), oracle_id.clone());
+    env.storage()
+        .instance()
+        .remove(&key);
+}
+
+/// Mark that the contract-wide milestone verifier has been configured
+pub fn set_verifier_configured(env: &Env, configured: bool) {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, "verifier_configured"), &configured);
+}
+
+/// Check if the contract-wide milestone verifier has been configured
+pub fn is_verifier_configured(env: &Env) -> bool {
+    use soroban_sdk::Symbol;
+    env.storage()
+        .instance()
+        .get::<_, bool>(&Symbol::new(env, "verifier_configured"))
+        .unwrap_or(false)
 }
 
 // ============================================================
@@ -1672,67 +1840,6 @@ pub fn decrement_active_campaign_count(env: &Env) -> Result<u32, Error> {
     set_active_campaign_count(env, new_count);
     Ok(new_count)
 }
-// ============================================================
-// Fractionalization Storage Functions
-// ============================================================
-
-/// Get fractional vault by ID
-pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Option<crate::types::FractionalVault> {
-    env.storage().persistent().get(&crate::types::DataKey::FractionalVault(vault_id))
-}
-
-/// Set fractional vault
-pub fn set_fractional_vault(env: &Env, vault_id: u64, vault: &crate::types::FractionalVault) -> Result<(), Error> {
-    env.storage().persistent().set(&crate::types::DataKey::FractionalVault(vault_id), vault);
-    Ok(())
-}
-
-/// Get fractional vault count
-pub fn get_fractional_vault_count(env: &Env) -> u64 {
-    env.storage().instance().get(&crate::types::DataKey::FractionalVaultCount).unwrap_or(0)
-}
-
-/// Increment fractional vault count
-pub fn increment_fractional_vault_count(env: &Env) -> Result<u64, Error> {
-    let current = get_fractional_vault_count(env);
-    let new_count = current.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().instance().set(&crate::types::DataKey::FractionalVaultCount, &new_count);
-    Ok(new_count)
-}
-
-/// Get owner's fractional vault count
-pub fn get_owner_fractional_vault_count(env: &Env, owner: &Address) -> u32 {
-    env.storage().persistent().get(&crate::types::DataKey::OwnerFractionalVaultCount(owner.clone())).unwrap_or(0)
-}
-
-/// Increment owner's fractional vault count
-pub fn increment_owner_fractional_vault_count(env: &Env, owner: &Address) -> Result<u32, Error> {
-    let current = get_owner_fractional_vault_count(env, owner);
-    let new_count = current.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(&crate::types::DataKey::OwnerFractionalVaultCount(owner.clone()), &new_count);
-    Ok(new_count)
-}
-
-/// Set fractional vault by owner
-pub fn set_fractional_vault_by_owner(env: &Env, owner: &Address, index: u32, vault_id: u64) {
-    env.storage().persistent().set(&crate::types::DataKey::FractionalVaultByOwner(owner.clone(), index), &vault_id);
-}
-
-/// Get vault ID for an asset
-pub fn get_asset_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>) -> Option<u64> {
-    env.storage().persistent().get(&crate::types::DataKey::AssetToVault(asset_id.clone()))
-}
-
-/// Set asset to vault mapping
-pub fn set_asset_to_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>, vault_id: u64) {
-    env.storage().persistent().set(&crate::types::DataKey::AssetToVault(asset_id.clone()), &vault_id);
-}
-
-/// Remove asset to vault mapping
-pub fn remove_asset_to_vault(env: &Env, asset_id: &soroban_sdk::BytesN<32>) {
-    env.storage().persistent().remove(&crate::types::DataKey::AssetToVault(asset_id.clone()));
-}
-
 // ============================================================
 // Role-Based Access Control
 // ============================================================
@@ -1856,33 +1963,6 @@ pub fn set_multisig_approval(env: &Env, proposal_id: u64, approver: &Address) {
 // Burn Schedule Storage
 // ============================================================
 
-pub fn next_burn_schedule_id(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get::<_, u64>(&crate::types::DataKey::BurnScheduleCount)
-        .unwrap_or(0)
-}
-
-pub fn increment_burn_schedule_id(env: &Env) -> u64 {
-    let id = next_burn_schedule_id(env);
-    env.storage()
-        .instance()
-        .set(&crate::types::DataKey::BurnScheduleCount, &(id + 1));
-    id
-}
-
-pub fn get_burn_schedule(env: &Env, id: u64) -> Option<crate::types::BurnSchedule> {
-    env.storage()
-        .instance()
-        .get(&crate::types::DataKey::BurnSchedule(id))
-}
-
-pub fn set_burn_schedule(env: &Env, schedule: &crate::types::BurnSchedule) {
-    env.storage()
-        .instance()
-        .set(&crate::types::DataKey::BurnSchedule(schedule.id), schedule);
-}
-
 pub fn get_burn_schedule_count_by_token(env: &Env, token_index: u32) -> u32 {
     env.storage()
         .instance()
@@ -1998,70 +2078,333 @@ pub fn remove_pending_vault_owner_change(env: &Env, vault_id: u64) {
 }
 
 // ============================================================
-// Recurring Stream Storage
+// Batch Scheduler Storage (#1625)
 // ============================================================
 
-/// Get recurring stream by ID
-pub fn get_recurring_stream(env: &Env, stream_id: u64) -> Option<crate::types::RecurringStream> {
-    env.storage()
-        .persistent()
-        .get(&crate::types::DataKey::RecurringStream(stream_id))
-}
-
-/// Set recurring stream
-pub fn set_recurring_stream(env: &Env, stream_id: u64, stream: &crate::types::RecurringStream) {
-    env.storage()
-        .persistent()
-        .set(&crate::types::DataKey::RecurringStream(stream_id), stream);
-}
-
-/// Get total recurring stream count
-pub fn get_recurring_stream_count(env: &Env) -> u64 {
+/// Current per-ledger gas budget, defaulting to `DEFAULT_LEDGER_GAS_BUDGET`
+/// (see `batch_scheduler`) until an admin overrides it.
+pub fn get_ledger_gas_budget(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&crate::types::DataKey::RecurringStreamCount)
+        .get(&DataKey::LedgerGasBudget)
+        .unwrap_or(crate::batch_scheduler::DEFAULT_LEDGER_GAS_BUDGET)
+}
+
+/// Set the per-ledger gas budget.
+pub fn set_ledger_gas_budget(env: &Env, budget: u64) {
+    env.storage().instance().set(&DataKey::LedgerGasBudget, &budget);
+}
+
+/// Tenants currently holding a pending batch-scheduler continuation, in
+/// fair-share rotation order.
+pub fn get_fair_share_queue(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::FairShareQueue)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn set_fair_share_queue(env: &Env, queue: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::FairShareQueue, queue);
+}
+
+/// Add `tenant` to the fair-share queue if not already present.
+pub fn enqueue_tenant(env: &Env, tenant: &Address) {
+    let mut queue = get_fair_share_queue(env);
+    for t in queue.iter() {
+        if t == *tenant {
+            return;
+        }
+    }
+    queue.push_back(tenant.clone());
+    set_fair_share_queue(env, &queue);
+}
+
+/// Remove `tenant` from the fair-share queue.
+pub fn dequeue_tenant(env: &Env, tenant: &Address) {
+    let queue = get_fair_share_queue(env);
+    let mut updated = Vec::new(env);
+    for t in queue.iter() {
+        if t != *tenant {
+            updated.push_back(t);
+        }
+    }
+    set_fair_share_queue(env, &updated);
+}
+
+/// Move `tenant` to the back of the fair-share queue (round-robin fairness
+/// across resume calls within the same ledger).
+pub fn rotate_tenant_to_back(env: &Env, tenant: &Address) {
+    dequeue_tenant(env, tenant);
+    enqueue_tenant(env, tenant);
+}
+
+/// Gas used by `tenant` on `ledger_seq` so far.
+pub fn get_tenant_ledger_gas_used(env: &Env, tenant: &Address, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq))
         .unwrap_or(0)
 }
 
-/// Get next recurring stream ID and increment counter
-pub fn next_recurring_stream_id(env: &Env) -> u64 {
-    let id = env
-        .storage()
-        .instance()
-        .get(&crate::types::DataKey::NextRecurringStreamId)
-        .unwrap_or(0_u64);
+/// Total gas used by all tenants on `ledger_seq` so far.
+pub fn get_ledger_gas_used(env: &Env, ledger_seq: u32) -> u64 {
+    env.storage()
+        .temporary()
+        .get(&DataKey::LedgerGasUsed(ledger_seq))
+        .unwrap_or(0)
+}
+
+/// Record that `tenant` consumed `amount` gas on `ledger_seq`, updating both
+/// the per-tenant and ledger-wide running totals.
+pub fn record_gas_used(env: &Env, tenant: &Address, ledger_seq: u32, amount: u64) {
+    let tenant_used = get_tenant_ledger_gas_used(env, tenant, ledger_seq) + amount;
+    env.storage().temporary().set(
+        &DataKey::TenantLedgerGasUsed(tenant.clone(), ledger_seq),
+        &tenant_used,
+    );
+
+    let ledger_used = get_ledger_gas_used(env, ledger_seq) + amount;
+    env.storage()
+        .temporary()
+        .set(&DataKey::LedgerGasUsed(ledger_seq), &ledger_used);
+}
+
+/// Get the pending `schedule_batch_reveal` continuation for `creator`, if any.
+pub fn get_reveal_continuation(env: &Env, creator: &Address) -> Option<RevealBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RevealContinuation(creator.clone()))
+}
+
+/// Set the pending `schedule_batch_reveal` continuation for `creator`.
+pub fn set_reveal_continuation(env: &Env, creator: &Address, continuation: &RevealBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::RevealContinuation(creator.clone()), continuation);
+}
+
+/// Clear the pending `schedule_batch_reveal` continuation for `creator`.
+pub fn clear_reveal_continuation(env: &Env, creator: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::RevealContinuation(creator.clone()));
+}
+
+/// Get the pending `schedule_batch_settle` continuation for `creator`, if any.
+pub fn get_settle_continuation(env: &Env, creator: &Address) -> Option<SettleBatchContinuation> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SettleContinuation(creator.clone()))
+}
+
+/// Set the pending `schedule_batch_settle` continuation for `creator`.
+pub fn set_settle_continuation(env: &Env, creator: &Address, continuation: &SettleBatchContinuation) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SettleContinuation(creator.clone()), continuation);
+}
+
+/// Clear the pending `schedule_batch_settle` continuation for `creator`.
+pub fn clear_settle_continuation(env: &Env, creator: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SettleContinuation(creator.clone()));
+}
+
+// ============================================================
+// Settlement Storage (#1624)
+// ============================================================
+
+/// Total amount of `token_index` currently held by pending (Prepared)
+/// settlement reservations.
+pub fn get_reserved_total(env: &Env, token_index: u32) -> i128 {
     env.storage()
         .instance()
-        .set(&crate::types::DataKey::NextRecurringStreamId, &(id + 1));
+        .get(&DataKey::ReservedTotal(token_index))
+        .unwrap_or(0)
+}
+
+/// Set the total amount of `token_index` currently reserved.
+pub fn set_reserved_total(env: &Env, token_index: u32, total: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservedTotal(token_index), &total);
+}
+
+/// Allocate the next settlement reservation id.
+pub fn next_reservation_id(env: &Env) -> u64 {
+    let id: u64 = env.storage().instance().get(&DataKey::ReservationCount).unwrap_or(0);
+    env.storage().instance().set(&DataKey::ReservationCount, &(id + 1));
     id
 }
 
-/// Get number of recurring streams created by a creator
-pub fn get_creator_recurring_stream_count(env: &Env, creator: &Address) -> u32 {
+/// Get a settlement reservation by id.
+pub fn get_reservation(env: &Env, reservation_id: u64) -> Option<crate::types::Reservation> {
+    env.storage().persistent().get(&DataKey::Reservation(reservation_id))
+}
+
+/// Set a settlement reservation.
+pub fn set_reservation(env: &Env, reservation_id: u64, reservation: &crate::types::Reservation) {
     env.storage()
         .persistent()
-        .get(&crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()))
+        .set(&DataKey::Reservation(reservation_id), reservation);
+}
+
+/// Ledgers a reservation may sit `Prepared` before `cleanup_stuck_reservation`
+/// may force-release it. Defaults to `DEFAULT_EPOCH_LEDGERS` (~1 day).
+pub fn get_reservation_timeout_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReservationTimeoutLedgers)
+        .unwrap_or(DEFAULT_EPOCH_LEDGERS)
+}
+
+/// Set the reservation timeout, in ledgers.
+pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReservationTimeoutLedgers, &ledgers);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Staking storage (#1757)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Get a staking pool by ID.
+pub fn get_staking_pool(env: &Env, pool_id: u64) -> Option<crate::types::StakingPool> {
+    env.storage().persistent().get(&DataKey::StakingPool(pool_id))
+}
+
+/// Save a staking pool.
+pub fn set_staking_pool(env: &Env, pool_id: u64, pool: &crate::types::StakingPool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::StakingPool(pool_id), pool);
+}
+
+/// Allocate and return the next staking pool ID.
+pub fn increment_next_staking_pool_id(env: &Env) -> u64 {
+    let current = env
+        .storage()
+        .instance()
+        .get(&DataKey::NextStakingPoolId)
+        .unwrap_or(0u64);
+    env.storage()
+        .instance()
+        .set(&DataKey::NextStakingPoolId, &(current + 1));
+    current
+}
+
+/// Get the total number of staking pools created.
+pub fn get_staking_pool_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::StakingPoolCount)
         .unwrap_or(0)
 }
 
-/// Get recurring stream ID by creator and index
-pub fn get_creator_recurring_stream(env: &Env, creator: &Address, index: u32) -> Option<u64> {
+/// Increment and persist the staking pool counter.
+pub fn increment_staking_pool_count(env: &Env) -> Result<u64, Error> {
+    let count = get_staking_pool_count(env)
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
     env.storage()
-        .persistent()
-        .get(&crate::types::DataKey::RecurringStreamByCreator(creator.clone(), index))
+        .instance()
+        .set(&DataKey::StakingPoolCount, &count);
+    Ok(count)
 }
 
-/// Record a new recurring stream for a creator
-pub fn add_creator_recurring_stream(env: &Env, creator: &Address, stream_id: u64) -> Result<(), Error> {
-    let count = get_creator_recurring_stream_count(env, creator);
-    env.storage().persistent().set(
-        &crate::types::DataKey::RecurringStreamByCreator(creator.clone(), count),
-        &stream_id,
-    );
-    let new_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(
-        &crate::types::DataKey::CreatorRecurringStreamCount(creator.clone()),
-        &new_count,
-    );
-    Ok(())
+/// Get a user's stake within a pool.
+pub fn get_user_stake(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+) -> Option<crate::types::StakeInfo> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserStake(pool_id, user.clone()))
+}
+
+/// Save a user's stake within a pool.
+pub fn set_user_stake(
+    env: &Env,
+    pool_id: u64,
+    user: &Address,
+    stake: &crate::types::StakeInfo,
+) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserStake(pool_id, user.clone()), stake);
+}
+
+// ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
+//
+// Each test calls a getter *before* `initialize()` has been invoked and
+// asserts that the result is `None` rather than a panic.
+
+#[cfg(test)]
+mod storage_getter_uninit_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+    use crate::TokenFactory;
+
+    /// Helper: register the contract without calling `initialize`.
+    fn bare_env() -> (Env, soroban_sdk::Address) {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TokenFactory);
+        (env, contract_id)
+    }
+
+    /// `get_admin` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_admin_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_admin(&env));
+        assert!(result.is_none(), "get_admin should return None before init");
+    }
+
+    /// `get_treasury` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_treasury_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_treasury(&env));
+        assert!(result.is_none(), "get_treasury should return None before init");
+    }
+
+    /// `get_base_fee` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_base_fee_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_base_fee(&env));
+        assert!(result.is_none(), "get_base_fee should return None before init");
+    }
+
+    /// `get_metadata_fee` returns `None` before `initialize()` — no panic.
+    #[test]
+    fn test_get_metadata_fee_before_init_is_none() {
+        let (env, contract_id) = bare_env();
+        let result = env.as_contract(&contract_id, || get_metadata_fee(&env));
+        assert!(result.is_none(), "get_metadata_fee should return None before init");
+    }
+
+    /// After `initialize()` all four getters return `Some(value)`.
+    #[test]
+    fn test_getters_return_some_after_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TokenFactory);
+        let admin = soroban_sdk::Address::generate(&env);
+        let treasury = soroban_sdk::Address::generate(&env);
+
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+        client.initialize(&admin, &treasury, &70_000_000i128, &30_000_000i128);
+
+        env.as_contract(&contract_id, || {
+            assert!(get_admin(&env).is_some());
+            assert!(get_treasury(&env).is_some());
+            assert!(get_base_fee(&env).is_some());
+            assert!(get_metadata_fee(&env).is_some());
+        });
+    }
 }

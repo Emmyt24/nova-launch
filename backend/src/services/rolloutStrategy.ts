@@ -16,8 +16,24 @@
  * The hash function is pure and side-effect-free, making rollout decisions
  * stable across repeated calls for the same (user, flag) pair.
  *
+ * Emits structured logs and Prometheus metrics for observability.
+ *
  * @module rolloutStrategy
  */
+
+import { logger } from '../lib/logger';
+import { Counter, register } from '../lib/metrics';
+
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+const rolloutDecisionCounter = new Counter({
+  name: 'rollout_decisions_total',
+  help: 'Total number of rollout decisions by flag and decision type',
+  labelNames: ['flag_key', 'decision', 'reason'],
+  registers: [register],
+});
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,26 +126,39 @@ export class RolloutStrategyService {
 
   /**
    * Evaluate whether a feature is enabled for the given context.
+   * Emits structured logs and metrics for observability.
    */
   evaluate(flagKey: string, context: RolloutContext): RolloutResult {
     const config = this.flags.get(flagKey);
     if (!config) {
-      return { decision: "disabled", reason: "percentage", bucket: 0 };
+      const result = { decision: "disabled", reason: "percentage" as const, bucket: 0 };
+      this.logDecision(flagKey, context, result);
+      this.recordMetric(flagKey, result);
+      return result;
     }
 
     // 1. Tier blocked
     if (config.blockedTiers?.includes(context.tier)) {
-      return { decision: "disabled", reason: "tier_blocked" };
+      const result = { decision: "disabled", reason: "tier_blocked" as const };
+      this.logDecision(flagKey, context, result, { blockedTier: context.tier });
+      this.recordMetric(flagKey, result);
+      return result;
     }
 
     // 2. Tier allowed
     if (config.allowedTiers?.includes(context.tier)) {
-      return { decision: "enabled", reason: "tier_allowed" };
+      const result = { decision: "enabled", reason: "tier_allowed" as const };
+      this.logDecision(flagKey, context, result, { allowedTier: context.tier });
+      this.recordMetric(flagKey, result);
+      return result;
     }
 
     // 3. Cohort allow-list
     if (config.cohort?.includes(context.userId)) {
-      return { decision: "enabled", reason: "cohort" };
+      const result = { decision: "enabled", reason: "cohort" as const };
+      this.logDecision(flagKey, context, result, { cohortMembership: true });
+      this.recordMetric(flagKey, result);
+      return result;
     }
 
     // 4. Percentage rollout
@@ -137,7 +166,40 @@ export class RolloutStrategyService {
     const decision: RolloutDecision =
       bucket < config.rolloutPercentage ? "enabled" : "disabled";
 
-    return { decision, reason: "percentage", bucket };
+    const result = { decision, reason: "percentage" as const, bucket };
+    this.logDecision(flagKey, context, result, {
+      rolloutPercentage: config.rolloutPercentage,
+      threshold: config.rolloutPercentage,
+    });
+    this.recordMetric(flagKey, result);
+    return result;
+  }
+
+  /**
+   * Emit a structured log entry for a rollout decision.
+   */
+  private logDecision(
+    flagKey: string,
+    context: RolloutContext,
+    result: RolloutResult,
+    additionalContext?: Record<string, unknown>,
+  ): void {
+    logger.info('rollout_decision', {
+      flagKey,
+      userId: context.userId,
+      userTier: context.tier,
+      decision: result.decision,
+      reason: result.reason,
+      bucket: result.bucket,
+      ...additionalContext,
+    });
+  }
+
+  /**
+   * Record a Prometheus metric for this rollout decision.
+   */
+  private recordMetric(flagKey: string, result: RolloutResult): void {
+    rolloutDecisionCounter.labels(flagKey, result.decision, result.reason).inc();
   }
 
   /**

@@ -237,7 +237,7 @@ pub fn replay(env: &Env, up_to_index: u64) -> Result<HistorySnapshot, Error> {
 pub fn prune_history(env: &Env, admin: &Address, before_index: u64) -> Result<u32, Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

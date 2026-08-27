@@ -305,4 +305,19 @@ describe('peer-authentication.yaml', () => {
     expect(pa.spec.mtls.mode).toBe('PERMISSIVE');
     expect(pa.spec.selector.matchLabels.app).toBe('redis');
   });
+
+  // Guards against a policy edit silently downgrading enforcement: the only
+  // resource allowed to be non-STRICT is the documented Redis exemption.
+  // See istio/README.md "mTLS STRICT verification" for the full approach,
+  // including the live plaintext-rejection check in scripts/verify-istio-mtls-strict.sh.
+  it('no PeerAuthentication other than the documented redis exemption is non-STRICT', () => {
+    const nonStrict = peerAuths.filter((pa) => pa.spec?.mtls?.mode && pa.spec.mtls.mode !== 'STRICT');
+    const unexpected = nonStrict.filter((pa) => pa.metadata?.name !== 'redis-permissive');
+    expect(unexpected).toEqual([]);
+  });
+
+  it('the default policy has no selector (applies mesh-wide, not scoped to a workload)', () => {
+    const pa = find(peerAuths, 'PeerAuthentication', 'default');
+    expect(pa.spec.selector).toBeUndefined();
+  });
 });

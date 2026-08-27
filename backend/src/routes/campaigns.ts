@@ -1,20 +1,15 @@
 import { Router } from "express";
-import { campaignProjectionService } from "../services/campaignProjectionService";
+import { PrismaClient } from "@prisma/client";
 import {
-  validateCreateCampaignBody,
-  validateCampaignIdParam,
-  validateCampaignTokenParam,
-  validateCampaignCreatorParam,
-  validateCampaignExecutionQuery,
+  validateCampaignCreate,
+  validateCampaignId,
 } from "../middleware/validation";
 import { idempotencyMiddleware } from "../middleware/idempotency";
+import { successResponse, errorResponse } from "../utils/response";
+import { prisma } from "../lib/prisma";
 
 const router = Router();
 
-// Public route contract: all paths are relative to the /api/campaigns mount point.
-// Response shapes are defined in ../contracts/apiSchemas.ts.
-
-/** Serializes BigInt fields in a campaign projection to strings for JSON output. */
 function serializeCampaign(c: any) {
   return {
     ...c,
@@ -23,135 +18,187 @@ function serializeCampaign(c: any) {
   };
 }
 
-/** Serializes BigInt fields in campaign stats to strings for JSON output. */
-function serializeCampaignStats(s: any) {
-  return {
-    ...s,
-    totalVolume: s.totalVolume?.toString?.() ?? s.totalVolume,
-  };
-}
-
-/** @contract CampaignStats */
+/**
+ * GET /api/campaigns/stats/:tokenId?
+ * Aggregate campaign counters, optionally scoped to one token.
+ */
 router.get("/stats/:tokenId?", async (req, res) => {
   try {
-    const { tokenId } = req.params;
-    const stats = await campaignProjectionService.getCampaignStats(tokenId);
-    res.json(serializeCampaignStats(stats));
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch campaign stats" });
-  }
-});
-
-/** @contract CampaignRecord[] */
-router.get("/token/:tokenId", validateCampaignTokenParam, async (req, res) => {
-  try {
-    const { tokenId } = req.params;
-    const campaigns = await campaignProjectionService.getCampaignsByToken(tokenId);
-    res.json(campaigns.map(serializeCampaign));
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch campaigns" });
-  }
-});
-
-/** @contract CampaignRecord[] */
-router.get("/creator/:creator", validateCampaignCreatorParam, async (req, res) => {
-  try {
-    const { creator } = req.params;
-    const campaigns = await campaignProjectionService.getCampaignsByCreator(creator);
-    res.json(campaigns.map(serializeCampaign));
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch campaigns" });
-  }
-});
-
-/** @contract CampaignExecutionsResponse */
-router.get(
-  "/:campaignId/executions",
-  validateCampaignIdParam,
-  validateCampaignExecutionQuery,
-  async (req, res) => {
-    try {
-      const campaignId = parseInt(req.params.campaignId);
-      const limit = parseInt((req.query.limit as string) ?? "50") || 50;
-      const offset = parseInt((req.query.offset as string) ?? "0") || 0;
-
-      const result = await campaignProjectionService.getExecutionHistory(
-        campaignId,
-        limit,
-        offset,
-      );
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch execution history" });
-    }
-  },
-);
-
-/** @contract CampaignRecord */
-router.get("/:campaignId", validateCampaignIdParam, async (req, res) => {
-  try {
-    const campaignId = parseInt(req.params.campaignId);
-    const campaign = await campaignProjectionService.getCampaignById(campaignId);
-
-    if (!campaign) {
-      return res.status(404).json({ error: "Campaign not found" });
-    }
-
-    res.json(serializeCampaign(campaign));
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch campaign" });
-  }
-});
-
-/** @contract CampaignAuditTrailResponse */
-router.get("/:campaignId/audit-trail", async (req, res) => {
-  try {
-    const campaignId = req.params.campaignId;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const offset = parseInt(req.query.offset as string) || 0;
-
-    const result = await campaignProjectionService.getAuditTrail(
-      campaignId,
-      limit,
-      offset
+    const where = req.params.tokenId ? { tokenId: req.params.tokenId } : {};
+    const [total, active, completed, executions] = await Promise.all([
+      prisma.campaign.count({ where }),
+      prisma.campaign.count({ where: { ...where, status: "ACTIVE" as const } }),
+      prisma.campaign.count({
+        where: { ...where, status: "COMPLETED" as const },
+      }),
+      prisma.campaignExecution.count({
+        where: where.tokenId ? { campaign: { tokenId: where.tokenId } } : {},
+      }),
+    ]);
+    res.json(
+      successResponse({
+        totalCampaigns: total,
+        activeCampaigns: active,
+        completedCampaigns: completed,
+        totalExecutions: executions,
+      })
     );
+  } catch {
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch campaign stats",
+      })
+    );
+  }
+});
 
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch audit trail" });
+/** GET /api/campaigns/token/:tokenId — campaigns for a token. */
+router.get("/token/:tokenId", async (req, res) => {
+  try {
+    const campaigns = await prisma.campaign.findMany({
+      where: { tokenId: req.params.tokenId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(successResponse(campaigns.map(serializeCampaign)));
+  } catch {
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch campaigns for token",
+      })
+    );
+  }
+});
+
+/** GET /api/campaigns/creator/:creator — campaigns by creator address. */
+router.get("/creator/:creator", async (req, res) => {
+  try {
+    const campaigns = await prisma.campaign.findMany({
+      where: { creator: req.params.creator },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(successResponse(campaigns.map(serializeCampaign)));
+  } catch {
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch campaigns for creator",
+      })
+    );
+  }
+});
+
+/** GET /api/campaigns/:campaignId — a single campaign. */
+router.get("/:campaignId", validateCampaignId, async (req, res) => {
+  try {
+    const campaign = await prisma.campaign.findUnique({
+      where: { campaignId: Number(req.params.campaignId) },
+    });
+    if (!campaign)
+      return res
+        .status(404)
+        .json(
+          errorResponse({ code: "NOT_FOUND", message: "Campaign not found" })
+        );
+    res.json(successResponse(serializeCampaign(campaign)));
+  } catch {
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch campaign",
+      })
+    );
+  }
+});
+
+/** GET /api/campaigns/:campaignId/executions — step-execution history. */
+router.get("/:campaignId/executions", validateCampaignId, async (req, res) => {
+  try {
+    const campaign = await prisma.campaign.findUnique({
+      where: { campaignId: Number(req.params.campaignId) },
+    });
+    if (!campaign)
+      return res
+        .status(404)
+        .json(
+          errorResponse({ code: "NOT_FOUND", message: "Campaign not found" })
+        );
+    const executions = await prisma.campaignExecution.findMany({
+      where: { campaignId: campaign.id },
+      orderBy: { executedAt: "desc" },
+    });
+    res.json(
+      successResponse(
+        executions.map((e: any) => ({ ...e, amount: e.amount.toString() }))
+      )
+    );
+  } catch {
+    res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch execution history",
+      })
+    );
   }
 });
 
 /**
  * POST /api/campaigns
- * Create a new campaign. Validated by validateCampaignCreate middleware.
- * Supports Idempotency-Key header to deduplicate retried requests.
- * @contract CampaignRecord
+ * Records a campaign that has already been created on-chain — this route
+ * projects the contract's `cmp_crt` event, it does not itself submit a
+ * transaction. `txHash` is unique so re-ingesting the same event is a no-op.
  */
-router.post("/", idempotencyMiddleware, validateCampaignCreate, async (req, res) => {
-  try {
-    const { tokenId, creator, type, targetAmount, startTime, endTime, metadata, txHash } = req.body;
-
-    const event = {
-      campaignId: Date.now(), // placeholder — real ID comes from on-chain event
-      tokenId,
-      creator,
-      type,
-      targetAmount: BigInt(targetAmount),
-      startTime: new Date(startTime),
-      endTime: endTime ? new Date(endTime) : undefined,
-      metadata,
-      txHash: txHash ?? "",
-    };
-
-    const { campaignEventParser } = await import("../services/campaignEventParser");
-    await campaignEventParser.parseCampaignCreated(event);
-
-    res.status(201).json({ success: true, message: "Campaign created" });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to create campaign" });
+router.post(
+  "/",
+  idempotencyMiddleware,
+  validateCampaignCreate,
+  async (req, res) => {
+    try {
+      const {
+        tokenId,
+        creator,
+        type,
+        targetAmount,
+        startTime,
+        endTime,
+        metadata,
+        campaignId,
+        txHash,
+      } = req.body;
+      const campaign = await prisma.campaign.upsert({
+        where: { txHash },
+        update: {},
+        create: {
+          campaignId,
+          tokenId,
+          creator,
+          type,
+          targetAmount: BigInt(targetAmount),
+          startTime: new Date(startTime),
+          endTime: endTime ? new Date(endTime) : null,
+          metadata,
+          txHash,
+        },
+      });
+      res.status(201).json(successResponse(serializeCampaign(campaign)));
+    } catch (err: any) {
+      if (err?.code === "P2002") {
+        return res.status(409).json(
+          errorResponse({
+            code: "CONFLICT",
+            message: "Campaign already recorded",
+          })
+        );
+      }
+      res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to record campaign",
+        })
+      );
+    }
   }
-});
+);
 
 export default router;

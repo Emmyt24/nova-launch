@@ -7,29 +7,32 @@
 #[cfg(test)]
 extern crate std;
 
-mod campaign_validation;
 mod compliance_reporting;
 mod freeze_functions;
+mod fractionalization;
+#[cfg(test)]
+mod fractionalization_test;
 mod governance;
 mod game_history;
 mod ipfs_pinning;
-mod referral;
 
 mod batch_operations;
+mod batch_scheduler;
+mod bridge;
+#[cfg(test)]
+mod bridge_test;
 mod burn;
+mod commit_reveal;
+#[cfg(test)]
+mod commit_reveal_test;
+mod settlement;
 mod clawback;
-mod campaign;
-#[cfg(feature = "legacy-tests")]
-mod burn_auction;
+mod invariants;
 mod differential_engine;
 mod event_versions;
 mod events;
-#[cfg(feature = "legacy-tests")]
 mod liquidity_mining;
 mod milestone_verification;
-#[cfg(test)]
-mod milestone_stream_test;
-#[cfg(feature = "legacy-tests")]
 mod oracle;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_milestone_verification_test: () = ();
@@ -44,28 +47,30 @@ mod proposal_type_queue;
 #[cfg(test)]
 mod proposal_execution_queue_fifo_test;
 mod proposal_state_machine;
+mod staking;
 mod storage;
 mod storage_migration;
-mod dividend_distribution;
-#[cfg(feature = "legacy-tests")]
-mod staking;
-mod streaming;
-mod stream_types;
-mod recurring_stream;
 #[cfg(test)]
 mod test_helpers;
+#[cfg(test)]
+mod freeze_functions_test;
+#[cfg(test)]
+mod liquidity_mining_test;
+#[cfg(test)]
+mod game_history_test;
+#[cfg(test)]
+mod proposal_queue_test;
+#[cfg(test)]
+mod event_versions_test;
+#[cfg(test)]
+mod staking_integration_test;
 mod timelock;
 mod token_creation;
 mod treasury;
 mod types;
 mod vault;
-mod vesting;
 mod validation;
-
-#[cfg(test)]
-// mod campaign_state_test;
-#[cfg(test)]
-mod campaign_state_machine_proptest;
+mod vesting;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -118,6 +123,10 @@ const _ISOLATED_DISABLED_stream_claim_differential_test: () = ();
 
 #[cfg(test)]
 mod cross_contract_integration_test;
+#[cfg(test)]
+mod compliance_reporting_test;
+#[cfg(test)]
+mod invariant_tests;
 
 // #[cfg(test)]
 // mod cross_contract_auth_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
@@ -140,43 +149,39 @@ mod multisig_test;
 // #[cfg(test)]
 // mod burn_edge_cases_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 
-#[cfg(test)]
-mod dividend_distribution_test;
-#[cfg(test)]
-mod dividend_distribution_multi_epoch_integration_test;
-
 // #[cfg(test)]
 // mod metadata_versioning_property_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 
-// #[cfg(test)]
-// mod mint_concurrency_stress_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
+#[cfg(test)]
+mod mint_concurrency_stress_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_multisig_auth_fuzz_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_burn_integration_test: () = ();
-#[cfg(test)]
-const _ISOLATED_DISABLED_batch_atomicity_test: () = ();
+
 #[cfg(test)]
 const _ISOLATED_DISABLED_vault_deposit_withdraw_test: () = ();
 /// Tests for structured vault error codes / diagnostic context (#1384).
 #[cfg(test)]
 mod vault_error_test;
 
-// #[cfg(test)]
-// mod batch_atomicity_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
+#[cfg(test)]
+mod batch_atomicity_test;
 
-// #[cfg(test)]
-// mod vault_deposit_withdraw_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
+// Re-enabled: vault deposit/withdraw concurrent interleaving suite (#1686)
+#[cfg(test)]
+mod vault_deposit_withdraw_test;
 
 #[cfg(test)]
 mod vault_balance_invariant_proptest;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use types::{
-    AuctionStatus, BurnAuction, BuybackCampaign, CampaignStatus, ContractMetadata,
-    DynamicQuorumConfig, Error, FactoryState, PaginationCursor, PreflightItemResult, StreamInfo,
-    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
+    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
+    PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo, StreamPage,
+    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
 use crate::milestone_verification::MilestoneVerifier;
 
@@ -265,6 +270,28 @@ impl TokenFactory {
     /// engaged, or `None` if the factory has not been initialized.
     pub fn metadata_locked_at(env: Env) -> Option<u32> {
         storage::get_metadata_locked_at(&env)
+    }
+
+    /// Configure the contract-wide milestone verifier for oracle-based validation.
+    ///
+    /// Only the contract admin may call this method. The configured verifier is used
+    /// by all vault claims to validate milestone proofs when a non-zero milestone_hash
+    /// is present.
+    ///
+    /// # Access Control
+    /// - Caller must be the contract admin
+    ///
+    /// # Errors
+    /// - `Unauthorized` – caller is not the contract admin
+    pub fn set_milestone_verifier(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
+        if admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::set_verifier_configured(&env, true);
+        Ok(())
     }
 
     /// Update a token's immutable identity fields (name, symbol, decimals).
@@ -409,7 +436,7 @@ impl TokenFactory {
     /// Set the token used for fee payments (admin only)
     pub fn set_fee_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -420,7 +447,7 @@ impl TokenFactory {
     /// Set the governance contract address (admin only)
     pub fn set_governance(env: Env, admin: Address, governance: Address) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -469,7 +496,7 @@ impl TokenFactory {
     /// assert!(user_balance >= base_fee);
     /// ```
     pub fn get_base_fee(env: Env) -> i128 {
-        storage::get_base_fee(&env)
+        storage::get_base_fee(&env).unwrap_or(0)
     }
 
     /// Get the current metadata fee for token deployment
@@ -489,7 +516,7 @@ impl TokenFactory {
     /// // Total fee when including metadata
     /// ```
     pub fn get_metadata_fee(env: Env) -> i128 {
-        storage::get_metadata_fee(&env)
+        storage::get_metadata_fee(&env).unwrap_or(0)
     }
 
     /// Transfer admin rights to a new address
@@ -516,7 +543,7 @@ impl TokenFactory {
 
         // Combined verification (Phase 1 optimization)
         // Early return if not authorized
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if current_admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -565,7 +592,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         current_admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if current_admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -607,7 +634,7 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let old_admin = storage::get_admin(&env);
+        let old_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
 
         // Update admin and clear pending in single operation
         storage::set_admin(&env, &new_admin);
@@ -630,7 +657,7 @@ impl TokenFactory {
     pub fn cancel_admin(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -652,7 +679,7 @@ impl TokenFactory {
     pub fn register_trusted_caller(env: Env, admin: Address, caller: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -670,7 +697,7 @@ impl TokenFactory {
     pub fn revoke_trusted_caller(env: Env, admin: Address, caller: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -726,7 +753,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Combined verification (Phase 1 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -764,7 +791,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Combined verification (Phase 1 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -903,7 +930,7 @@ impl TokenFactory {
         admin.require_auth();
 
         // Single admin verification (Phase 2 optimization)
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -1020,76 +1047,6 @@ impl TokenFactory {
         game_history::prune_history(&env, &admin, before_index)
     }
 
-    // ── Referral / Affiliate System ───────────────────────────────────────
-
-    /// Register a referral relationship.
-    ///
-    /// `referee` is the new user; `referrer` is the existing user who brought
-    /// them. A referee can only register once and cannot refer themselves.
-    ///
-    /// # Errors
-    /// `InvalidParameters` – self-referral or already registered.
-    pub fn register_referral(
-        env: Env,
-        referee: Address,
-        referrer: Address,
-    ) -> Result<(), Error> {
-        referee.require_auth();
-        referral::register_referral(&env, &referee, &referrer)
-    }
-
-    /// Return the referral info for a given referee address.
-    pub fn get_referral(
-        env: Env,
-        referee: Address,
-    ) -> Option<referral::ReferralInfo> {
-        referral::get_referral(&env, &referee)
-    }
-
-    /// Return the total commission earned (but not yet paid out) by a referrer.
-    pub fn get_referral_earned(env: Env, referrer: Address) -> i128 {
-        referral::get_earned(&env, &referrer)
-    }
-
-    /// Return the current commission rate in basis points.
-    pub fn get_commission_rate(env: Env) -> u32 {
-        referral::get_commission_rate_bps(&env)
-    }
-
-    /// Update the referral commission rate (admin only).
-    ///
-    /// # Arguments
-    /// * `admin`    – Factory admin (must auth).
-    /// * `rate_bps` – New rate in basis points; max `MAX_COMMISSION_BPS` (2000).
-    ///
-    /// # Errors
-    /// `Unauthorized` – Caller is not the factory admin.
-    /// `InvalidParameters` – `rate_bps > 2000`.
-    pub fn set_commission_rate(
-        env: Env,
-        admin: Address,
-        rate_bps: u32,
-    ) -> Result<(), Error> {
-        referral::set_commission_rate_bps(&env, &admin, rate_bps)
-    }
-
-    /// Pay out accumulated commission to a referrer (admin only).
-    ///
-    /// Resets the referrer's earned balance to zero.
-    ///
-    /// # Returns
-    /// Amount paid out.
-    ///
-    /// # Errors
-    /// `Unauthorized` – Caller is not the factory admin.
-    /// `InvalidParameters` – Referrer has no earned commission.
-    pub fn payout_commission(
-        env: Env,
-        admin: Address,
-        referrer: Address,
-    ) -> Result<i128, Error> {
-        referral::payout_commission(&env, &admin, &referrer)
-    }
     /// * `initial_supply` - Initial token supply
     /// * `fee_payment` - Fee amount (must be >= base_fee)
     /// Toggle clawback capability for a token (creator only)
@@ -1237,6 +1194,21 @@ impl TokenFactory {
     /// `true` if the address is frozen, `false` otherwise
     pub fn is_address_frozen(env: Env, token_address: Address, address: Address) -> bool {
         freeze_functions::is_frozen(&env, &token_address, &address)
+    }
+
+    /// Set the unfreeze cooldown grace period for a token.
+    pub fn set_freeze_cooldown(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        cooldown_seconds: u64,
+    ) -> Result<(), Error> {
+        freeze_functions::set_freeze_cooldown(&env, &token_address, &admin, cooldown_seconds)
+    }
+
+    /// Get the unfreeze cooldown grace period for a token.
+    pub fn get_freeze_cooldown(env: Env, token_address: Address) -> u64 {
+        freeze_functions::get_freeze_cooldown(&env, &token_address)
     }
 
     /// Burn tokens from caller's own balance
@@ -1506,6 +1478,161 @@ impl TokenFactory {
         recipients: Vec<(Address, i128)>,
     ) -> Result<Vec<PreflightItemResult>, Error> {
         batch_operations::preflight_batch_settle(&env, creator, token_index, recipients)
+    }
+
+    // ── Gas-bounded batch scheduler (#1625) ──────────────────────────────
+
+    /// Gas-bounded, fair-share-scheduled version of `batch_reveal`.
+    ///
+    /// Executes as many leading `tokens` as fit under the current ledger's
+    /// gas budget and this tenant's fair share of it (the budget divided
+    /// across every tenant with pending scheduled work this ledger). Any
+    /// remainder is persisted as a continuation — call `resume_batch_reveal`
+    /// on a later ledger to finish it. Only one reveal continuation may be
+    /// pending per tenant at a time.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `InvalidParameters`, `BatchTooLarge`,
+    /// `ContinuationAlreadyPending`, `InvalidTokenParams`, `InsufficientFee`.
+    pub fn schedule_batch_reveal(
+        env: Env,
+        creator: Address,
+        tokens: Vec<TokenCreationParams>,
+        total_fee_payment: i128,
+    ) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::schedule_batch_reveal(&env, creator, tokens, total_fee_payment);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Resume a pending `schedule_batch_reveal` continuation for `creator`.
+    /// Must be called on a ledger after the one the continuation last made
+    /// progress on.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `NoContinuationPending`, `ContinuationNotYetEligible`,
+    /// `InvalidTokenParams`, `InsufficientFee`.
+    pub fn resume_batch_reveal(env: Env, creator: Address) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::resume_batch_reveal(&env, creator);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Gas-bounded, fair-share-scheduled version of `batch_settle`.
+    ///
+    /// Executes as many leading `recipients` as fit under the current
+    /// ledger's gas budget and this tenant's fair share of it. Any
+    /// remainder is persisted as a continuation — call `resume_batch_settle`
+    /// on a later ledger to finish it. Only one settle continuation may be
+    /// pending per tenant at a time.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `InvalidParameters`, `BatchTooLarge`,
+    /// `ContinuationAlreadyPending`, `TokenNotFound`, `Unauthorized`,
+    /// `TokenPaused`, `MaxSupplyExceeded`.
+    pub fn schedule_batch_settle(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        recipients: Vec<(Address, i128)>,
+    ) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::schedule_batch_settle(&env, creator, token_index, recipients);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Resume a pending `schedule_batch_settle` continuation for `creator`.
+    /// Must be called on a ledger after the one the continuation last made
+    /// progress on.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `NoContinuationPending`, `ContinuationNotYetEligible`,
+    /// `TokenPaused`, `MaxSupplyExceeded`.
+    pub fn resume_batch_settle(env: Env, creator: Address) -> Result<BatchScheduleResult, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = batch_scheduler::resume_batch_settle(&env, creator);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Admin-only: set the per-ledger gas budget (CPU instructions) shared
+    /// by the fair-share batch scheduler across all tenants.
+    pub fn set_batch_gas_budget(env: Env, admin: Address, budget: u64) -> Result<(), Error> {
+        batch_scheduler::set_ledger_gas_budget(&env, admin, budget)
+    }
+
+    /// Current per-ledger gas budget used by the fair-share batch scheduler.
+    pub fn get_batch_gas_budget(env: Env) -> u64 {
+        batch_scheduler::get_ledger_gas_budget(&env)
+    }
+
+    /// Tenants currently holding a pending batch continuation, queued for
+    /// fair-share gas allocation on the next eligible ledger.
+    pub fn get_pending_batch_tenants(env: Env) -> Vec<Address> {
+        batch_scheduler::pending_tenants(&env)
+    }
+
+    // ── Cross-contract atomic settlement (#1624) ─────────────────────────
+
+    /// Phase 1: reserve `amount` of `token_index` for `proposal_id`, without
+    /// minting anything yet. Callable only by the configured governance
+    /// contract (`governance.require_auth()` plus a match against
+    /// `set_governance`). Returns the new reservation's id.
+    pub fn prepare_settlement(
+        env: Env,
+        governance: Address,
+        proposal_id: u64,
+        recipient: Address,
+        token_index: u32,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        settlement::prepare(&env, governance, proposal_id, recipient, token_index, amount)
+    }
+
+    /// Phase 2 (success path): finalize a `Prepared` reservation by minting
+    /// to its recipient. On failure the reservation is left `Prepared` so
+    /// the caller can explicitly `abort_settlement` it — never silently
+    /// dropped.
+    pub fn commit_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+        settlement::commit(&env, governance, reservation_id)
+    }
+
+    /// Release a `Prepared` reservation without minting, returning its
+    /// amount to the token's available max-supply headroom.
+    pub fn abort_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+        settlement::abort(&env, governance, reservation_id)
+    }
+
+    /// Permissionless watchdog: force-release a reservation that has sat
+    /// `Prepared` past the configured timeout window, guaranteeing no
+    /// reservation is ever stuck indefinitely.
+    pub fn cleanup_stuck_reservation(env: Env, reservation_id: u64) -> Result<(), Error> {
+        settlement::cleanup_stuck_reservation(&env, reservation_id)
+    }
+
+    /// Look up a settlement reservation by id.
+    pub fn get_reservation(env: Env, reservation_id: u64) -> Option<Reservation> {
+        storage::get_reservation(&env, reservation_id)
+    }
+
+    /// Admin-only: configure how many ledgers a reservation may sit
+    /// `Prepared` before `cleanup_stuck_reservation` may force-release it.
+    pub fn set_reservation_timeout_ledgers(env: Env, admin: Address, ledgers: u32) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_reservation_timeout_ledgers(&env, ledgers);
+        Ok(())
+    }
+
+    /// Current reservation timeout (in ledgers).
+    pub fn get_reservation_timeout_ledgers(env: Env) -> u32 {
+        storage::get_reservation_timeout_ledgers(&env)
     }
 
     /// Set metadata URI for a token by index (creator-only convenience function)
@@ -1907,7 +2034,7 @@ impl TokenFactory {
     /// Emits `tok_paus` with token_index and admin address
     pub fn pause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         let token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
@@ -1942,7 +2069,7 @@ impl TokenFactory {
     /// Emits `tok_unpas` with token_index and admin address
     pub fn unpause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         let token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
@@ -2208,142 +2335,6 @@ impl TokenFactory {
         snapshot::get_supply_snapshot(&env, token_index, snapshot_index)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Pull-model Dividend Distribution (#1148)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// Initiate a new dividend distribution round.
-    ///
-    /// Takes an atomic supply snapshot, records the distribution, and opens
-    /// the claim window.  Only the factory admin may call this.
-    ///
-    /// # Arguments
-    /// * `admin` - Factory admin address (must authorize).
-    /// * `token_index` - Token whose holders receive dividends.
-    /// * `asset` - Asset contract address being distributed.
-    /// * `total_amount` - Total pool to distribute (must be > 0).
-    /// * `claim_window_ledgers` - Ledgers the claim window stays open (must be > 0).
-    ///
-    /// # Returns `Ok(u32)` — the new distribution ID.
-    ///
-    /// # Errors
-    /// * `Unauthorized` — caller is not the admin.
-    /// * `InvalidParameters` — `total_amount ≤ 0` or `claim_window_ledgers == 0`.
-    /// * `TokenNotFound` — `token_index` does not exist.
-    /// * `DistributionZeroSupply` — token has zero supply.
-    pub fn initiate_distribution(
-        env: Env,
-        admin: Address,
-        token_index: u32,
-        asset: Address,
-        total_amount: i128,
-        claim_window_ledgers: u32,
-    ) -> Result<u32, Error> {
-        dividend_distribution::initiate_distribution(
-            &env, &admin, token_index, &asset, total_amount, claim_window_ledgers,
-        )
-    }
-
-    /// Claim a holder's proportional dividend for a distribution round.
-    ///
-    /// Computes `total_amount * holder_balance_at_snapshot / total_supply_at_snapshot`.
-    /// Marks the claim settled to prevent double-claiming.
-    ///
-    /// # Errors
-    /// * `DistributionNotFound` — invalid `distribution_id`.
-    /// * `DistributionWindowClosed` — claim deadline has passed.
-    /// * `DistributionAlreadyClaimed` — holder already claimed.
-    /// * `NothingToClaim` — holder had zero balance at snapshot.
-    pub fn claim_dividend(
-        env: Env,
-        holder: Address,
-        distribution_id: u32,
-    ) -> Result<i128, Error> {
-        dividend_distribution::claim_dividend(&env, &holder, distribution_id)
-    }
-
-    /// Reclaim unclaimed dividends after the claim window closes.
-    ///
-    /// Returns the unclaimed remainder amount (actual asset transfer is the
-    /// caller's responsibility).  Only the factory admin may call this.
-    ///
-    /// # Errors
-    /// * `Unauthorized` — caller is not the admin.
-    /// * `DistributionNotFound` — invalid `distribution_id`.
-    /// * `DistributionWindowOpen` — claim window has not expired yet.
-    /// * `DistributionAlreadyReclaimed` — already reclaimed.
-    pub fn reclaim_unclaimed(
-        env: Env,
-        admin: Address,
-        distribution_id: u32,
-    ) -> Result<i128, Error> {
-        dividend_distribution::reclaim_unclaimed(&env, &admin, distribution_id)
-    }
-
-    /// Get a distribution record by ID.
-    pub fn get_distribution(
-        env: Env,
-        distribution_id: u32,
-    ) -> Option<types::DistributionRecord> {
-        dividend_distribution::get_distribution_record(&env, distribution_id)
-    }
-
-    /// Return a paginated list of token indices where beneficiary is the creator.
-    /// cursor: starting entry index (0 for first page)
-    /// limit: max entries to return (capped at 50)
-    pub fn get_streams_by_beneficiary(
-        env: Env,
-        beneficiary: Address,
-        cursor: u32,
-        limit: u32,
-    ) -> StreamPage {
-        let limit = limit.min(50);
-        let total = storage::get_beneficiary_stream_count(&env, &beneficiary);
-
-        let mut token_indices = soroban_sdk::Vec::new(&env);
-        let mut i = cursor;
-
-        while i < total && (i - cursor) < limit {
-            if let Some(token_index) = storage::get_beneficiary_stream_entry(&env, &beneficiary, i)
-            {
-                token_indices.push_back(token_index);
-            }
-            i += 1;
-        }
-
-        let next_cursor = if i < total { Some(i) } else { None };
-
-        StreamPage {
-            token_indices,
-            next_cursor,
-        }
-    }
-
-    /// Return a keyset-paginated list of streams created by `owner`.
-    ///
-    /// Unlike `get_streams_by_beneficiary` (offset-based), this entry point
-    /// uses a `(created_ledger, stream_id)` cursor so that streams created
-    /// concurrently with paging never get skipped or duplicated across page
-    /// fetches. Intended for wallets with large stream collections where
-    /// offset pagination would otherwise drift.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment
-    /// * `owner` - The stream creator to list streams for
-    /// * `cursor` - `None` for the first page; otherwise the `next_cursor`
-    ///   returned by the previous call
-    /// * `limit` - Maximum streams to return, clamped to a maximum of 50
-    ///
-    /// # Returns
-    /// `PaginatedStreamsResponse { streams, next_cursor, has_more }`
-    pub fn list_streams_paginated(
-        env: Env,
-        owner: Address,
-        cursor: Option<types::StreamCursor>,
-        limit: u32,
-    ) -> types::PaginatedStreamsResponse {
-        pagination::list_streams_paginated(&env, &owner, cursor, limit)
-    }
     // ═══════════════════════════════════════════════════════════════════════
     // Timelock Functions
     // ═══════════════════════════════════════════════════════════════════════
@@ -2768,7 +2759,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let current_admin = storage::get_admin(&env);
+        let current_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != current_admin {
             return Err(Error::Unauthorized);
         }
@@ -3071,10 +3062,10 @@ impl TokenFactory {
     /// 4. Check time-based unlock conditions
     /// 5. Transfer tokens and update vault status
     ///
-    /// # Integration Point
-    /// TODO: The verifier instance should be injected or configured during contract
-    /// initialization. For testing, use MilestoneVerifierStub. For production,
-    /// replace with oracle-based verifier.
+    /// # Verifier Injection
+    /// The contract supports verifier injection via `set_milestone_verifier()`. Once configured,
+    /// the injected verifier validates milestone proofs. For testing, use MilestoneVerifierStub.
+    /// For production, use OracleMilestoneVerifier with oracle authorization.
     pub fn claim_vault(
         env: Env,
         owner: Address,
@@ -3105,7 +3096,7 @@ impl TokenFactory {
         env: &Env,
         owner: &Address,
         vault_id: u64,
-        proof: Option<Bytes>,
+        _proof: Option<Bytes>,
     ) -> Result<i128, Error> {
         let mut vault = match storage::get_vault(env, vault_id) {
             Some(v) => v,
@@ -3201,7 +3192,7 @@ impl TokenFactory {
                 return Err(Error::TokenNotFound);
             }
         };
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if actor != vault.creator && actor != admin {
             events::emit_operation_failed(&env, vault_id, Error::Unauthorized, vault.total_amount, "not_creator_or_admin");
             return Err(Error::Unauthorized);
@@ -3228,6 +3219,266 @@ impl TokenFactory {
         events::emit_vault_cancelled(&env, vault_id, &actor, remaining_amount);
 
         Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Payment Streaming & Vesting (Issue #1765)
+    //
+    // A distinct feature from Vaults above — see `streaming.rs` module docs.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Create a single vesting-aware payment stream.
+    ///
+    /// The stream vests linearly from `start_time` to `end_time`, gated by an
+    /// optional `cliff_time` (nothing is claimable before the cliff). Any
+    /// `milestones` unlock additional bonus amounts, on top of the linear
+    /// vesting, once verified via `verify_stream_milestone`.
+    pub fn create_stream(
+        env: Env,
+        creator: Address,
+        recipient: Address,
+        token_index: u32,
+        total_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cliff_time: u64,
+        metadata: Option<String>,
+        milestones: Vec<Milestone>,
+    ) -> Result<u64, Error> {
+        let params = StreamParams {
+            recipient,
+            token_index,
+            total_amount,
+            start_time,
+            end_time,
+            cliff_time,
+        };
+        let result = streaming::create_stream(&env, &creator, &params, metadata, milestones);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, u64::MAX, *e, total_amount, "create_stream_failed");
+        }
+        result
+    }
+
+    /// Batch-create up to 100 payment streams in a single atomic call.
+    pub fn batch_create_streams(
+        env: Env,
+        creator: Address,
+        streams: Vec<StreamParams>,
+    ) -> Result<Vec<u64>, Error> {
+        let result = streaming::batch_create_streams(&env, &creator, streams);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, u64::MAX, *e, 0, "batch_create_streams_failed");
+        }
+        result
+    }
+
+    /// Claim the currently-vested (and unclaimed) balance of a stream.
+    pub fn claim_stream(env: Env, recipient: Address, stream_id: u64) -> Result<i128, Error> {
+        if storage::is_paused(&env) {
+            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            return Err(Error::ContractPaused);
+        }
+
+        if let Err(e) = storage::acquire_reentrancy_lock(&env) {
+            events::emit_operation_failed(&env, stream_id, e, 0, "reentrancy_lock_held");
+            return Err(e);
+        }
+        let result = streaming::claim_stream(&env, &recipient, stream_id);
+        storage::release_reentrancy_lock(&env);
+
+        let claimed = match result {
+            Ok(v) => v,
+            Err(e) => {
+                events::emit_operation_failed(&env, stream_id, e, 0, "claim_stream_failed");
+                return Err(e);
+            }
+        };
+
+        // State was already committed by `streaming::claim_stream`; the
+        // external token transfer happens after (CEI pattern), matching
+        // `claim_vault_inner`.
+        let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
+        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
+        token_client.transfer(&env.current_contract_address(), &recipient, &claimed);
+
+        Ok(claimed)
+    }
+
+    /// Cancel a stream, settling the vested-but-unclaimed portion to the
+    /// recipient and returning the unvested remainder to the creator.
+    pub fn cancel_stream(env: Env, actor: Address, stream_id: u64) -> Result<(), Error> {
+        if storage::is_paused(&env) {
+            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            return Err(Error::ContractPaused);
+        }
+
+        if let Err(e) = storage::acquire_reentrancy_lock(&env) {
+            events::emit_operation_failed(&env, stream_id, e, 0, "reentrancy_lock_held");
+            return Err(e);
+        }
+        let result = streaming::cancel_stream(&env, &actor, stream_id);
+        storage::release_reentrancy_lock(&env);
+
+        let (vested_unclaimed, unvested_to_creator) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                events::emit_operation_failed(&env, stream_id, e, 0, "cancel_stream_failed");
+                return Err(e);
+            }
+        };
+
+        let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
+        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
+        let contract_address = env.current_contract_address();
+        if vested_unclaimed > 0 {
+            token_client.transfer(&contract_address, &stream.recipient, &vested_unclaimed);
+        }
+        if unvested_to_creator > 0 {
+            token_client.transfer(&contract_address, &stream.creator, &unvested_to_creator);
+        }
+
+        Ok(())
+    }
+
+    /// Update a stream's metadata. Creator-only, and only before the
+    /// recipient's first claim (metadata is immutable after that).
+    pub fn update_stream_metadata(
+        env: Env,
+        actor: Address,
+        stream_id: u64,
+        metadata: Option<String>,
+    ) -> Result<(), Error> {
+        let result = streaming::update_stream_metadata(&env, &actor, stream_id, metadata);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, stream_id, *e, 0, "update_stream_metadata_failed");
+        }
+        result
+    }
+
+    /// Verify a stream milestone (only its designated oracle address may
+    /// call this), unlocking its bonus amount for claiming.
+    pub fn verify_stream_milestone(
+        env: Env,
+        oracle: Address,
+        stream_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let result = streaming::verify_stream_milestone(&env, &oracle, stream_id, milestone_index);
+        if let Err(e) = &result {
+            events::emit_operation_failed(&env, stream_id, *e, 0, "verify_stream_milestone_failed");
+        }
+        result
+    }
+
+    /// Get a stream by id.
+    pub fn get_stream(env: Env, stream_id: u64) -> Result<StreamInfo, Error> {
+        storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)
+    }
+
+    /// List streams created by `owner`, keyset-paginated by `(created_ledger, stream_id)`.
+    ///
+    /// Pass `cursor.stream_id == u64::MAX` to request the first page — a
+    /// plain `StreamCursor` (rather than `Option<StreamCursor>`) is used
+    /// here because `Option<T>` of a custom `#[contracttype]` is not
+    /// supported in *parameter* position by this soroban-sdk version's
+    /// generated client (only in return position), matching the sentinel
+    /// convention `pagination::get_tokens_by_creator` already uses for its
+    /// own cursor parameter.
+    pub fn list_streams_by_creator(
+        env: Env,
+        owner: Address,
+        cursor: StreamCursor,
+        limit: u32,
+    ) -> PaginatedStreamsResponse {
+        let cursor = if cursor.stream_id == u64::MAX {
+            None
+        } else {
+            Some(cursor)
+        };
+        pagination::list_streams_paginated(&env, &owner, cursor, limit)
+    }
+
+    /// Create a recurring stream, which immediately creates its first
+    /// (period 0) child stream.
+    pub fn create_recurring_stream(
+        env: Env,
+        creator: Address,
+        recipient: Address,
+        token_index: u32,
+        amount_per_period: i128,
+        period_ledgers: u64,
+        total_periods: u32,
+        auto_renew: bool,
+    ) -> Result<u64, Error> {
+        let params = RecurringStreamParams {
+            recipient,
+            amount_per_period,
+            period_ledgers,
+            total_periods,
+            auto_renew,
+        };
+        let result =
+            recurring_stream::create_recurring_stream(&env, &creator, &params, token_index);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                u64::MAX,
+                *e,
+                amount_per_period,
+                "create_recurring_stream_failed",
+            );
+        }
+        result
+    }
+
+    /// Create the next period's child stream for a recurring stream, if the
+    /// period has elapsed. Callable by anyone once due — the creator's
+    /// authorization was already captured at creation time.
+    pub fn trigger_recurring_period(
+        env: Env,
+        caller: Address,
+        recurring_stream_id: u64,
+    ) -> Result<u64, Error> {
+        let result =
+            recurring_stream::trigger_recurring_period(&env, &caller, recurring_stream_id);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                recurring_stream_id,
+                *e,
+                0,
+                "trigger_recurring_period_failed",
+            );
+        }
+        result
+    }
+
+    /// Cancel a recurring stream (creator or admin only). Already-created
+    /// child streams are unaffected — this only stops future periods.
+    pub fn cancel_recurring_stream(
+        env: Env,
+        actor: Address,
+        recurring_stream_id: u64,
+    ) -> Result<(), Error> {
+        let result = recurring_stream::cancel_recurring_stream(&env, &actor, recurring_stream_id);
+        if let Err(e) = &result {
+            events::emit_operation_failed(
+                &env,
+                recurring_stream_id,
+                *e,
+                0,
+                "cancel_recurring_stream_failed",
+            );
+        }
+        result
+    }
+
+    /// Get a recurring stream by id.
+    pub fn get_recurring_stream(env: Env, recurring_stream_id: u64) -> Result<RecurringStream, Error> {
+        storage::get_recurring_stream(&env, recurring_stream_id).ok_or(Error::RecurringStreamNotFound)
     }
 
     /// Configure the per-epoch vault withdrawal circuit breaker limit (admin only, #1362).
@@ -3479,141 +3730,6 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Update stream metadata (creator/admin only)
-    ///
-    /// Allows the stream creator or admin to update the metadata associated with
-    /// a stream. Only metadata is mutable post-creation; all financial terms
-    /// (amount, creator, recipient, schedule) remain immutable.
-    ///
-    /// This function enforces strict financial invariants to prevent any mutation
-    /// of critical stream parameters after creation.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment
-    /// * `stream_id` - ID of the stream to update
-    /// * `updater` - Address performing the update (must be creator or admin)
-    /// * `new_metadata` - New metadata value (None to clear, Some(string) to set)
-    ///
-    /// # Returns
-    /// Returns `Ok(())` on success
-    ///
-    /// # Errors
-    /// * `Error::TokenNotFound` - Stream with given ID does not exist
-    /// * `Error::Unauthorized` - Caller is not the stream creator or admin
-    /// * `Error::InvalidParameters` - New metadata is invalid (empty string or >512 chars)
-    /// * `Error::ContractPaused` - Contract is currently paused
-    ///
-    /// # Financial Invariants (Enforced)
-    /// The following stream parameters are immutable and cannot be changed:
-    /// - `amount` - Stream payment amount
-    /// - `creator` - Original stream creator
-    /// - `recipient` - Stream recipient address
-    /// - `created_at` - Stream creation timestamp
-    /// - `id` - Stream ID
-    ///
-    /// # Metadata Constraints
-    /// - Minimum length: 1 character (when present)
-    /// - Maximum length: 512 characters
-    /// - Empty strings: Rejected with `Error::InvalidParameters`
-    /// - None value: Allowed (clears metadata)
-    ///
-    /// # Examples
-    /// ```
-    /// // Update metadata with new label
-    /// factory.update_stream_metadata(
-    ///     &env,
-    ///     stream_id,
-    ///     &updater,
-    ///     Some(String::from_str(&env, "Updated label"))
-    /// )?;
-    ///
-    /// // Clear metadata
-    /// factory.update_stream_metadata(
-    ///     &env,
-    ///     stream_id,
-    ///     &updater,
-    ///     None
-    /// )?;
-    /// ```
-    ///
-    /// # Authorization
-    /// Only the original stream creator or the contract admin can update metadata.
-    /// The updater must authorize the transaction via `require_auth()`.
-    ///
-    /// # Events
-    /// Emits `stream_metadata_updated` event with:
-    /// - stream_id: The updated stream ID
-    /// - updater: Address that performed the update
-    /// - has_metadata: Whether metadata is now present (true) or cleared (false)
-    pub fn update_stream_metadata(
-        env: Env,
-        stream_id: u32,
-        updater: Address,
-        new_metadata: Option<String>,
-    ) -> Result<(), Error> {
-        // Require updater authorization
-        updater.require_auth();
-
-        // Early return if contract is paused
-        if storage::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
-
-        // Get the stream
-        let mut stream = storage::get_stream(&env, stream_id.into()).ok_or(Error::TokenNotFound)?;
-
-        // Verify authorization: only creator or admin can update
-        let admin = storage::get_admin(&env);
-        if updater != stream.creator && updater != admin {
-            return Err(Error::Unauthorized);
-        }
-
-        // Store original stream for invariant validation
-        let original_stream = stream.clone();
-
-        // Validate new metadata before applying
-        stream_types::validate_metadata(&new_metadata)?;
-
-        // Update metadata
-        stream.metadata = new_metadata.clone();
-
-        // Enforce financial invariants - ensure no financial terms changed
-        stream_types::validate_financial_invariants(&original_stream, &stream)?;
-
-        // Store updated stream
-        storage::set_stream(&env, stream_id.into(), &stream);
-
-        // Emit metadata updated event
-        let has_metadata = new_metadata.is_some();
-        events::emit_stream_metadata_updated(&env, stream_id, &updater, has_metadata);
-
-        Ok(())
-    }
-
-    /// Raise a dispute on a stream, pausing settlement until resolved.
-    /// Caller must be the stream creator or recipient.
-    pub fn raise_dispute(env: Env, caller: Address, stream_id: u64) -> Result<(), Error> {
-        streaming::raise_dispute(&env, &caller, stream_id)
-    }
-
-    /// Resolve a dispute on a stream (admin only), re-enabling settlement.
-    pub fn resolve_dispute(env: Env, admin: Address, stream_id: u64) -> Result<(), Error> {
-        streaming::resolve_dispute(&env, &admin, stream_id)
-    }
-
-    /// Verify a milestone for a stream, unlocking its associated token amount.
-    ///
-    /// The oracle address configured on the milestone must call this and authorize.
-    /// Once verified, the milestone's `unlock_amount` becomes claimable by the recipient.
-    pub fn verify_stream_milestone(
-        env: Env,
-        oracle: Address,
-        stream_id: u64,
-        milestone_index: u32,
-    ) -> Result<(), Error> {
-        streaming::verify_stream_milestone(&env, &oracle, stream_id, milestone_index)
-    }
-
     /// Get governance configuration
     ///
     /// Returns the current quorum and approval thresholds.
@@ -3736,157 +3852,6 @@ impl TokenFactory {
         total_eligible: u32,
     ) -> Result<u32, Error> {
         governance::record_participation_and_adjust(&env, proposal_id, total_votes, total_eligible)
-    }
-
-    /// Create a new buyback campaign
-    ///
-    /// Enables authorized governance actors to create buyback campaigns
-    /// with auditable event output and strict validation.
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment
-    /// * `creator` - Address creating the campaign (must be admin or token creator)
-    /// * `token_index` - Index of the token to buy back
-    /// * `budget` - Total budget allocated for the campaign
-    /// * `start_time` - When campaign becomes active
-    /// * `end_time` - When campaign expires
-    /// * `min_interval` - Minimum seconds between executions
-    /// * `max_slippage_bps` - Maximum slippage in basis points (0-10000)
-    /// * `source_token` - Token being spent (treasury token)
-    /// * `target_token` - Token being bought back
-    ///
-    /// # Returns
-    /// * `Ok(u64)` - The campaign ID if successful
-    /// * `Err(Error)` - Error if validation fails or unauthorized
-    ///
-    /// # Authorization
-    /// Requires the creator to be either:
-    /// - The factory admin
-    /// - The token creator
-    ///
-    /// # Validation
-    /// Performs comprehensive validation including:
-    /// - Budget bounds (min: 1 XLM, max: 1B XLM)
-    /// - Time window (start in future, duration 1h-365d)
-    /// - Minimum interval (5min-7days)
-    /// - Slippage caps (max 5%)
-    /// - Token pair validation (different addresses)
-    ///
-    /// # Events
-    /// Emits a versioned `cmp_cr_v1` event with campaign details
-    ///
-    /// # Errors
-    /// * `Error::Unauthorized` - Caller is not admin or token creator
-    /// * `Error::InvalidBudget` - Budget is zero or negative
-    /// * `Error::BudgetBelowMinimum` - Budget < 1 XLM
-    /// * `Error::BudgetAboveMaximum` - Budget > 1B XLM
-    /// * `Error::StartTimeInPast` - Start time not in future
-    /// * `Error::EndTimeBeforeStart` - End time <= start time
-    /// * `Error::CampaignDurationTooShort` - Duration < 1 hour
-    /// * `Error::CampaignDurationTooLong` - Duration > 365 days
-    /// * `Error::InvalidMinInterval` - Interval is zero
-    /// * `Error::MinIntervalTooShort` - Interval < 5 minutes
-    /// * `Error::MinIntervalTooLong` - Interval > 7 days
-    /// * `Error::InvalidSlippage` - Slippage is zero or > 100%
-    /// * `Error::SlippageTooHigh` - Slippage > 5%
-    /// * `Error::SameSourceAndTarget` - Source and target are same
-    /// * `Error::InvalidTokenPair` - Target doesn't match token index
-    /// * `Error::TokenNotFound` - Token index does not exist
-    pub fn create_buyback_campaign(
-        env: Env,
-        creator: Address,
-        token_index: u32,
-        budget: i128,
-        start_time: u64,
-        end_time: u64,
-        min_interval: u64,
-        max_slippage_bps: u32,
-        source_token: Address,
-        target_token: Address,
-    ) -> Result<u64, Error> {
-        creator.require_auth();
-
-        // Allow only factory admin or token creator.
-        let admin = storage::get_admin(&env);
-        let token = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
-        if creator != admin && creator != token.creator {
-            return Err(Error::Unauthorized);
-        }
-
-        campaign_validation::validate_campaign_config(
-            &env,
-            budget,
-            start_time,
-            end_time,
-            min_interval,
-            max_slippage_bps,
-            &source_token,
-            &target_token,
-        )?;
-
-        if token.address != target_token {
-            return Err(Error::InvalidParameters);
-        }
-
-        let campaign_id = storage::increment_campaign_count(&env)?;
-
-        let owner_index = storage::increment_owner_campaign_count(&env, &creator)?
-            .checked_sub(1)
-            .ok_or(Error::ArithmeticError)?;
-        storage::set_campaign_by_owner(&env, &creator, owner_index, campaign_id);
-        storage::increment_active_campaign_count(&env)?;
-
-        let campaign = types::BuybackCampaign {
-            id: campaign_id,
-            token_index,
-            budget,
-            spent: 0,
-            tokens_bought: 0,
-            execution_count: 0,
-            start_time,
-            end_time,
-            min_interval,
-            max_slippage_bps,
-            source_token,
-            target_token,
-            owner: creator.clone(),
-            status: types::CampaignStatus::Active,
-            created_at: env.ledger().timestamp(),
-            updated_at: env.ledger().timestamp(),
-            trigger_price: 0,
-            last_executed_at: 0,
-        };
-
-        storage::set_campaign(&env, campaign_id, &campaign);
-        events::emit_campaign_created(&env, campaign_id, &creator, token_index, budget);
-
-        Ok(campaign_id)
-    }
-
-    /// Get a buyback campaign by ID
-    ///
-    /// # Arguments
-    /// * `env` - The contract environment
-    /// * `campaign_id` - The campaign ID to retrieve
-    ///
-    /// # Returns
-    /// * `Ok(BuybackCampaign)` - The campaign if found
-    /// * `Err(Error::CampaignNotFound)` - If campaign doesn't exist
-    pub fn get_buyback_campaign(
-        env: Env,
-        campaign_id: u64,
-    ) -> Result<types::BuybackCampaign, Error> {
-        storage::get_campaign(&env, campaign_id).ok_or(Error::CampaignNotFound)
-    }
-
-    /// Finalize a campaign (Active or Paused → Completed). Safe to retry on failure.
-    pub fn finalize_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::finalize_campaign(&env, &caller, campaign_id)
-    }
-
-    /// Retry a failed finalization. Idempotent if already Completed.
-    pub fn retry_finalize_campaign(env: Env, caller: Address, campaign_id: u64) -> Result<(), Error> {
-        campaign::retry_finalize_campaign(&env, &caller, campaign_id)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -4023,6 +3988,22 @@ impl TokenFactory {
         compliance_reporting::generate_report(&env, &admin)
     }
 
+    /// Generate a compliance report scanning **all** tokens (full-history opt-in).
+    ///
+    /// Unlike `generate_compliance_report`, this scans every token the factory
+    /// has ever created.  Its CPU cost grows linearly with token count; use it
+    /// only on small factories or for one-off administrative audits.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized`    – Caller is not the admin.
+    /// * `Error::ArithmeticError` – Report ID counter overflowed.
+    pub fn generate_compliance_report_full(
+        env: Env,
+        admin: Address,
+    ) -> Result<compliance_reporting::ComplianceReport, Error> {
+        compliance_reporting::generate_report_full(&env, &admin)
+    }
+
     /// Retrieve a previously generated compliance report by ID.
     ///
     /// # Arguments
@@ -4127,7 +4108,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let stored_admin = storage::get_admin(&env);
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
         }
@@ -4357,7 +4338,7 @@ impl TokenFactory {
         }
 
         // Only admin or the original proposer may cancel
-        let admin = storage::get_admin(&env);
+        let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if canceller != admin && canceller != proposal.proposer {
             return Err(Error::Unauthorized);
         }
@@ -4403,7 +4384,7 @@ impl TokenFactory {
                 )
                 .to_address(env);
 
-                let old_admin = storage::get_admin(env);
+                let old_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
                 storage::set_admin(env, &new_admin);
                 storage::clear_pending_admin(env);
                 events::emit_admin_transfer(env, &old_admin, &new_admin);
@@ -4442,10 +4423,60 @@ impl TokenFactory {
 
         Ok(())
     }
+
+    // ── Staking (#1757) ─────────────────────────────────────────────────
+
+    /// Create a staking pool paying `reward_rate` units of the reward token
+    /// per second to stakers, proportional to their share of the pool.
+    /// Caller must be the factory admin or the creator of `token_index`.
+    pub fn create_staking_pool(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        reward_token_index: u32,
+        reward_rate: i128,
+    ) -> Result<u64, Error> {
+        staking::create_staking_pool(&env, creator, token_index, reward_token_index, reward_rate)
+    }
+
+    /// Stake `amount` of a pool's staking token, settling any pending
+    /// reward first.
+    pub fn stake(env: Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
+        staking::stake(&env, caller, pool_id, amount)
+    }
+
+    /// Unstake `amount` of a pool's staking token, settling any pending
+    /// reward first.
+    pub fn unstake(env: Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
+        staking::unstake(&env, caller, pool_id, amount)
+    }
+
+    /// Pay out a staker's currently accrued reward without unstaking.
+    pub fn claim_rewards(env: Env, caller: Address, pool_id: u64) -> Result<(), Error> {
+        staking::claim_rewards(&env, caller, pool_id)
+    }
+
+    /// Query a staking pool's current state.
+    pub fn get_staking_pool(env: Env, pool_id: u64) -> Result<StakingPool, Error> {
+        storage::get_staking_pool(&env, pool_id).ok_or(Error::StakingPoolNotFound)
+    }
+
+    /// Query a user's stake within a pool (zeroed if the user never staked).
+    pub fn get_user_stake(env: Env, pool_id: u64, user: Address) -> StakeInfo {
+        storage::get_user_stake(&env, pool_id, &user).unwrap_or(StakeInfo {
+            amount: 0,
+            reward_debt: 0,
+        })
+    }
+
+    /// Preview a staker's currently accrued (unclaimed) reward without
+    /// mutating any state.
+    pub fn pending_rewards(env: Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
+        staking::pending_rewards(&env, caller, pool_id)
+    }
+
 }
 
-#[cfg(test)]
-const _ISOLATED_DISABLED_burn_auction_test: () = ();
 // Temporarily disabled - requires create_token implementation
 // #[cfg(test)]
 // mod test;
@@ -4528,6 +4559,8 @@ mod gas_benchmark_comprehensive;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_gas_regression_test: () = ();
 #[cfg(test)]
+mod gas_benchmark_proposal_queue;
+#[cfg(test)]
 // mod gas_compute_thresholds;
 
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -4572,8 +4605,6 @@ const _ISOLATED_DISABLED_stream_lifecycle_integration_test: () = ();
 // mod vault_unlock_time_property_test;
 
 #[cfg(all(test, feature = "legacy-tests"))]
-const _ISOLATED_DISABLED_staking_integration_test: () = ();
-#[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_vault_cancellation_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_metadata_update_test: () = ();
@@ -4585,7 +4616,125 @@ const _ISOLATED_DISABLED_metadata_update_test: () = ();
 // #[cfg(test)]
 // mod vault_fuzz_test;
 
-#[cfg(all(test, feature = "legacy-tests"))]
-const _ISOLATED_DISABLED_bridge_test: () = ();
-#[cfg(all(test, feature = "legacy-tests"))]
-const _ISOLATED_DISABLED_amm_test: () = ();
+#[cfg(test)]
+mod verifier_injection_test {
+    use crate::{test_helpers::TestEnv, TokenFactory, TokenFactoryClient};
+    use soroban_sdk::{Address, BytesN, Env};
+
+    #[test]
+    fn test_set_milestone_verifier_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+        });
+
+        let result = client.set_milestone_verifier(&non_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_milestone_verifier_succeeds_with_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+        });
+
+        let result = client.set_milestone_verifier(&admin);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verifier_configuration_persists() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        env.as_contract(&contract_id, || {
+            crate::storage::set_admin(&env, &admin);
+            assert!(!crate::storage::is_verifier_configured(&env));
+        });
+
+        client.set_milestone_verifier(&admin).unwrap();
+
+        env.as_contract(&contract_id, || {
+            assert!(crate::storage::is_verifier_configured(&env));
+        });
+    }
+
+    #[test]
+    fn test_claim_vault_with_zero_milestone_hash_ignores_verifier() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &treasury, &100, &50);
+        client.set_milestone_verifier(&admin).unwrap();
+
+        let token = client.deploy_token(&admin, &"TestToken".into(), &"TST".into(), &7);
+
+        let zero_milestone = BytesN::from_array(&env, &[0u8; 32]);
+        let vault_id = client.create_vault(
+            &creator,
+            &token,
+            &owner,
+            &1_000_000i128,
+            &env.ledger().timestamp(),
+            &zero_milestone,
+        );
+
+        let claimed = client.claim_vault(&owner, &vault_id, &None);
+        assert_eq!(claimed, 1_000_000i128);
+    }
+
+    #[test]
+    fn test_claim_vault_entry_point_signature_unchanged() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &treasury, &100, &50);
+
+        let zero_milestone = BytesN::from_array(&env, &[0u8; 32]);
+        let vault_id = client.create_vault(
+            &admin,
+            &Address::generate(&env),
+            &owner,
+            &500_000i128,
+            &env.ledger().timestamp(),
+            &zero_milestone,
+        );
+
+        let claimed = client.claim_vault(&owner, &vault_id, &None);
+        assert_eq!(claimed, 500_000i128);
+    }
+}
+

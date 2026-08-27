@@ -114,7 +114,7 @@ fn integration_test_fee_change_full_lifecycle() {
     let (env, cid, admin, _) = setup();
 
     let (base, meta) = env.as_contract(&cid, || {
-        (storage::get_base_fee(&env), storage::get_metadata_fee(&env))
+        (storage::get_base_fee(&env), storage::get_metadata_fee(&env).unwrap())
     });
     assert_eq!(base, 1_000_000);
     assert_eq!(meta, 500_000);
@@ -126,7 +126,7 @@ fn integration_test_fee_change_full_lifecycle() {
     finalize_queue_execute(&env, &cid, id);
 
     let (new_base, new_meta) = env.as_contract(&cid, || {
-        (storage::get_base_fee(&env), storage::get_metadata_fee(&env))
+        (storage::get_base_fee(&env), storage::get_metadata_fee(&env).unwrap())
     });
     assert_eq!(new_base, 2_000_000);
     assert_eq!(new_meta, 750_000);
@@ -170,7 +170,7 @@ fn integration_test_treasury_change_via_governance() {
     vote_in_window(&env, &cid, id, 10, 3);
     finalize_queue_execute(&env, &cid, id);
 
-    let treasury = env.as_contract(&cid, || storage::get_treasury(&env));
+    let treasury = env.as_contract(&cid, || storage::get_treasury(&env).unwrap());
     assert_eq!(treasury, new_treasury);
 }
 
@@ -196,7 +196,7 @@ fn integration_test_proposal_fails_quorum_not_met() {
     let queue_result = env.as_contract(&cid, || queue_proposal(&env, id));
     assert!(queue_result.is_err(), "cannot queue a failed proposal");
 
-    let base = env.as_contract(&cid, || storage::get_base_fee(&env));
+    let base = env.as_contract(&cid, || storage::get_base_fee(&env).unwrap());
     assert_eq!(base, 1_000_000);
 }
 
@@ -224,7 +224,7 @@ fn integration_test_proposal_defeated_approval_not_met() {
     let queue_result = env.as_contract(&cid, || queue_proposal(&env, id));
     assert!(queue_result.is_err());
 
-    let base = env.as_contract(&cid, || storage::get_base_fee(&env));
+    let base = env.as_contract(&cid, || storage::get_base_fee(&env).unwrap());
     assert_eq!(base, 1_000_000);
 }
 
@@ -280,7 +280,7 @@ fn integration_test_governance_config_update_affects_proposals() {
     let state = env.as_contract(&cid, || get_proposal(&env, id).unwrap().state);
     assert_eq!(state, ProposalState::Failed);
 
-    let base = env.as_contract(&cid, || storage::get_base_fee(&env));
+    let base = env.as_contract(&cid, || storage::get_base_fee(&env).unwrap());
     assert_eq!(base, 1_000_000);
 }
 

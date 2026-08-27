@@ -12,6 +12,23 @@
 //! cleared (removed) once the entry is dequeued or executed.  The queue
 //! scan is O(n) over live slots, which is acceptable for governance queues
 //! that are expected to hold at most a few dozen entries at any time.
+//!
+//! # Performance Characteristics
+//! - `enqueue_proposal`: O(n) – scans queue to check for duplicates
+//! - `peek_next`: O(n) – full scan to find highest-priority ready entry
+//! - `dequeue_next`: O(n) – full scan to find and remove highest-priority ready entry
+//! - `remove_from_queue`: O(n) – linear search by proposal_id
+//! - `queue_len`: O(n) – counts live (non-cleared) slots
+//!
+//! The O(n) cost is acceptable because:
+//! 1. Governance queues typically have ≤50 proposals pending at any time
+//! 2. Timelock delays (hours/days) mean queue operations are infrequent
+//! 3. Priority ordering requires comparing all ready entries anyway
+//!
+//! Future optimization opportunities (if queue size grows):
+//! 1. Maintain a separate index mapping proposal_id → slot for O(1) duplicate detection
+//! 2. Keep a "head" pointer for high-priority entries to skip full scans
+//! 3. Use a binary heap-style structure (requires custom serialization)
 
 use crate::events;
 use crate::storage;

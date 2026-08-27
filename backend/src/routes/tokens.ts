@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { performance } from "perf_hooks";
+import axios from "axios";
 import { prisma } from "../lib/prisma";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -85,7 +86,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       return res.status(400).json({
         success: false,
         error: "Invalid parameters",
-        details: validationResult.error.errors,
+        details: validationResult.error.issues,
       });
     }
 
@@ -376,7 +377,7 @@ router.post(
         errorResponse({
           code: "VALIDATION_ERROR",
           message: "Invalid request body",
-          details: parsed.error.errors,
+          details: parsed.error.issues,
         })
       );
     }

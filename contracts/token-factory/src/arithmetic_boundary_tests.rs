@@ -389,8 +389,8 @@ mod integration_boundary_tests {
         });
 
         // Fee calculation: base_fee + metadata_fee should overflow
-        let base = env.as_contract(&contract_id, || storage::get_base_fee(&env));
-        let meta = env.as_contract(&contract_id, || storage::get_metadata_fee(&env));
+        let base = env.as_contract(&contract_id, || storage::get_base_fee(&env).unwrap());
+        let meta = env.as_contract(&contract_id, || storage::get_metadata_fee(&env).unwrap());
 
         let total = base.checked_add(meta);
         assert_eq!(total, None); // Overflow

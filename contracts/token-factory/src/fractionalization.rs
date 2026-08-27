@@ -1,70 +1,93 @@
-use soroban_sdk::{token, Address, BytesN, Env, String};
+//! Asset Fractionalization Module
+//!
+//! Locks a unique external asset (identified by its `asset_contract` SAC
+//! address plus a caller-supplied `asset_id`) in this contract and mints
+//! fractional ownership shares. Locking is performed via the standard
+//! `soroban_sdk::token` client against the external asset contract, mirroring
+//! the pattern already used by `vault.rs` / `create_vault` for real token
+//! custody.
+//!
+//! Fractional shares are tracked in dedicated storage (`FractionalShareBalance`)
+//! rather than through the factory's own token registry, since shares aren't
+//! one of this factory's deployed tokens.
+//!
+//! The asset can only be redeemed once a single holder has accumulated and
+//! burned 100% of the outstanding shares for that vault.
 
-use crate::{
-    storage,
-    types::{Error, FractionalStatus, FractionalVault, FractionalizationParams},
-    events,
-};
+use crate::storage;
+use crate::types::{Error, FractionalStatus, FractionalVault, FractionalizationParams};
+use soroban_sdk::{token, Address, Env};
 
-/// Fractionalize a unique asset into fungible tokens
+/// Amount of the underlying asset locked to represent one unique, indivisible unit.
+const UNIQUE_ASSET_AMOUNT: i128 = 1;
+
+fn validate_params(params: &FractionalizationParams) -> Result<(), Error> {
+    if params.token_name.is_empty() || params.token_name.len() > 32 {
+        return Err(Error::InvalidTokenParams);
+    }
+    if params.token_symbol.is_empty() || params.token_symbol.len() > 12 {
+        return Err(Error::InvalidTokenParams);
+    }
+    if params.total_supply <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+    Ok(())
+}
+
+/// Lock a unique asset and mint `params.total_supply` fractional ownership shares.
 ///
-/// Locks the specified asset in the contract and mints fractional tokens
-/// representing ownership shares. The asset must be unique and not already
-/// fractionalized.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `owner` - Address that owns the asset (must authorize)
-/// * `params` - Fractionalization parameters including asset details and token config
+/// `owner` must hold and authorize the transfer of `UNIQUE_ASSET_AMOUNT` of
+/// `params.asset_contract` to this contract. The pair
+/// `(params.asset_contract, params.asset_id)` identifies this specific
+/// unique asset and cannot have another active fractionalization vault.
 ///
 /// # Returns
-/// Returns the vault ID and fractional token address
+/// The id of the newly created fractionalization vault.
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not authorized
-/// * `Error::AssetAlreadyFractionalized` - Asset is already locked in a vault
-/// * `Error::InvalidParameters` - Invalid parameters provided
 /// * `Error::ContractPaused` - Contract is paused
-///
-/// # Security
-/// - Requires owner authorization via `require_auth()`
-/// - Validates asset uniqueness to prevent double-fractionalization
-/// - Uses checked arithmetic to prevent overflow
-/// - Preserves asset metadata link to fractional tokens
-pub fn fractionalize_asset(
+/// * `Error::InvalidTokenParams` - Shares token name/symbol are invalid
+/// * `Error::InvalidAmount` - `total_supply` is zero or negative
+/// * `Error::AssetAlreadyFractionalized` - This asset already has an active vault
+/// * `Error::ArithmeticError` - Overflow incrementing the vault id counter
+pub fn fractionalize(
     env: &Env,
-    owner: &Address,
-    params: &FractionalizationParams,
-) -> Result<(u64, Address), Error> {
-    // Require owner authorization
+    owner: Address,
+    params: FractionalizationParams,
+) -> Result<u64, Error> {
     owner.require_auth();
 
-    // Check if contract is paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
 
-    // Validate parameters
-    if params.total_supply <= 0 {
-        return Err(Error::InvalidParameters);
+    validate_params(&params)?;
+
+    // Reject double-fractionalization / enforce asset uniqueness: this exact
+    // (asset_contract, asset_id) pair may not have another active vault.
+    if let Some(existing_id) =
+        storage::get_asset_fractionalization_index(env, &params.asset_contract, &params.asset_id)
+    {
+        if let Some(existing) = storage::get_fractional_vault(env, existing_id) {
+            if existing.status == FractionalStatus::Active {
+                return Err(Error::AssetAlreadyFractionalized);
+            }
+        }
     }
 
-    // Check if asset is already fractionalized
-    if storage::get_asset_vault(env, &params.asset_id).is_some() {
-        return Err(Error::AssetAlreadyFractionalized);
-    }
+    // Lock the asset: transfer the single unique unit from the owner into
+    // this contract's custody via the external asset's standard token interface.
+    let asset_client = token::Client::new(env, &params.asset_contract);
+    asset_client.transfer(&owner, env.current_contract_address(), &UNIQUE_ASSET_AMOUNT);
 
-    // Create fractional token
-    let fractional_token = create_fractional_token(
-        env,
-        owner,
-        &params.token_name,
-        &params.token_symbol,
-        params.total_supply,
-    )?;
-
-    // Create vault
     let vault_id = storage::increment_fractional_vault_count(env)?;
+
+    // The shares "token" isn't a separately deployed contract — the factory
+    // itself is the fractional token's issuer/ledger of record, matching how
+    // this factory's own registered tokens report their own contract address
+    // (see `token_creation::create_token_internal`).
+    let fractional_token = env.current_contract_address();
+
     let vault = FractionalVault {
         id: vault_id,
         asset_id: params.asset_id.clone(),
@@ -75,133 +98,86 @@ pub fn fractionalize_asset(
         created_at: env.ledger().timestamp(),
         status: FractionalStatus::Active,
     };
+    storage::set_fractional_vault(env, &vault);
+    storage::set_asset_fractionalization_index(
+        env,
+        &params.asset_contract,
+        &params.asset_id,
+        vault_id,
+    );
+    storage::set_fractional_share_balance(env, vault_id, &owner, params.total_supply);
 
-    // Store vault
-    storage::set_fractional_vault(env, vault_id, &vault)?;
-    storage::set_asset_to_vault(env, &params.asset_id, vault_id);
-
-    // Update owner's vault list
-    let owner_vault_index = storage::increment_owner_fractional_vault_count(env, owner)?;
-    storage::set_fractional_vault_by_owner(env, owner, owner_vault_index - 1, vault_id);
-
-    // Emit event
-    events::emit_asset_fractionalized(
+    crate::events::emit_asset_fractionalized(
         env,
         vault_id,
         &params.asset_id,
         &params.asset_contract,
-        owner,
+        &owner,
         &fractional_token,
         params.total_supply,
     );
 
-    Ok((vault_id, fractional_token))
+    Ok(vault_id)
 }
 
-/// Redeem the original asset by burning all fractional tokens
+/// Redeem (unlock) a fractionalized asset.
 ///
-/// Requires the caller to own 100% of the fractional token supply.
-/// Burns all tokens and returns the original asset to the owner.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `redeemer` - Address attempting to redeem (must authorize)
-/// * `vault_id` - ID of the fractional vault
-///
-/// # Returns
-/// Returns `Ok(())` on successful redemption
+/// `caller` must hold and authorize the burn of 100% of the vault's
+/// outstanding shares; the locked asset is then released back to `caller`.
 ///
 /// # Errors
-/// * `Error::Unauthorized` - Caller is not authorized
-/// * `Error::FractionalVaultNotFound` - Vault does not exist
-/// * `Error::InsufficientFractionalTokens` - Caller doesn't own 100% of tokens
-/// * `Error::AssetAlreadyRedeemed` - Asset has already been redeemed
 /// * `Error::ContractPaused` - Contract is paused
-///
-/// # Security
-/// - Requires redeemer authorization via `require_auth()`
-/// - Validates 100% token ownership before redemption
-/// - Uses checked arithmetic to prevent underflow
-/// - Cleans up contract state after redemption
-pub fn redeem_asset(env: &Env, redeemer: &Address, vault_id: u64) -> Result<(), Error> {
-    // Require redeemer authorization
-    redeemer.require_auth();
+/// * `Error::FractionalVaultNotFound` - No active vault exists for `vault_id`
+/// * `Error::InsufficientShares` - Caller does not hold 100% of the outstanding shares
+pub fn redeem(env: &Env, caller: Address, vault_id: u64) -> Result<(), Error> {
+    caller.require_auth();
 
-    // Check if contract is paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
 
-    // Get vault
-    let mut vault = storage::get_fractional_vault(env, vault_id)
-        .ok_or(Error::FractionalVaultNotFound)?;
+    let mut vault =
+        storage::get_fractional_vault(env, vault_id).ok_or(Error::FractionalVaultNotFound)?;
 
-    // Check vault status
     if vault.status != FractionalStatus::Active {
-        return Err(Error::AssetAlreadyRedeemed);
+        return Err(Error::FractionalVaultNotFound);
     }
 
-    // Check if redeemer owns 100% of fractional tokens
-    let token_client = token::Client::new(env, &vault.fractional_token);
-    let redeemer_balance = token_client.balance(redeemer);
-    
-    if redeemer_balance != vault.total_supply {
-        return Err(Error::InsufficientFractionalTokens);
+    let caller_shares = storage::get_fractional_share_balance(env, vault_id, &caller);
+    if caller_shares <= 0 || caller_shares != vault.total_supply {
+        return Err(Error::InsufficientShares);
     }
 
-    // Burn all fractional tokens
-    token_client.burn(redeemer, &vault.total_supply);
+    // Burn 100% of the outstanding shares held by the caller.
+    storage::set_fractional_share_balance(env, vault_id, &caller, 0);
 
-    // Update vault status
+    // Release the locked asset back to the caller.
+    let asset_client = token::Client::new(env, &vault.asset_contract);
+    asset_client.transfer(
+        &env.current_contract_address(),
+        &caller,
+        &UNIQUE_ASSET_AMOUNT,
+    );
+
     vault.status = FractionalStatus::Redeemed;
-    storage::set_fractional_vault(env, vault_id, &vault)?;
+    storage::set_fractional_vault(env, &vault);
 
-    // Clean up asset mapping
-    storage::remove_asset_to_vault(env, &vault.asset_id);
-
-    // Emit event
-    events::emit_asset_redeemed(
+    crate::events::emit_asset_redeemed(
         env,
         vault_id,
         &vault.asset_id,
         &vault.asset_contract,
-        redeemer,
-        vault.total_supply,
+        &caller,
+        caller_shares,
     );
 
     Ok(())
 }
 
-/// Get fractional vault information
-pub fn get_fractional_vault(env: &Env, vault_id: u64) -> Result<FractionalVault, Error> {
-    storage::get_fractional_vault(env, vault_id).ok_or(Error::FractionalVaultNotFound)
-}
-
-/// Check if an asset is already fractionalized
-pub fn is_asset_fractionalized(env: &Env, asset_id: &BytesN<32>) -> bool {
-    storage::get_asset_vault(env, asset_id).is_some()
-}
-
-/// Create a fractional token contract
-///
-/// Creates a new token contract for the fractional shares and mints
-/// the total supply to the asset owner.
-fn create_fractional_token(
-    env: &Env,
-    owner: &Address,
-    name: &String,
-    symbol: &String,
-    total_supply: i128,
-) -> Result<Address, Error> {
-    // Create token using the factory's token creation logic
-    // This is a simplified version - in practice, you'd use the factory's create_token function
-    let token_address = Address::from_contract_id(env, &env.crypto().sha256(&env.current_contract_address().to_xdr(env)));
-    
-    // Initialize token
-    let token_client = token::Client::new(env, &token_address);
-    
-    // Mint total supply to owner
-    token_client.mint(owner, &total_supply);
-
-    Ok(token_address)
+/// Returns `true` if `vault_id` currently has an active fractionalization vault.
+pub fn is_fractionalized(env: &Env, vault_id: u64) -> bool {
+    match storage::get_fractional_vault(env, vault_id) {
+        Some(vault) => vault.status == FractionalStatus::Active,
+        None => false,
+    }
 }

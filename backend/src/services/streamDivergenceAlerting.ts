@@ -7,7 +7,7 @@
  */
 
 import { eventBus, EventBus, Subscription } from "./eventBus";
-import { alertStreamDivergence } from "../../../monitoring/pagerduty/incident-response";
+import { alertStreamDivergence } from "../lib/pagerduty";
 import type { StreamDivergenceDetectedPayload } from "./streamReconciliation";
 
 export function registerStreamDivergenceAlerting(

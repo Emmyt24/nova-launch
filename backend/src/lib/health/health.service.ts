@@ -10,7 +10,7 @@ import {
 } from "./health.types";
 import { validateEnv } from "../../config/env";
 import { getCircuitBreakerRegistrySnapshot } from "../circuitBreaker";
-import { dispatchAlert } from "../../../../monitoring/pagerduty/incident-response";
+import { dispatchAlert } from "../pagerduty";
 
 const _env = validateEnv();
 
@@ -114,11 +114,13 @@ export class HealthService {
     // Alert PagerDuty once per root cause (#1373)
     for (const svcName of rootCauses) {
       try {
-        await dispatchAlert(
-          `health.service.${svcName}`,
-          "critical",
-          { service: svcName, message: (services as any)[svcName]?.error ?? "service down" }
-        );
+        const message = (services as any)[svcName]?.error ?? "service down";
+        await dispatchAlert("dependency-health-critical", {
+          summary: `Nova Launch: ${svcName} is down (${message})`,
+          dedupKey: `health-service-${svcName}`,
+          source: "health.service",
+          customDetails: { service: svcName, message },
+        });
       } catch {
         // Non-fatal — alerting must not block the health response
       }

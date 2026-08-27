@@ -52,8 +52,8 @@ router.get(
           errorResponse({
             code: "VALIDATION_ERROR",
             message: "Invalid query parameters",
-            details: parsed.error.errors,
-          })
+            details: parsed.error.issues,
+          }, req.correlationId)
         );
       }
 
@@ -73,7 +73,7 @@ router.get(
             limit,
             total,
           },
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error listing dead-letter entries:", error);
@@ -81,7 +81,7 @@ router.get(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to list dead-letter entries",
-        })
+        }, req.correlationId)
       );
     }
   }
@@ -107,7 +107,7 @@ router.post(
           errorResponse({
             code: "NOT_FOUND",
             message: "Dead-letter entry not found",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -116,7 +116,7 @@ router.post(
           errorResponse({
             code: "ALREADY_RESOLVED",
             message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -128,7 +128,7 @@ router.post(
           errorResponse({
             code: "SUBSCRIPTION_NOT_FOUND",
             message: "Associated webhook subscription no longer exists",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -151,7 +151,7 @@ router.post(
         successResponse({
           message: "Dead-letter entry re-enqueued for delivery",
           id,
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error retrying dead-letter entry:", error);
@@ -159,7 +159,73 @@ router.post(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to retry dead-letter entry",
-        })
+        }, req.correlationId)
+      );
+    }
+  }
+);
+
+/**
+ * POST /api/webhooks/dead-letter/:id/requeue
+ * Manually trigger a requeue for a dead-letter entry, incrementing the
+ * requeue counter. Rejects with 409 if the poison-message cap is hit.
+ */
+router.post(
+  "/:id/requeue",
+  authenticateAdmin,
+  auditLog("requeue_dead_letter", "webhook_dead_letter"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const deadLetter = await webhookDeadLetterService.getEntry(id);
+
+      if (!deadLetter) {
+        return res.status(404).json(
+          errorResponse({
+            code: "NOT_FOUND",
+            message: "Dead-letter entry not found",
+          }, req.correlationId)
+        );
+      }
+
+      if (deadLetter.resolvedAt) {
+        return res.status(409).json(
+          errorResponse({
+            code: "ALREADY_RESOLVED",
+            message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
+          }, req.correlationId)
+        );
+      }
+
+      try {
+        const requeued = await webhookDeadLetterService.requeueDeadLetter(id);
+
+        res.json(
+          successResponse({
+            message: "Dead-letter entry requeued for delivery",
+            id,
+            requeueCount: requeued.requeueCount,
+          }, req.correlationId)
+        );
+      } catch (error: any) {
+        if (error.name === "PoisonMessageError") {
+          return res.status(409).json(
+            errorResponse({
+              code: "POISON_MESSAGE",
+              message: "Dead-letter entry has exceeded the maximum requeue limit",
+              details: { requeueCount: deadLetter.requeueCount },
+            }, req.correlationId)
+          );
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.error("Error requeuing dead-letter entry:", error);
+      res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to requeue dead-letter entry",
+        }, req.correlationId)
       );
     }
   }
@@ -183,7 +249,7 @@ router.delete(
           errorResponse({
             code: "NOT_FOUND",
             message: "Dead-letter entry not found",
-          })
+          }, req.correlationId)
         );
       }
 
@@ -192,7 +258,7 @@ router.delete(
           errorResponse({
             code: "ALREADY_RESOLVED",
             message: `Dead-letter entry was already resolved (${deadLetter.resolution})`,
-          })
+          }, req.correlationId)
         );
       }
 
@@ -202,7 +268,7 @@ router.delete(
         successResponse({
           message: "Dead-letter entry discarded",
           id,
-        })
+        }, req.correlationId)
       );
     } catch (error) {
       console.error("Error discarding dead-letter entry:", error);
@@ -210,7 +276,7 @@ router.delete(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to discard dead-letter entry",
-        })
+        }, req.correlationId)
       );
     }
   }

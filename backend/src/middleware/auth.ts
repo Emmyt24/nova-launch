@@ -3,7 +3,33 @@ import jwt from "jsonwebtoken";
 import { Database } from "../config/database";
 import { User } from "../types";
 
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || "admin-secret-key";
+/**
+ * The admin JWT secret is required in production and development.
+ * In test environments a clearly-marked, non-guessable default is used so
+ * test suites work without a real secret configured.
+ *
+ * If ADMIN_JWT_SECRET is unset outside a test environment the process throws
+ * at module load time (fail-fast) rather than silently accepting a guessable
+ * default that would allow anyone who has read the source to forge admin JWTs.
+ */
+function resolveAdminJwtSecret(): string {
+  const secret = process.env.ADMIN_JWT_SECRET;
+  if (secret) {
+    return secret;
+  }
+
+  if (process.env.NODE_ENV === "test") {
+    // Non-guessable placeholder — clearly scoped to the test environment.
+    return "test-only-admin-jwt-secret-not-for-production";
+  }
+
+  throw new Error(
+    "ADMIN_JWT_SECRET environment variable is required but was not set. " +
+      "Please configure it before starting the server."
+  );
+}
+
+const ADMIN_JWT_SECRET = resolveAdminJwtSecret();
 
 export interface AuthRequest extends Request {
   admin?: User;

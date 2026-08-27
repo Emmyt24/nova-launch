@@ -1,189 +1,167 @@
-/// Campaign Validation Module
-///
-/// Provides strict validation for buyback campaign parameters to prevent
-/// unsafe treasury or burn configurations.
+//! Campaign parameter validation (issue #1764)
+//!
+//! Strict bounds checks for buyback campaign configuration. These run at
+//! creation time so an unsafe treasury or burn configuration can never be
+//! persisted — every later step execution can then assume the stored config
+//! is within bounds.
 
 use crate::types::Error;
 use soroban_sdk::{Address, Env};
 
-/// Validation constants for campaign parameters
+/// Bounds for campaign parameters.
 pub mod constants {
-    /// Minimum campaign budget (1 XLM = 10_000_000 stroops)
+    /// Minimum campaign budget (1 XLM, in stroops).
     pub const MIN_BUDGET: i128 = 10_000_000;
 
-    /// Maximum campaign budget (1 billion XLM)
-    pub const MAX_BUDGET: i128 = 1_000_000_000_0000000;
+    /// Maximum campaign budget (1 billion XLM, in stroops).
+    pub const MAX_BUDGET: i128 = 10_000_000_000_000_000;
 
-    /// Minimum campaign duration (1 hour)
+    /// Minimum campaign duration (1 hour).
     pub const MIN_DURATION: u64 = 3600;
 
-    /// Maximum campaign duration (365 days)
+    /// Maximum campaign duration (365 days).
     pub const MAX_DURATION: u64 = 365 * 24 * 3600;
 
-    /// Minimum interval between executions (5 minutes)
+    /// Minimum interval between step executions (5 minutes).
     pub const MIN_INTERVAL: u64 = 300;
 
-    /// Maximum interval between executions (7 days)
+    /// Maximum interval between step executions (7 days).
     pub const MAX_INTERVAL: u64 = 7 * 24 * 3600;
 
-    /// Maximum slippage in basis points (10000 = 100%)
-    pub const MAX_SLIPPAGE_BPS: u32 = 10000;
+    /// Ceiling on any slippage tolerance (10000 bps = 100%).
+    pub const MAX_SLIPPAGE_BPS: u32 = 10_000;
 
-    /// Reasonable maximum slippage (5% = 500 bps)
+    /// Practical ceiling on slippage tolerance (500 bps = 5%). A campaign
+    /// willing to accept more than this is almost certainly misconfigured,
+    /// so creation is rejected rather than left to burn treasury funds.
     pub const REASONABLE_MAX_SLIPPAGE_BPS: u32 = 500;
 
-    /// Minimum time buffer for start time (1 minute from now)
+    /// A campaign must start at least this far in the future, so a submitted
+    /// creation transaction cannot become instantly executable on inclusion.
     pub const MIN_START_BUFFER: u64 = 60;
+
+    /// Maximum byte length for a campaign metadata URI (IPFS CID / HTTPS URL).
+    pub const MAX_METADATA_URI_LEN: u32 = 256;
 }
 
-/// Validate campaign budget
+/// Validate the total campaign budget.
 ///
-/// # Arguments
-/// * `budget` - The proposed campaign budget
-///
-/// # Returns
-/// * `Ok(())` if budget is valid
-/// * `Err(Error)` with specific error code if invalid
-///
-/// # Validation Rules
-/// - Budget must be positive
-/// - Budget must be >= MIN_BUDGET
-/// - Budget must be <= MAX_BUDGET
+/// # Errors
+/// * `InvalidBudget` - not positive, or outside
+///   [`constants::MIN_BUDGET`]..=[`constants::MAX_BUDGET`]
 pub fn validate_budget(budget: i128) -> Result<(), Error> {
-    if budget <= 0 {
+    if !(constants::MIN_BUDGET..=constants::MAX_BUDGET).contains(&budget) {
         return Err(Error::InvalidBudget);
     }
-
-    if budget < constants::MIN_BUDGET || budget > constants::MAX_BUDGET {
-        return Err(Error::InvalidBudget);
-    }
-
     Ok(())
 }
 
-/// Validate campaign time window
+/// Validate the per-step spend cap against the campaign budget.
 ///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `start_time` - Campaign start timestamp
-/// * `end_time` - Campaign end timestamp
+/// The cap is what bounds the blast radius of a single execution, so it must
+/// be positive and can never exceed the total budget.
 ///
-/// # Returns
-/// * `Ok(())` if time window is valid
-/// * `Err(Error)` with specific error code if invalid
+/// # Errors
+/// * `InvalidAmount`     - cap is not positive
+/// * `InvalidParameters` - cap exceeds the total budget
+pub fn validate_max_spend_per_step(max_spend_per_step: i128, budget: i128) -> Result<(), Error> {
+    if max_spend_per_step <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+    if max_spend_per_step > budget {
+        return Err(Error::InvalidParameters);
+    }
+    Ok(())
+}
+
+/// Validate the campaign's active time window.
 ///
-/// # Validation Rules
-/// - Start time must be in the future (with buffer)
-/// - End time must be after start time
-/// - Duration must be >= MIN_DURATION
-/// - Duration must be <= MAX_DURATION
+/// # Errors
+/// * `InvalidTimeWindow` - start is not far enough in the future, end is not
+///   after start, or the duration is outside
+///   [`constants::MIN_DURATION`]..=[`constants::MAX_DURATION`]
 pub fn validate_time_window(env: &Env, start_time: u64, end_time: u64) -> Result<(), Error> {
     let current_time = env.ledger().timestamp();
 
-    // Start time must be in the future
-    if start_time < current_time + constants::MIN_START_BUFFER {
+    let earliest_start = current_time
+        .checked_add(constants::MIN_START_BUFFER)
+        .ok_or(Error::InvalidTimeWindow)?;
+    if start_time < earliest_start {
         return Err(Error::InvalidTimeWindow);
     }
 
-    // End time must be after start time
     if end_time <= start_time {
         return Err(Error::InvalidTimeWindow);
     }
 
-    // Calculate duration
     let duration = end_time - start_time;
-
-    // Duration must be within bounds
-    if duration < constants::MIN_DURATION || duration > constants::MAX_DURATION {
+    if !(constants::MIN_DURATION..=constants::MAX_DURATION).contains(&duration) {
         return Err(Error::InvalidTimeWindow);
     }
 
     Ok(())
 }
 
-/// Validate minimum interval between executions
+/// Validate the minimum interval between step executions.
 ///
-/// # Arguments
-/// * `min_interval` - Minimum seconds between executions
-///
-/// # Returns
-/// * `Ok(())` if interval is valid
-/// * `Err(Error)` with specific error code if invalid
-///
-/// # Validation Rules
-/// - Interval must be >= MIN_INTERVAL
-/// - Interval must be <= MAX_INTERVAL
+/// # Errors
+/// * `InvalidParameters` - outside
+///   [`constants::MIN_INTERVAL`]..=[`constants::MAX_INTERVAL`]
 pub fn validate_min_interval(min_interval: u64) -> Result<(), Error> {
-    if min_interval == 0 || min_interval < constants::MIN_INTERVAL || min_interval > constants::MAX_INTERVAL {
+    if !(constants::MIN_INTERVAL..=constants::MAX_INTERVAL).contains(&min_interval) {
         return Err(Error::InvalidParameters);
     }
-
     Ok(())
 }
 
-/// Validate slippage tolerance
+/// Validate the slippage tolerance.
 ///
-/// # Arguments
-/// * `max_slippage_bps` - Maximum slippage in basis points
+/// A zero tolerance is rejected: no real swap settles at exactly the quote,
+/// so a zero-tolerance campaign could never execute a step.
 ///
-/// # Returns
-/// * `Ok(())` if slippage is valid
-/// * `Err(Error)` with specific error code if invalid
-///
-/// # Validation Rules
-/// - Slippage must be > 0
-/// - Slippage must be <= MAX_SLIPPAGE_BPS (10000 = 100%)
-/// - Slippage should be <= REASONABLE_MAX_SLIPPAGE_BPS (500 = 5%)
+/// # Errors
+/// * `InvalidParameters` - zero, or above
+///   [`constants::REASONABLE_MAX_SLIPPAGE_BPS`]
 pub fn validate_slippage(max_slippage_bps: u32) -> Result<(), Error> {
     if max_slippage_bps == 0 || max_slippage_bps > constants::REASONABLE_MAX_SLIPPAGE_BPS {
         return Err(Error::InvalidParameters);
     }
-
     Ok(())
 }
 
-/// Validate token pair for buyback
+/// Validate the buyback token pair.
 ///
-/// # Arguments
-/// * `source_token` - Token being spent (treasury token)
-/// * `target_token` - Token being bought back
-///
-/// # Returns
-/// * `Ok(())` if token pair is valid
-/// * `Err(Error)` with specific error code if invalid
-///
-/// # Validation Rules
-/// - Source and target must be different addresses
-/// - Both addresses must be valid (non-zero)
+/// # Errors
+/// * `InvalidParameters` - source and target are the same token, which would
+///   make the "swap" a no-op that still spends budget
 pub fn validate_token_pair(source_token: &Address, target_token: &Address) -> Result<(), Error> {
-    // Check if tokens are the same
     if source_token == target_token {
         return Err(Error::InvalidParameters);
     }
-
     Ok(())
 }
 
-/// Validate complete campaign configuration
+/// Validate the byte length of an optional campaign metadata URI.
 ///
-/// Performs all validation checks in sequence.
+/// An empty string is not a valid URI; callers that want no metadata should
+/// omit it rather than pass `""`.
 ///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `budget` - Campaign budget
-/// * `start_time` - Campaign start timestamp
-/// * `end_time` - Campaign end timestamp
-/// * `min_interval` - Minimum seconds between executions
-/// * `max_slippage_bps` - Maximum slippage in basis points
-/// * `source_token` - Token being spent
-/// * `target_token` - Token being bought back
-///
-/// # Returns
-/// * `Ok(())` if all validations pass
-/// * `Err(Error)` with the first validation error encountered
+/// # Errors
+/// * `InvalidParameters` - empty, or longer than
+///   [`constants::MAX_METADATA_URI_LEN`]
+pub fn validate_metadata_uri(uri_len: u32) -> Result<(), Error> {
+    if uri_len == 0 || uri_len > constants::MAX_METADATA_URI_LEN {
+        return Err(Error::InvalidParameters);
+    }
+    Ok(())
+}
+
+/// Run every campaign creation check, returning the first failure.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_campaign_config(
     env: &Env,
     budget: i128,
+    max_spend_per_step: i128,
     start_time: u64,
     end_time: u64,
     min_interval: u64,
@@ -192,499 +170,109 @@ pub fn validate_campaign_config(
     target_token: &Address,
 ) -> Result<(), Error> {
     validate_budget(budget)?;
+    validate_max_spend_per_step(max_spend_per_step, budget)?;
     validate_time_window(env, start_time, end_time)?;
     validate_min_interval(min_interval)?;
     validate_slippage(max_slippage_bps)?;
     validate_token_pair(source_token, target_token)?;
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::constants::*;
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::testutils::Address as _;
 
     #[test]
-    fn test_validate_budget_success() {
-        let budget = 100_000_000i128; // 10 XLM
-        assert!(validate_budget(budget).is_ok());
-    }
-
-    #[test]
-    fn test_validate_budget_zero() {
+    fn budget_bounds_are_inclusive() {
+        assert!(validate_budget(MIN_BUDGET).is_ok());
+        assert!(validate_budget(MAX_BUDGET).is_ok());
+        assert_eq!(validate_budget(MIN_BUDGET - 1), Err(Error::InvalidBudget));
+        assert_eq!(validate_budget(MAX_BUDGET + 1), Err(Error::InvalidBudget));
         assert_eq!(validate_budget(0), Err(Error::InvalidBudget));
+        assert_eq!(validate_budget(-1), Err(Error::InvalidBudget));
     }
 
     #[test]
-    fn test_validate_budget_negative() {
-        assert_eq!(validate_budget(-1000), Err(Error::InvalidBudget));
-    }
-
-    #[test]
-    fn test_validate_budget_below_minimum() {
-        let budget = constants::MIN_BUDGET - 1;
-        assert_eq!(validate_budget(budget), Err(Error::InvalidBudget));
-    }
-
-    #[test]
-    fn test_validate_budget_at_minimum() {
-        let budget = constants::MIN_BUDGET;
-        assert!(validate_budget(budget).is_ok());
-    }
-
-    #[test]
-    fn test_validate_budget_above_maximum() {
-        let budget = constants::MAX_BUDGET + 1;
-        assert_eq!(validate_budget(budget), Err(Error::InvalidBudget));
-    }
-
-    #[test]
-    fn test_validate_budget_at_maximum() {
-        let budget = constants::MAX_BUDGET;
-        assert!(validate_budget(budget).is_ok());
-    }
-
-    #[test]
-    fn test_validate_time_window_success() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600; // 1 hour from now
-        let end = start + 86400; // 1 day duration
-
-        assert!(validate_time_window(&env, start, end).is_ok());
-    }
-
-    #[test]
-    fn test_validate_time_window_start_in_past() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current - 100; // In the past
-        let end = start + 86400;
-
+    fn step_cap_must_be_positive_and_within_budget() {
+        assert!(validate_max_spend_per_step(1, MIN_BUDGET).is_ok());
+        assert!(validate_max_spend_per_step(MIN_BUDGET, MIN_BUDGET).is_ok());
         assert_eq!(
-            validate_time_window(&env, start, end),
+            validate_max_spend_per_step(0, MIN_BUDGET),
+            Err(Error::InvalidAmount)
+        );
+        assert_eq!(
+            validate_max_spend_per_step(MIN_BUDGET + 1, MIN_BUDGET),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    #[test]
+    fn time_window_rejects_immediate_start_and_bad_durations() {
+        let env = Env::default();
+        let now = env.ledger().timestamp();
+
+        // Starts too soon.
+        assert_eq!(
+            validate_time_window(&env, now, now + MIN_DURATION * 2),
+            Err(Error::InvalidTimeWindow)
+        );
+
+        let start = now + MIN_START_BUFFER;
+        assert!(validate_time_window(&env, start, start + MIN_DURATION).is_ok());
+        assert!(validate_time_window(&env, start, start + MAX_DURATION).is_ok());
+
+        // End before start, too short, too long.
+        assert_eq!(
+            validate_time_window(&env, start, start),
+            Err(Error::InvalidTimeWindow)
+        );
+        assert_eq!(
+            validate_time_window(&env, start, start + MIN_DURATION - 1),
+            Err(Error::InvalidTimeWindow)
+        );
+        assert_eq!(
+            validate_time_window(&env, start, start + MAX_DURATION + 1),
             Err(Error::InvalidTimeWindow)
         );
     }
 
     #[test]
-    fn test_validate_time_window_start_too_soon() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 30; // Less than MIN_START_BUFFER
-        let end = start + 86400;
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_time_window_end_before_start() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start - 100; // Before start
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_time_window_end_equals_start() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start; // Same as start
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_time_window_duration_too_short() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MIN_DURATION - 1;
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_time_window_duration_at_minimum() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MIN_DURATION;
-
-        assert!(validate_time_window(&env, start, end).is_ok());
-    }
-
-    #[test]
-    fn test_validate_time_window_duration_too_long() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MAX_DURATION + 1;
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_time_window_duration_at_maximum() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MAX_DURATION;
-
-        assert!(validate_time_window(&env, start, end).is_ok());
-    }
-
-    #[test]
-    fn test_validate_min_interval_success() {
-        let interval = 600u64; // 10 minutes
-        assert!(validate_min_interval(interval).is_ok());
-    }
-
-    #[test]
-    fn test_validate_min_interval_zero() {
+    fn interval_and_slippage_bounds() {
+        assert!(validate_min_interval(MIN_INTERVAL).is_ok());
+        assert!(validate_min_interval(MAX_INTERVAL).is_ok());
         assert_eq!(validate_min_interval(0), Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_validate_min_interval_too_short() {
-        let interval = constants::MIN_INTERVAL - 1;
         assert_eq!(
-            validate_min_interval(interval),
+            validate_min_interval(MAX_INTERVAL + 1),
             Err(Error::InvalidParameters)
         );
-    }
 
-    #[test]
-    fn test_validate_min_interval_at_minimum() {
-        let interval = constants::MIN_INTERVAL;
-        assert!(validate_min_interval(interval).is_ok());
-    }
-
-    #[test]
-    fn test_validate_min_interval_too_long() {
-        let interval = constants::MAX_INTERVAL + 1;
-        assert_eq!(
-            validate_min_interval(interval),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_validate_min_interval_at_maximum() {
-        let interval = constants::MAX_INTERVAL;
-        assert!(validate_min_interval(interval).is_ok());
-    }
-
-    #[test]
-    fn test_validate_slippage_success() {
-        let slippage = 100u32; // 1%
-        assert!(validate_slippage(slippage).is_ok());
-    }
-
-    #[test]
-    fn test_validate_slippage_zero() {
+        assert!(validate_slippage(1).is_ok());
+        assert!(validate_slippage(REASONABLE_MAX_SLIPPAGE_BPS).is_ok());
         assert_eq!(validate_slippage(0), Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_validate_slippage_at_reasonable_max() {
-        let slippage = constants::REASONABLE_MAX_SLIPPAGE_BPS;
-        assert!(validate_slippage(slippage).is_ok());
-    }
-
-    #[test]
-    fn test_validate_slippage_above_reasonable_max() {
-        let slippage = constants::REASONABLE_MAX_SLIPPAGE_BPS + 1;
-        assert_eq!(validate_slippage(slippage), Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_validate_slippage_at_absolute_max() {
-        let slippage = constants::MAX_SLIPPAGE_BPS;
-        assert_eq!(validate_slippage(slippage), Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_validate_slippage_above_absolute_max() {
-        let slippage = constants::MAX_SLIPPAGE_BPS + 1;
-        assert_eq!(validate_slippage(slippage), Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_validate_token_pair_success() {
-        let env = Env::default();
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
-        assert!(validate_token_pair(&source, &target).is_ok());
-    }
-
-    #[test]
-    fn test_validate_token_pair_same_address() {
-        let env = Env::default();
-        let token = Address::generate(&env);
-
         assert_eq!(
-            validate_token_pair(&token, &token),
+            validate_slippage(REASONABLE_MAX_SLIPPAGE_BPS + 1),
             Err(Error::InvalidParameters)
         );
     }
 
     #[test]
-    fn test_validate_campaign_config_success() {
+    fn token_pair_must_differ() {
         let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 100_000_000i128;
-        let start_time = current + 3600;
-        let end_time = start_time + 86400;
-        let min_interval = 600u64;
-        let max_slippage_bps = 100u32;
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
-        assert!(validate_campaign_config(
-            &env,
-            budget,
-            start_time,
-            end_time,
-            min_interval,
-            max_slippage_bps,
-            &source,
-            &target
-        )
-        .is_ok());
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        assert!(validate_token_pair(&a, &b).is_ok());
+        assert_eq!(validate_token_pair(&a, &a), Err(Error::InvalidParameters));
     }
 
     #[test]
-    fn test_validate_campaign_config_fails_on_budget() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 0i128; // Invalid
-        let start_time = current + 3600;
-        let end_time = start_time + 86400;
-        let min_interval = 600u64;
-        let max_slippage_bps = 100u32;
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
+    fn metadata_uri_length_bounds() {
+        assert!(validate_metadata_uri(1).is_ok());
+        assert!(validate_metadata_uri(MAX_METADATA_URI_LEN).is_ok());
+        assert_eq!(validate_metadata_uri(0), Err(Error::InvalidParameters));
         assert_eq!(
-            validate_campaign_config(
-                &env,
-                budget,
-                start_time,
-                end_time,
-                min_interval,
-                max_slippage_bps,
-                &source,
-                &target
-            ),
-            Err(Error::InvalidBudget)
-        );
-    }
-
-    #[test]
-    fn test_validate_campaign_config_fails_on_time_window() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 100_000_000i128;
-        let start_time = current - 100; // Invalid (past)
-        let end_time = start_time + 86400;
-        let min_interval = 600u64;
-        let max_slippage_bps = 100u32;
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
-        assert_eq!(
-            validate_campaign_config(
-                &env,
-                budget,
-                start_time,
-                end_time,
-                min_interval,
-                max_slippage_bps,
-                &source,
-                &target
-            ),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_validate_campaign_config_fails_on_interval() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 100_000_000i128;
-        let start_time = current + 3600;
-        let end_time = start_time + 86400;
-        let min_interval = 0u64; // Invalid
-        let max_slippage_bps = 100u32;
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
-        assert_eq!(
-            validate_campaign_config(
-                &env,
-                budget,
-                start_time,
-                end_time,
-                min_interval,
-                max_slippage_bps,
-                &source,
-                &target
-            ),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_validate_campaign_config_fails_on_slippage() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 100_000_000i128;
-        let start_time = current + 3600;
-        let end_time = start_time + 86400;
-        let min_interval = 600u64;
-        let max_slippage_bps = 0u32; // Invalid
-        let source = Address::generate(&env);
-        let target = Address::generate(&env);
-
-        assert_eq!(
-            validate_campaign_config(
-                &env,
-                budget,
-                start_time,
-                end_time,
-                min_interval,
-                max_slippage_bps,
-                &source,
-                &target
-            ),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_validate_campaign_config_fails_on_token_pair() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-
-        let budget = 100_000_000i128;
-        let start_time = current + 3600;
-        let end_time = start_time + 86400;
-        let min_interval = 600u64;
-        let max_slippage_bps = 100u32;
-        let token = Address::generate(&env);
-
-        assert_eq!(
-            validate_campaign_config(
-                &env,
-                budget,
-                start_time,
-                end_time,
-                min_interval,
-                max_slippage_bps,
-                &token,
-                &token // Same as source
-            ),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    // Boundary tests for numeric constraints
-    #[test]
-    fn test_budget_boundary_min_minus_one() {
-        assert_eq!(
-            validate_budget(constants::MIN_BUDGET - 1),
-            Err(Error::InvalidBudget)
-        );
-    }
-
-    #[test]
-    fn test_budget_boundary_max_plus_one() {
-        assert_eq!(
-            validate_budget(constants::MAX_BUDGET + 1),
-            Err(Error::InvalidBudget)
-        );
-    }
-
-    #[test]
-    fn test_duration_boundary_min_minus_one() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MIN_DURATION - 1;
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_duration_boundary_max_plus_one() {
-        let env = Env::default();
-        let current = env.ledger().timestamp();
-        let start = current + 3600;
-        let end = start + constants::MAX_DURATION + 1;
-
-        assert_eq!(
-            validate_time_window(&env, start, end),
-            Err(Error::InvalidTimeWindow)
-        );
-    }
-
-    #[test]
-    fn test_interval_boundary_min_minus_one() {
-        assert_eq!(
-            validate_min_interval(constants::MIN_INTERVAL - 1),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_interval_boundary_max_plus_one() {
-        assert_eq!(
-            validate_min_interval(constants::MAX_INTERVAL + 1),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_slippage_boundary_reasonable_max_plus_one() {
-        assert_eq!(
-            validate_slippage(constants::REASONABLE_MAX_SLIPPAGE_BPS + 1),
-            Err(Error::InvalidParameters)
-        );
-    }
-
-    #[test]
-    fn test_slippage_boundary_absolute_max_plus_one() {
-        assert_eq!(
-            validate_slippage(constants::MAX_SLIPPAGE_BPS + 1),
+            validate_metadata_uri(MAX_METADATA_URI_LEN + 1),
             Err(Error::InvalidParameters)
         );
     }

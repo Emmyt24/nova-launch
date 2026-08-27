@@ -56,10 +56,6 @@ export const FACTORY_METHODS = {
   batch_burn: 'batch_burn',
   get_burn_count: 'get_burn_count',
 
-  // Buyback campaigns
-  create_buyback_campaign: 'create_buyback_campaign',
-  get_buyback_campaign: 'get_buyback_campaign',
-
   // Governance
   get_governance_config: 'get_governance_config',
   update_governance_config: 'update_governance_config',
@@ -91,6 +87,20 @@ export const FACTORY_METHODS = {
   get_vault: 'get_vault',
   claim_vault: 'claim_vault',
   cancel_vault: 'cancel_vault',
+
+  // Payment streaming / vesting (Issue #1765) — distinct from Vault above.
+  create_stream: 'create_stream',
+  batch_create_streams: 'batch_create_streams',
+  claim_stream: 'claim_stream',
+  cancel_stream: 'cancel_stream',
+  update_stream_metadata: 'update_stream_metadata',
+  verify_stream_milestone: 'verify_stream_milestone',
+  get_stream: 'get_stream',
+  list_streams_by_creator: 'list_streams_by_creator',
+  create_recurring_stream: 'create_recurring_stream',
+  trigger_recurring_period: 'trigger_recurring_period',
+  cancel_recurring_stream: 'cancel_recurring_stream',
+  get_recurring_stream: 'get_recurring_stream',
 } as const;
 
 export type FactoryMethod = (typeof FACTORY_METHODS)[keyof typeof FACTORY_METHODS];
@@ -162,19 +172,6 @@ export interface MintParams {
   token_index: number;  // u32
   to: string;           // Address
   amount: bigint;       // i128
-}
-
-/** Matches `create_buyback_campaign(creator, token_index, budget, ...)` */
-export interface CreateBuybackCampaignParams {
-  creator: string;           // Address
-  token_index: number;       // u32
-  budget: bigint;            // i128
-  start_time: bigint;        // u64
-  end_time: bigint;          // u64
-  min_interval: bigint;      // u64
-  max_slippage_bps: number;  // u32
-  source_token: string;      // Address
-  target_token: string;      // Address
 }
 
 /** Matches `update_governance_config(admin, quorum_percent, approval_percent)` */

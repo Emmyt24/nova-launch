@@ -51,7 +51,7 @@ pub fn clawback(
 
     // 2. Admin authentication — never accept a raw Address without require_auth()
     admin.require_auth();
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -88,7 +88,7 @@ pub fn clawback(
     storage::set_token_info(env, token_index, &info);
 
     // 8. Emit auditable clawback event
-    events::emit_clawback(env, &info.address, &admin, &from, amount, env.ledger().timestamp());
+    events::emit_clawback_audit(env, &info.address, &admin, &from, amount);
 
     Ok(())
 }

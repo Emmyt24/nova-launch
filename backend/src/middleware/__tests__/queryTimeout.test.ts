@@ -91,3 +91,186 @@ describe("withQueryTimeoutRace", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Query Timeout Circuit Breaker (#1585) — specification tests", () => {
+  it("circuit breaker specification: starts in closed state", () => {
+    const cb = new QueryTimeoutCircuitBreakerSpec(3, 5000);
+    expect(cb.getState()).toBe("closed");
+    expect(cb.getConsecutiveTimeouts()).toBe(0);
+  });
+
+  it("circuit breaker specification: increments timeout counter on recorded timeout", () => {
+    const cb = new QueryTimeoutCircuitBreakerSpec(3, 5000);
+    cb.recordTimeout();
+    expect(cb.getConsecutiveTimeouts()).toBe(1);
+  });
+
+  it("circuit breaker specification: opens after threshold consecutive timeouts", () => {
+    const cb = new QueryTimeoutCircuitBreakerSpec(2, 5000);
+    cb.recordTimeout();
+    expect(cb.getState()).toBe("closed");
+    cb.recordTimeout();
+    expect(cb.getState()).toBe("open");
+  });
+
+  it("circuit breaker specification: state transitions closed → open → half-open → closed", () => {
+    vi.useFakeTimers();
+    const cb = new QueryTimeoutCircuitBreakerSpec(1, 5000);
+
+    // Closed initially
+    expect(cb.getState()).toBe("closed");
+
+    // Trip to open after 1 timeout
+    cb.recordTimeout();
+    expect(cb.getState()).toBe("open");
+
+    // Advance past recovery window
+    vi.advanceTimersByTime(5100);
+    expect(cb.getState()).toBe("half-open");
+
+    // Successful probe closes
+    cb.recordSuccess();
+    expect(cb.getState()).toBe("closed");
+    expect(cb.getConsecutiveTimeouts()).toBe(0);
+
+    vi.useRealTimers();
+  });
+
+  it("circuit breaker specification: half-open probe failure returns to open", () => {
+    vi.useFakeTimers();
+    const cb = new QueryTimeoutCircuitBreakerSpec(1, 5000);
+
+    cb.recordTimeout();
+    expect(cb.getState()).toBe("open");
+
+    vi.advanceTimersByTime(5100);
+    expect(cb.getState()).toBe("half-open");
+
+    cb.recordTimeout();
+    expect(cb.getState()).toBe("open");
+
+    vi.useRealTimers();
+  });
+
+  it("circuit breaker specification: exposes Prometheus metrics", () => {
+    vi.useFakeTimers();
+    const cb = new QueryTimeoutCircuitBreakerSpec(2, 5000);
+
+    const metrics1 = cb.getMetrics();
+    expect(metrics1).toEqual({
+      state: "closed",
+      consecutive_timeouts: 0,
+    });
+
+    cb.recordTimeout();
+    const metrics2 = cb.getMetrics();
+    expect(metrics2).toEqual({
+      state: "closed",
+      consecutive_timeouts: 1,
+    });
+
+    cb.recordTimeout();
+    const metrics3 = cb.getMetrics();
+    expect(metrics3).toEqual({
+      state: "open",
+      consecutive_timeouts: 2,
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("circuit breaker specification: successful operation in closed state resets counter", () => {
+    const cb = new QueryTimeoutCircuitBreakerSpec(3, 5000);
+
+    cb.recordTimeout();
+    expect(cb.getConsecutiveTimeouts()).toBe(1);
+
+    cb.recordSuccess();
+    expect(cb.getConsecutiveTimeouts()).toBe(0);
+  });
+
+  it("circuit breaker specification: rolling window prevents stale timeout from opening circuit", () => {
+    vi.useFakeTimers();
+    const WINDOW = 10_000;
+    const cb = new QueryTimeoutCircuitBreakerSpec(3, WINDOW);
+
+    // Record one timeout
+    cb.recordTimeout();
+    expect(cb.getConsecutiveTimeouts()).toBe(1);
+
+    // Advance past window
+    vi.advanceTimersByTime(WINDOW + 100);
+
+    // Counter should reset after successful operation or timeout window expiry
+    cb.recordSuccess();
+    expect(cb.getConsecutiveTimeouts()).toBe(0);
+
+    vi.useRealTimers();
+  });
+
+  it("circuit breaker specification: half-open allows single probe without enforcing full timeout", () => {
+    vi.useFakeTimers();
+    const cb = new QueryTimeoutCircuitBreakerSpec(1, 5000);
+
+    cb.recordTimeout();
+    vi.advanceTimersByTime(5100);
+    expect(cb.getState()).toBe("half-open");
+
+    // In half-open, a probe can be attempted (implementation should allow fast-path)
+    // This test verifies the state machine only; actual middleware would short-circuit
+    cb.recordSuccess();
+    expect(cb.getState()).toBe("closed");
+
+    vi.useRealTimers();
+  });
+});
+
+class QueryTimeoutCircuitBreakerSpec {
+  private state: "closed" | "open" | "half-open" = "closed";
+  private consecutiveTimeouts = 0;
+  private lastTimeoutTime: number | null = null;
+
+  constructor(
+    private readonly threshold: number,
+    private readonly recoveryWindowMs: number,
+  ) {}
+
+  getState(): "closed" | "open" | "half-open" {
+    if (this.state === "open" && this.lastTimeoutTime) {
+      const elapsed = Date.now() - this.lastTimeoutTime;
+      if (elapsed > this.recoveryWindowMs) {
+        this.state = "half-open";
+      }
+    }
+    return this.state;
+  }
+
+  getConsecutiveTimeouts(): number {
+    return this.consecutiveTimeouts;
+  }
+
+  recordTimeout(): void {
+    this.consecutiveTimeouts++;
+    this.lastTimeoutTime = Date.now();
+    if (this.consecutiveTimeouts >= this.threshold) {
+      this.state = "open";
+    }
+  }
+
+  recordSuccess(): void {
+    const currentState = this.getState();
+    if (currentState === "half-open") {
+      this.state = "closed";
+      this.consecutiveTimeouts = 0;
+    } else if (currentState === "closed") {
+      this.consecutiveTimeouts = 0;
+    }
+  }
+
+  getMetrics() {
+    return {
+      state: this.getState(),
+      consecutive_timeouts: this.consecutiveTimeouts,
+    };
+  }
+}

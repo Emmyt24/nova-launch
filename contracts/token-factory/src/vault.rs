@@ -14,7 +14,7 @@ use soroban_sdk::{symbol_short, Address, Env};
 /// Pass `0` to disable the limit.
 pub fn set_vault_withdraw_limit(env: &Env, admin: &Address, limit: i128) -> Result<(), Error> {
     admin.require_auth();
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -28,7 +28,7 @@ pub fn set_vault_withdraw_limit(env: &Env, admin: &Address, limit: i128) -> Resu
 /// Manually resume vault withdrawals after a circuit breaker trigger (admin only).
 pub fn resume_vault(env: &Env, admin: &Address) -> Result<(), Error> {
     admin.require_auth();
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }

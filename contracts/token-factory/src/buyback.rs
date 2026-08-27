@@ -1,634 +1,427 @@
-use soroban_sdk::{contract, contractimpl, Address, Env};
+//! Buyback-and-burn step execution (issue #1764)
+//!
+//! A campaign is created here and then advanced one *step* at a time. Each
+//! step spends a slice of the campaign's treasury budget on the target token
+//! and burns everything it acquires, so the token's circulating supply falls
+//! by exactly what the step bought.
+//!
+//! ## Why steps
+//!
+//! Spending a whole budget in one transaction hands the entire position to a
+//! single price point and a single slippage event. Splitting it into capped
+//! steps bounds the damage of any one bad fill to `max_spend_per_step`, which
+//! is validated against the budget at creation time and re-checked on every
+//! execution.
+//!
+//! ## Accounting invariants
+//!
+//! Every step must preserve all of these, and any violation aborts the step
+//! before a single field is written:
+//!
+//! 1. `spent <= budget`                — a campaign can never overspend
+//! 2. `spent`, `tokens_bought`, `tokens_burned` are monotonically non-decreasing
+//! 3. `tokens_burned <= tokens_bought` — you cannot burn what you did not buy
+//!
+//! [`crate::campaign`] owns the campaign *state machine*; this module owns the
+//! campaign *record* and the money movement. Steps only execute while the
+//! campaign is `Active`, so pausing is an immediate, effective kill switch.
 
-use crate::types::{DataKey, Error};
+use crate::campaign_validation;
+use crate::events;
+use crate::storage;
+use crate::types::{BuybackCampaign, CampaignStatus, Error};
+use soroban_sdk::{contracttype, Address, Env};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[soroban_sdk::contracttype]
-pub struct BuybackCampaign {
-    pub token_address: Address,
-    pub total_budget: i128,
-    pub spent: i128,
-    pub tokens_bought: i128,
-    pub tokens_burned: i128,
-    pub max_spend_per_step: i128,
-    pub slippage_tolerance_bps: u32,
-    pub active: bool,
-}
+/// Basis-point denominator (100% = 10_000 bps).
+const BPS_DENOMINATOR: i128 = 10_000;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[soroban_sdk::contracttype]
+/// Outcome of a single [`execute_buyback_step`] call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionResult {
+    /// Budget spent by this step (not the campaign total).
     pub spent: i128,
+    /// Target tokens acquired by this step.
     pub bought: i128,
+    /// Target tokens burned by this step.
     pub burned: i128,
-    pub reconciled: bool,
+    /// 1-based index of this step within the campaign.
+    pub step_number: u32,
+    /// Campaign budget still unspent after this step.
+    pub budget_remaining: i128,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[soroban_sdk::contracttype]
+/// Expected-vs-realized burn comparison for a single step.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReconciliationReport {
     pub expected_burn: i128,
     pub realized_burn: i128,
+    /// `realized_burn - expected_burn`; negative means the burn under-delivered.
     pub delta: i128,
     pub reconciled: bool,
 }
 
-#[contract]
-pub struct BuybackContract;
+/// Create a buyback campaign in the `Active` state.
+///
+/// All parameters are validated by [`campaign_validation::validate_campaign_config`]
+/// before anything is persisted, so a stored campaign is always within bounds.
+///
+/// # Errors
+/// * `Unauthorized`   - caller is neither the contract admin nor the target token's creator
+/// * `TokenNotFound`  - `token_index` does not exist
+/// * `InvalidBudget` / `InvalidAmount` / `InvalidParameters` / `InvalidTimeWindow`
+///   - see [`campaign_validation`]
+#[allow(clippy::too_many_arguments)]
+pub fn create_campaign(
+    env: &Env,
+    creator: &Address,
+    token_index: u32,
+    budget: i128,
+    max_spend_per_step: i128,
+    start_time: u64,
+    end_time: u64,
+    min_interval: u64,
+    max_slippage_bps: u32,
+    source_token: &Address,
+) -> Result<u64, Error> {
+    creator.require_auth();
 
-#[contractimpl]
-impl BuybackContract {
-    pub fn execute_buyback_step(
-        env: Env,
-        campaign_id: u64,
-        quote_amount: i128,
-        min_tokens_out: i128,
-    ) -> Result<ExecutionResult, Error> {
-        let key = DataKey::BuybackCampaign(campaign_id);
-        let mut campaign: BuybackCampaign = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::CampaignNotFound)?;
+    let token = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
-        if !campaign.active {
-            return Err(Error::CampaignInactive);
-        }
-
-        if quote_amount <= 0 || min_tokens_out <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        if quote_amount > campaign.max_spend_per_step {
-            return Err(Error::ExceedsStepLimit);
-        }
-
-        let remaining = campaign.total_budget.checked_sub(campaign.spent)
-            .ok_or(Error::ArithmeticError)?;
-        
-        if quote_amount > remaining {
-            return Err(Error::InsufficientBudget);
-        }
-
-        // Simulate swap (in production, call DEX contract)
-        let tokens_received = simulate_swap(&env, quote_amount, min_tokens_out)?;
-
-        // Slippage check
-        let expected_min = calculate_min_with_slippage(quote_amount, campaign.slippage_tolerance_bps)?;
-        if tokens_received < expected_min {
-            return Err(Error::SlippageExceeded);
-        }
-
-        // Burn tokens and get realized amount
-        let realized_burn = burn_tokens(&env, &campaign.token_address, tokens_received)?;
-
-        // Reconciliation: expected vs realized
-        let reconciliation = reconcile_burn(tokens_received, realized_burn)?;
-        
-        if !reconciliation.reconciled {
-            return Err(Error::ReconciliationFailed);
-        }
-
-        // Invariant checks before update
-        check_monotonic_invariants(&campaign, quote_amount, realized_burn)?;
-
-        // Update campaign atomically
-        let new_spent = campaign.spent.checked_add(quote_amount)
-            .ok_or(Error::ArithmeticError)?;
-        let new_bought = campaign.tokens_bought.checked_add(tokens_received)
-            .ok_or(Error::ArithmeticError)?;
-        let new_burned = campaign.tokens_burned.checked_add(realized_burn)
-            .ok_or(Error::ArithmeticError)?;
-
-        campaign.spent = new_spent;
-        campaign.tokens_bought = new_bought;
-        campaign.tokens_burned = new_burned;
-
-        env.storage().persistent().set(&key, &campaign);
-
-        // Emit settlement event
-        emit_buyback_step_settled(
-            &env,
-            campaign_id,
-            quote_amount,
-            tokens_received,
-            realized_burn,
-            reconciliation.delta,
-        );
-
-        Ok(ExecutionResult {
-            spent: quote_amount,
-            bought: tokens_received,
-            burned: realized_burn,
-            reconciled: true,
-        })
+    // Only the contract admin or the token's own creator may commit treasury
+    // funds to buying that token back.
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if creator != &admin && creator != &token.creator {
+        return Err(Error::Unauthorized);
     }
 
-    pub fn create_campaign(
-        env: Env,
-        campaign_id: u64,
-        token_address: Address,
-        total_budget: i128,
-        max_spend_per_step: i128,
-        slippage_tolerance_bps: u32,
-    ) -> Result<(), Error> {
-        if total_budget <= 0 || max_spend_per_step <= 0 {
-            return Err(Error::InvalidAmount);
-        }
+    campaign_validation::validate_campaign_config(
+        env,
+        budget,
+        max_spend_per_step,
+        start_time,
+        end_time,
+        min_interval,
+        max_slippage_bps,
+        source_token,
+        &token.address,
+    )?;
 
-        if max_spend_per_step > total_budget {
-            return Err(Error::InvalidParameters);
-        }
+    let campaign_id = storage::increment_campaign_count(env)?;
+    let owner_index = storage::increment_owner_campaign_count(env, creator)?
+        .checked_sub(1)
+        .ok_or(Error::ArithmeticError)?;
+    storage::set_campaign_by_owner(env, creator, owner_index, campaign_id);
+    storage::increment_active_campaign_count(env)?;
 
-        if slippage_tolerance_bps > 10000 {
-            return Err(Error::InvalidParameters);
-        }
+    let now = env.ledger().timestamp();
+    let campaign = BuybackCampaign {
+        id: campaign_id,
+        token_index,
+        budget,
+        spent: 0,
+        tokens_bought: 0,
+        tokens_burned: 0,
+        max_spend_per_step,
+        execution_count: 0,
+        start_time,
+        end_time,
+        min_interval,
+        max_slippage_bps,
+        source_token: source_token.clone(),
+        target_token: token.address.clone(),
+        owner: creator.clone(),
+        status: CampaignStatus::Active,
+        created_at: now,
+        updated_at: now,
+        trigger_price: 0,
+        last_executed_at: 0,
+    };
 
-        let campaign = BuybackCampaign {
-            token_address,
-            total_budget,
-            spent: 0,
-            tokens_bought: 0,
-            tokens_burned: 0,
-            max_spend_per_step,
-            slippage_tolerance_bps,
-            active: true,
-        };
+    storage::set_campaign(env, campaign_id, &campaign);
+    events::emit_campaign_created(env, campaign_id, creator, token_index, budget);
 
-        let key = DataKey::BuybackCampaign(campaign_id);
-        env.storage().persistent().set(&key, &campaign);
-
-        Ok(())
-    }
-
-    pub fn get_campaign(env: Env, campaign_id: u64) -> Result<BuybackCampaign, Error> {
-        let key = DataKey::BuybackCampaign(campaign_id);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::CampaignNotFound)
-    }
+    Ok(campaign_id)
 }
 
-fn simulate_swap(env: &Env, quote_amount: i128, min_out: i128) -> Result<i128, Error> {
-    // Simplified swap simulation: 1:100 ratio
-    let tokens = quote_amount.checked_mul(100)
+/// Read a campaign record.
+///
+/// # Errors
+/// * `CampaignNotFound` - no campaign with `campaign_id`
+pub fn get_campaign(env: &Env, campaign_id: u64) -> Result<BuybackCampaign, Error> {
+    storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)
+}
+
+/// Execute one buyback step: spend budget, acquire the target token, burn it.
+///
+/// `quoted_tokens_out` is what the off-chain router quoted for `quote_amount`;
+/// `min_tokens_out` is the caller's own floor. The step settles only if the
+/// venue delivers at least both the caller's floor and the campaign's
+/// slippage-adjusted floor, so a stale or manipulated quote cannot drain the
+/// budget at a bad price.
+///
+/// The campaign record is written once, after every check has passed, so a
+/// rejected step leaves no partial state behind and is safe to retry.
+///
+/// # Errors
+/// * `CampaignNotFound`   - no campaign with `campaign_id`
+/// * `Unauthorized`       - caller is neither campaign owner nor contract admin
+/// * `CampaignInactive`   - campaign is paused, completed, cancelled or expired
+/// * `CampaignExpiredError` - the ledger is outside the campaign's time window
+/// * `IntervalNotElapsed` - `min_interval` has not passed since the last step
+/// * `InvalidAmount`      - `quote_amount` or the quote is not positive
+/// * `ExceedsStepLimit`   - `quote_amount` exceeds `max_spend_per_step`
+/// * `InsufficientBudget` - `quote_amount` exceeds the unspent budget
+/// * `SlippageExceeded`   - the venue delivered below the slippage floor
+/// * `ReconciliationFailed` - the realized burn did not match the acquired amount
+/// * `InvariantViolation` - an accounting invariant would break
+pub fn execute_buyback_step(
+    env: &Env,
+    caller: &Address,
+    campaign_id: u64,
+    quote_amount: i128,
+    quoted_tokens_out: i128,
+    min_tokens_out: i128,
+) -> Result<ExecutionResult, Error> {
+    caller.require_auth();
+
+    let mut campaign = storage::get_campaign(env, campaign_id).ok_or(Error::CampaignNotFound)?;
+
+    // Authorization mirrors the state machine: owner or contract admin.
+    if caller != &campaign.owner {
+        let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+        if caller != &admin {
+            return Err(Error::Unauthorized);
+        }
+    }
+
+    // Only Active campaigns execute. Pause is therefore a real kill switch,
+    // not an advisory flag.
+    if campaign.status != CampaignStatus::Active {
+        return Err(Error::CampaignInactive);
+    }
+
+    let now = env.ledger().timestamp();
+    if now < campaign.start_time || now > campaign.end_time {
+        return Err(Error::CampaignExpiredError);
+    }
+
+    // Rate limit: enforce the configured gap between steps. `last_executed_at`
+    // is 0 for a campaign that has never executed, which always passes.
+    if campaign.last_executed_at != 0 {
+        let earliest_next = campaign
+            .last_executed_at
+            .checked_add(campaign.min_interval)
+            .ok_or(Error::ArithmeticError)?;
+        if now < earliest_next {
+            return Err(Error::IntervalNotElapsed);
+        }
+    }
+
+    if quote_amount <= 0 || quoted_tokens_out <= 0 || min_tokens_out <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    // Per-step cap, checked before the budget so an oversized request reports
+    // the more specific of the two failures.
+    if quote_amount > campaign.max_spend_per_step {
+        return Err(Error::ExceedsStepLimit);
+    }
+
+    let remaining = campaign
+        .budget
+        .checked_sub(campaign.spent)
         .ok_or(Error::ArithmeticError)?;
-    
-    if tokens < min_out {
+    if quote_amount > remaining {
+        return Err(Error::InsufficientBudget);
+    }
+
+    // ── Interaction: acquire the target token ────────────────────────────
+    let tokens_received = execute_swap(env, quote_amount, quoted_tokens_out)?;
+
+    // Slippage floor: the campaign's tolerance applied to the router's quote.
+    let slippage_floor = apply_slippage_tolerance(quoted_tokens_out, campaign.max_slippage_bps)?;
+    if tokens_received < slippage_floor || tokens_received < min_tokens_out {
         return Err(Error::SlippageExceeded);
     }
-    
-    Ok(tokens)
-}
 
-fn burn_tokens(env: &Env, _token: &Address, amount: i128) -> Result<i128, Error> {
-    if amount <= 0 {
-        return Err(Error::InvalidBurnAmount);
+    // ── Burn everything acquired ─────────────────────────────────────────
+    let realized_burn = burn_acquired(env, campaign.token_index, tokens_received)?;
+    let reconciliation = reconcile_burn(tokens_received, realized_burn);
+    if !reconciliation.reconciled {
+        return Err(Error::ReconciliationFailed);
     }
-    // In production: invoke token.burn() and return actual burned amount
-    // For now, simulate potential rounding by returning exact amount
-    Ok(amount)
-}
 
-fn reconcile_burn(expected: i128, realized: i128) -> Result<ReconciliationReport, Error> {
-    let delta = expected.checked_sub(realized)
+    // ── Effects: compute the whole next state, then commit it at once ────
+    let new_spent = campaign
+        .spent
+        .checked_add(quote_amount)
         .ok_or(Error::ArithmeticError)?;
-    
-    // Allow small rounding differences (up to 1 unit)
-    let reconciled = delta.abs() <= 1;
-    
-    Ok(ReconciliationReport {
-        expected_burn: expected,
-        realized_burn: realized,
-        delta,
-        reconciled,
+    let new_bought = campaign
+        .tokens_bought
+        .checked_add(tokens_received)
+        .ok_or(Error::ArithmeticError)?;
+    let new_burned = campaign
+        .tokens_burned
+        .checked_add(realized_burn)
+        .ok_or(Error::ArithmeticError)?;
+    let new_execution_count = campaign
+        .execution_count
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+
+    check_invariants(&campaign, new_spent, new_bought, new_burned)?;
+
+    campaign.spent = new_spent;
+    campaign.tokens_bought = new_bought;
+    campaign.tokens_burned = new_burned;
+    campaign.execution_count = new_execution_count;
+    campaign.last_executed_at = now;
+    campaign.updated_at = now;
+    storage::set_campaign(env, campaign_id, &campaign);
+
+    let budget_remaining = campaign
+        .budget
+        .checked_sub(campaign.spent)
+        .ok_or(Error::ArithmeticError)?;
+
+    events::emit_buyback_step_settled(
+        env,
+        campaign_id,
+        caller,
+        quote_amount,
+        tokens_received,
+        realized_burn,
+        new_execution_count,
+    );
+
+    Ok(ExecutionResult {
+        spent: quote_amount,
+        bought: tokens_received,
+        burned: realized_burn,
+        step_number: new_execution_count,
+        budget_remaining,
     })
 }
 
-fn check_monotonic_invariants(
+/// Lower bound on an acceptable fill for `quoted_out` at `slippage_bps`.
+///
+/// `floor = quoted_out * (10_000 - slippage_bps) / 10_000`, rounded down, so
+/// rounding never loosens the bound. A tolerance at or above 100% is rejected
+/// rather than allowed to produce a zero floor, which would disable the check
+/// entirely.
+///
+/// # Errors
+/// * `InvalidParameters` - `slippage_bps` is 100% or more
+/// * `ArithmeticError`   - the intermediate product overflows
+pub fn apply_slippage_tolerance(quoted_out: i128, slippage_bps: u32) -> Result<i128, Error> {
+    let bps = slippage_bps as i128;
+    if bps >= BPS_DENOMINATOR {
+        return Err(Error::InvalidParameters);
+    }
+    quoted_out
+        .checked_mul(BPS_DENOMINATOR - bps)
+        .ok_or(Error::ArithmeticError)?
+        .checked_div(BPS_DENOMINATOR)
+        .ok_or(Error::ArithmeticError)
+}
+
+/// Compare the burn the contract asked for against the burn it got.
+///
+/// Kept separate from the step so the comparison is exercisable on its own and
+/// so a future partial-burn policy has one place to change.
+pub fn reconcile_burn(expected: i128, realized: i128) -> ReconciliationReport {
+    ReconciliationReport {
+        expected_burn: expected,
+        realized_burn: realized,
+        delta: realized - expected,
+        reconciled: realized == expected,
+    }
+}
+
+/// Swap `quote_amount` of the source token for the target token.
+///
+/// This is the DEX integration seam. There is no AMM wired into the factory
+/// yet, so the venue settles at exactly the router's quote; slippage is still
+/// enforced by the caller against [`apply_slippage_tolerance`], which is what
+/// makes the check meaningful once a real venue replaces this body.
+///
+/// # Errors
+/// * `InvalidAmount` - either argument is not positive
+fn execute_swap(_env: &Env, quote_amount: i128, quoted_tokens_out: i128) -> Result<i128, Error> {
+    if quote_amount <= 0 || quoted_tokens_out <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+    Ok(quoted_tokens_out)
+}
+
+/// Burn `amount` of the factory-issued token at `token_index`.
+///
+/// The acquired tokens are never credited to a holder balance — they are
+/// retired straight out of circulating supply — so this adjusts supply and
+/// burn totals only, and returns the amount actually burned.
+///
+/// # Errors
+/// * `TokenNotFound`      - `token_index` does not exist
+/// * `TokenPaused`        - the token is paused; a paused token cannot be burned
+/// * `InsufficientBalance` - the burn would drive total supply negative
+/// * `ArithmeticError`    - a total would overflow
+fn burn_acquired(env: &Env, token_index: u32, amount: i128) -> Result<i128, Error> {
+    let mut info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
+
+    if storage::is_token_paused(env, token_index) {
+        return Err(Error::TokenPaused);
+    }
+
+    if amount > info.total_supply {
+        return Err(Error::InsufficientBalance);
+    }
+
+    info.total_supply = info
+        .total_supply
+        .checked_sub(amount)
+        .ok_or(Error::ArithmeticError)?;
+    info.total_burned = info
+        .total_burned
+        .checked_add(amount)
+        .ok_or(Error::ArithmeticError)?;
+    info.burn_count = info
+        .burn_count
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
+
+    storage::set_token_info(env, token_index, &info);
+    let _ = crate::snapshot::record_supply_snapshot(env, token_index, info.total_supply);
+
+    Ok(amount)
+}
+
+/// Assert the campaign accounting invariants for a proposed next state.
+///
+/// Runs before any field is written, so a violation aborts the step rather
+/// than persisting an inconsistent campaign.
+///
+/// # Errors
+/// * `InvariantViolation` - spend would exceed budget, a total would move
+///   backwards, or burned would exceed bought
+fn check_invariants(
     campaign: &BuybackCampaign,
     new_spent: i128,
+    new_bought: i128,
     new_burned: i128,
 ) -> Result<(), Error> {
-    // Spent must be monotonically increasing
-    if new_spent <= 0 {
+    if new_spent > campaign.budget {
         return Err(Error::InvariantViolation);
     }
-    
-    // Burned must be monotonically increasing
-    if new_burned <= 0 {
+    if new_spent < campaign.spent
+        || new_bought < campaign.tokens_bought
+        || new_burned < campaign.tokens_burned
+    {
         return Err(Error::InvariantViolation);
     }
-    
-    // New totals must not decrease
-    let next_spent = campaign.spent.checked_add(new_spent)
-        .ok_or(Error::ArithmeticError)?;
-    let next_burned = campaign.tokens_burned.checked_add(new_burned)
-        .ok_or(Error::ArithmeticError)?;
-    
-    if next_spent < campaign.spent {
+    if new_burned > new_bought {
         return Err(Error::InvariantViolation);
     }
-    
-    if next_burned < campaign.tokens_burned {
-        return Err(Error::InvariantViolation);
-    }
-    
-    // Spent must not exceed budget
-    if next_spent > campaign.total_budget {
-        return Err(Error::InvariantViolation);
-    }
-    
     Ok(())
-}
-
-fn emit_buyback_step_settled(
-    env: &Env,
-    campaign_id: u64,
-    spent: i128,
-    bought: i128,
-    burned: i128,
-    delta: i128,
-) {
-    env.events().publish(
-        (soroban_sdk::symbol_short!("buyback"), campaign_id),
-        (spent, bought, burned, delta),
-    );
-}
-
-fn calculate_min_with_slippage(amount: i128, slippage_bps: u32) -> Result<i128, Error> {
-    let slippage_factor = 10000u32.checked_sub(slippage_bps)
-        .ok_or(Error::ArithmeticError)?;
-    
-    let min = amount
-        .checked_mul(slippage_factor as i128)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(10000)
-        .ok_or(Error::ArithmeticError)?;
-    
-    Ok(min)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
-
-    fn setup() -> (Env, Address) {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BuybackContract);
-        (env, contract_id)
-    }
-
-    #[test]
-    fn test_create_campaign_success() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(
-                env.clone(),
-                1,
-                token.clone(),
-                1_000_000,
-                100_000,
-                500, // 5% slippage
-            )
-        });
-
-        assert!(result.is_ok());
-
-        let campaign = env.as_contract(&contract_id, || {
-            BuybackContract::get_campaign(env.clone(), 1)
-        });
-
-        assert!(campaign.is_ok());
-        let c = campaign.unwrap();
-        assert_eq!(c.total_budget, 1_000_000);
-        assert_eq!(c.spent, 0);
-        assert_eq!(c.tokens_bought, 0);
-        assert_eq!(c.tokens_burned, 0);
-        assert!(c.active);
-    }
-
-    #[test]
-    fn test_create_campaign_invalid_budget() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 0, 100_000, 500)
-        });
-
-        assert_eq!(result, Err(Error::InvalidAmount));
-    }
-
-    #[test]
-    fn test_create_campaign_step_exceeds_budget() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 100_000, 200_000, 500)
-        });
-
-        assert_eq!(result, Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_create_campaign_invalid_slippage() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        let result = env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 10001)
-        });
-
-        assert_eq!(result, Err(Error::InvalidParameters));
-    }
-
-    #[test]
-    fn test_execute_step_success() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(
-                env.clone(),
-                1,
-                token,
-                1_000_000,
-                100_000,
-                500,
-            )
-            .unwrap();
-
-            let result = BuybackContract::execute_buyback_step(
-                env.clone(),
-                1,
-                50_000,
-                4_500_000, // min tokens out
-            );
-
-            assert!(result.is_ok());
-            let exec = result.unwrap();
-            assert_eq!(exec.spent, 50_000);
-            assert_eq!(exec.bought, 5_000_000); // 50k * 100
-            assert_eq!(exec.burned, 5_000_000);
-            assert!(exec.reconciled);
-
-            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
-            assert_eq!(campaign.spent, 50_000);
-            assert_eq!(campaign.tokens_bought, 5_000_000);
-            assert_eq!(campaign.tokens_burned, 5_000_000);
-        });
-    }
-
-    #[test]
-    fn test_execute_step_exceeds_step_limit() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
-                .unwrap();
-
-            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 150_000, 1_000_000);
-
-            assert_eq!(result, Err(Error::ExceedsStepLimit));
-        });
-    }
-
-    #[test]
-    fn test_execute_step_insufficient_budget() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 100_000, 50_000, 500)
-                .unwrap();
-
-            // First execution
-            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000).unwrap();
-
-            // Second execution
-            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000).unwrap();
-
-            // Third should fail
-            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 1_000_000);
-
-            assert_eq!(result, Err(Error::InsufficientBudget));
-        });
-    }
-
-    #[test]
-    fn test_execute_step_slippage_exceeded() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
-                .unwrap();
-
-            // Request more tokens than swap will provide
-            let result = BuybackContract::execute_buyback_step(
-                env.clone(),
-                1,
-                50_000,
-                6_000_000, // min out > 5M actual
-            );
-
-            assert_eq!(result, Err(Error::SlippageExceeded));
-        });
-    }
-
-    #[test]
-    fn test_execute_step_campaign_not_found() {
-        let (env, contract_id) = setup();
-
-        let result = env.as_contract(&contract_id, || {
-            BuybackContract::execute_buyback_step(env.clone(), 999, 50_000, 1_000_000)
-        });
-
-        assert_eq!(result, Err(Error::CampaignNotFound));
-    }
-
-    #[test]
-    fn test_execute_step_invalid_amounts() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
-                .unwrap();
-
-            let result1 = BuybackContract::execute_buyback_step(env.clone(), 1, 0, 1_000_000);
-            assert_eq!(result1, Err(Error::InvalidAmount));
-
-            let result2 = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 0);
-            assert_eq!(result2, Err(Error::InvalidAmount));
-
-            let result3 = BuybackContract::execute_buyback_step(env.clone(), 1, -100, 1_000_000);
-            assert_eq!(result3, Err(Error::InvalidAmount));
-        });
-    }
-
-    #[test]
-    fn test_multiple_executions_accounting() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
-                .unwrap();
-
-            // Execute 3 steps
-            for _ in 0..3 {
-                BuybackContract::execute_buyback_step(env.clone(), 1, 30_000, 2_500_000).unwrap();
-            }
-
-            let campaign = BuybackContract::get_campaign(env.clone(), 1).unwrap();
-            assert_eq!(campaign.spent, 90_000);
-            assert_eq!(campaign.tokens_bought, 9_000_000);
-            assert_eq!(campaign.tokens_burned, 9_000_000);
-        });
-    }
-
-    #[test]
-    fn test_slippage_calculation() {
-        // 5% slippage (500 bps)
-        let min = calculate_min_with_slippage(1_000_000, 500).unwrap();
-        assert_eq!(min, 950_000);
-
-        // 1% slippage (100 bps)
-        let min = calculate_min_with_slippage(1_000_000, 100).unwrap();
-        assert_eq!(min, 990_000);
-
-        // 0% slippage
-        let min = calculate_min_with_slippage(1_000_000, 0).unwrap();
-        assert_eq!(min, 1_000_000);
-    }
-
-    #[test]
-    fn test_atomic_accounting_on_failure() {
-        let (env, contract_id) = setup();
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            BuybackContract::create_campaign(env.clone(), 1, token, 1_000_000, 100_000, 500)
-                .unwrap();
-
-            // Successful execution
-            BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 4_500_000).unwrap();
-
-            let campaign_before = BuybackContract::get_campaign(env.clone(), 1).unwrap();
-
-            // Failed execution (slippage)
-            let result = BuybackContract::execute_buyback_step(env.clone(), 1, 50_000, 6_000_000);
-            assert!(result.is_err());
-
-            // Campaign state should be unchanged
-            let campaign_after = BuybackContract::get_campaign(env.clone(), 1).unwrap();
-            assert_eq!(campaign_before, campaign_after);
-        });
-    }
-
-    #[test]
-    fn test_reconciliation_exact_match() {
-        let report = reconcile_burn(1_000_000, 1_000_000).unwrap();
-        assert_eq!(report.expected_burn, 1_000_000);
-        assert_eq!(report.realized_burn, 1_000_000);
-        assert_eq!(report.delta, 0);
-        assert!(report.reconciled);
-    }
-
-    #[test]
-    fn test_reconciliation_rounding_tolerance() {
-        // 1 unit difference is acceptable
-        let report = reconcile_burn(1_000_000, 999_999).unwrap();
-        assert_eq!(report.delta, 1);
-        assert!(report.reconciled);
-
-        let report = reconcile_burn(999_999, 1_000_000).unwrap();
-        assert_eq!(report.delta, -1);
-        assert!(report.reconciled);
-    }
-
-    #[test]
-    fn test_reconciliation_exceeds_tolerance() {
-        // 2 units difference is not acceptable
-        let report = reconcile_burn(1_000_000, 999_998).unwrap();
-        assert_eq!(report.delta, 2);
-        assert!(!report.reconciled);
-    }
-
-    #[test]
-    fn test_monotonic_invariant_positive_amounts() {
-        let campaign = BuybackCampaign {
-            token_address: Address::generate(&Env::default()),
-            total_budget: 1_000_000,
-            spent: 100_000,
-            tokens_bought: 10_000_000,
-            tokens_burned: 10_000_000,
-            max_spend_per_step: 100_000,
-            slippage_tolerance_bps: 500,
-            active: true,
-        };
-
-        let result = check_monotonic_invariants(&campaign, 50_000, 5_000_000);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_monotonic_invariant_zero_spent() {
-        let campaign = BuybackCampaign {
-            token_address: Address::generate(&Env::default()),
-            total_budget: 1_000_000,
-            spent: 100_000,
-            tokens_bought: 10_000_000,
-            tokens_burned: 10_000_000,
-            max_spend_per_step: 100_000,
-            slippage_tolerance_bps: 500,
-            active: true,
-        };
-
-        let result = check_monotonic_invariants(&campaign, 0, 5_000_000);
-        assert_eq!(result, Err(Error::InvariantViolation));
-    }
-
-    #[test]
-    fn test_monotonic_invariant_zero_burned() {
-        let campaign = BuybackCampaign {
-            token_address: Address::generate(&Env::default()),
-            total_budget: 1_000_000,
-            spent: 100_000,
-            tokens_bought: 10_000_000,
-            tokens_burned: 10_000_000,
-            max_spend_per_step: 100_000,
-            slippage_tolerance_bps: 500,
-            active: true,
-        };
-
-        let result = check_monotonic_invariants(&campaign, 50_000, 0);
-        assert_eq!(result, Err(Error::InvariantViolation));
-    }
-
-    #[test]
-    fn test_monotonic_invariant_exceeds_budget() {
-        let campaign = BuybackCampaign {
-            token_address: Address::generate(&Env::default()),
-            total_budget: 1_000_000,
-            spent: 950_000,
-            tokens_bought: 95_000_000,
-            tokens_burned: 95_000_000,
-            max_spend_per_step: 100_000,
-            slippage_tolerance_bps: 500,
-            active: true,
-        };
-
-        // Trying to spend 100k when only 50k remains
-        let result = check_monotonic_invariants(&campaign, 100_000, 10_000_000);
-        assert_eq!(result, Err(Error::InvariantViolation));
-    }
 }

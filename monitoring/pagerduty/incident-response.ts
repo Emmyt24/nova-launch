@@ -22,7 +22,8 @@ export type EventType =
   | "db-connection-loss"
   | "event-listener-down"
   | "api-error-rate-high"
-  | "disk-space-low";
+  | "disk-space-low"
+  | "dependency-health-critical";
 
 export interface SeverityRoute {
   priority: Priority;
@@ -61,6 +62,11 @@ export const SEVERITY_ROUTING: Record<EventType, SeverityRoute> = {
     priority: "P3",
     severity: "warning",
     escalationPolicyId: "EP-INFRA-003",
+  },
+  "dependency-health-critical": {
+    priority: "P1",
+    severity: "critical",
+    escalationPolicyId: "EP-CRITICAL-001",
   },
 };
 
@@ -323,6 +329,7 @@ export function resolveHighApiErrorRate() {
 }
 
 export interface StreamDivergenceDetails {
+  [key: string]: unknown;
   streamId: number;
   field: string;
   onChainValue: string;

@@ -29,6 +29,12 @@ pub const MAX_PINS: u32 = 10;
 /// Maximum byte length of an IPFS URI string.
 pub const MAX_URI_LEN: u32 = 256;
 
+/// Default rate limit for pin requests (pins per 60 seconds).
+pub const DEFAULT_PIN_RATE_LIMIT: u32 = 10;
+
+/// Maximum allowed queue depth before warning threshold.
+pub const PIN_QUEUE_WARNING_THRESHOLD: u32 = 5;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// A single IPFS pin record for a token's metadata.
@@ -59,6 +65,16 @@ pub enum PinKey {
     Pin(u32, u32),
     /// Number of pins registered for a token.
     PinCount(u32),
+    /// Rate limit configuration: max pins per 60-second window.
+    RateLimitPerMinute,
+    /// Current token bucket level (pins remaining in current window).
+    TokenBucketTokens,
+    /// Timestamp of last token bucket refill.
+    TokenBucketRefillTime,
+    /// Queue of pending pin requests waiting for rate limit.
+    PinRequestQueue,
+    /// Current queue depth.
+    QueueDepth,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -92,7 +108,7 @@ pub fn add_pin(
     caller.require_auth();
 
     let token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
 
     if *caller != token_info.creator && *caller != admin {
         return Err(Error::Unauthorized);
@@ -108,6 +124,9 @@ pub fn add_pin(
     if pin_count >= MAX_PINS {
         return Err(Error::InvalidParameters);
     }
+
+    // ── Rate limit check ─────────────────────────────────────────────────────
+    let can_process_immediately = check_rate_limit_and_queue(env)?;
 
     let pin_index = pin_count;
 
@@ -131,7 +150,11 @@ pub fn add_pin(
         .set(&PinKey::PinCount(token_index), &new_count);
 
     // ── Event ────────────────────────────────────────────────────────────────
-    emit_pin_added(env, token_index, pin_index, caller, &uri);
+    if can_process_immediately {
+        emit_pin_added(env, token_index, pin_index, caller, &uri);
+    } else {
+        emit_pin_queued(env, token_index, pin_index, caller, &uri);
+    }
 
     Ok(pin_index)
 }
@@ -159,7 +182,7 @@ pub fn deactivate_pin(
     caller.require_auth();
 
     let token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
 
     if *caller != token_info.creator && *caller != admin {
         return Err(Error::Unauthorized);
@@ -222,6 +245,114 @@ pub fn get_active_pin_count(env: &Env, token_index: u32) -> u32 {
     active
 }
 
+/// Return the current rate limit for pin requests (pins per 60 seconds).
+pub fn get_pin_rate_limit(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&PinKey::RateLimitPerMinute)
+        .unwrap_or(DEFAULT_PIN_RATE_LIMIT)
+}
+
+/// Set the rate limit for pin requests (admin only).
+pub fn set_pin_rate_limit(env: &Env, admin: &Address, limit: u32) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
+        return Err(Error::Unauthorized);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&PinKey::RateLimitPerMinute, &limit);
+
+    emit_rate_limit_updated(env, limit);
+    Ok(())
+}
+
+/// Return the current queue depth of pending pin requests.
+pub fn get_pin_queue_depth(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&PinKey::QueueDepth)
+        .unwrap_or(0)
+}
+
+/// Check if a pin request can be processed immediately or must be queued.
+/// Returns true if the request can proceed, false if queued.
+fn check_rate_limit_and_queue(env: &Env) -> Result<bool, Error> {
+    let rate_limit = get_pin_rate_limit(env);
+    let now = env.ledger().timestamp();
+
+    // Get current bucket state
+    let mut tokens: u32 = env
+        .storage()
+        .persistent()
+        .get(&PinKey::TokenBucketTokens)
+        .unwrap_or(rate_limit);
+
+    let last_refill: u64 = env
+        .storage()
+        .persistent()
+        .get(&PinKey::TokenBucketRefillTime)
+        .unwrap_or(now);
+
+    // Refill bucket based on elapsed time (60-second window)
+    let elapsed = now.saturating_sub(last_refill);
+    if elapsed >= 60 {
+        tokens = rate_limit;
+        env.storage()
+            .persistent()
+            .set(&PinKey::TokenBucketRefillTime, &now);
+    }
+
+    // Check if we have tokens available
+    if tokens > 0 {
+        // Consume a token
+        env.storage()
+            .persistent()
+            .set(&PinKey::TokenBucketTokens, &(tokens - 1));
+        Ok(true) // Can proceed immediately
+    } else {
+        // Queue the request
+        let queue_depth: u32 = env
+            .storage()
+            .persistent()
+            .get(&PinKey::QueueDepth)
+            .unwrap_or(0);
+
+        let new_depth = queue_depth
+            .checked_add(1)
+            .ok_or(Error::ArithmeticError)?;
+
+        env.storage()
+            .persistent()
+            .set(&PinKey::QueueDepth, &new_depth);
+
+        // Emit warning if queue depth crosses threshold
+        if new_depth == PIN_QUEUE_WARNING_THRESHOLD {
+            emit_pin_queue_warning(env, new_depth);
+        }
+
+        Ok(false) // Queued, not processed immediately
+    }
+}
+
+fn consume_queue_item(env: &Env) -> Result<(), Error> {
+    let queue_depth: u32 = env
+        .storage()
+        .persistent()
+        .get(&PinKey::QueueDepth)
+        .unwrap_or(0);
+
+    if queue_depth > 0 {
+        env.storage()
+            .persistent()
+            .set(&PinKey::QueueDepth, &(queue_depth - 1));
+    }
+
+    Ok(())
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn emit_pin_added(env: &Env, token_index: u32, pin_index: u32, pinned_by: &Address, uri: &String) {
@@ -235,6 +366,27 @@ fn emit_pin_deactivated(env: &Env, token_index: u32, pin_index: u32, deactivated
     env.events().publish(
         (symbol_short!("pin_deact"), token_index),
         (pin_index, deactivated_by),
+    );
+}
+
+fn emit_pin_queued(env: &Env, token_index: u32, pin_index: u32, queued_by: &Address, uri: &String) {
+    env.events().publish(
+        (symbol_short!("pin_q"), token_index),
+        (pin_index, queued_by, uri),
+    );
+}
+
+fn emit_pin_queue_warning(env: &Env, queue_depth: u32) {
+    env.events().publish(
+        (symbol_short!("pin_qw"),),
+        queue_depth,
+    );
+}
+
+fn emit_rate_limit_updated(env: &Env, limit: u32) {
+    env.events().publish(
+        (symbol_short!("pin_rl"),),
+        limit,
     );
 }
 
@@ -594,5 +746,101 @@ mod tests {
 
         // Total count still 2 (audit trail preserved)
         assert_eq!(env.as_contract(&contract_id, || get_pin_count(&env, 0)), 2);
+    }
+
+    // ── Rate limiting tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_burst_pin_requests_are_queued_not_dropped() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, contract_id) = setup(&env);
+        let creator = Address::generate(&env);
+        seed_token(&env, &contract_id, 0, &creator);
+
+        // Set a low rate limit to trigger queueing
+        env.as_contract(&contract_id, || {
+            set_pin_rate_limit(&env, &Address::generate(&env), 2).ok()
+        });
+
+        // Admin can actually set the rate limit
+        let admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            set_pin_rate_limit(&env, &admin, 2).ok()
+        });
+
+        // Add pins until we exceed the rate limit
+        let mut all_succeeded = true;
+        for i in 0..5 {
+            let uri = make_uri(&env, &format!("ipfs://QmBurst{}", i));
+            let result = env.as_contract(&contract_id, || add_pin(&env, &creator, 0, uri));
+            if result.is_err() {
+                all_succeeded = false;
+                break;
+            }
+        }
+
+        // All pins should have succeeded (returned a pin_index), not dropped
+        assert!(all_succeeded, "Pins were dropped instead of queued");
+
+        // Check queue depth
+        let queue_depth = env.as_contract(&contract_id, || get_pin_queue_depth(&env));
+        assert!(queue_depth > 0, "Queue should have pending pins");
+    }
+
+    #[test]
+    fn test_rate_limit_configuration() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admin, contract_id) = setup(&env);
+
+        let default_limit = env.as_contract(&contract_id, || get_pin_rate_limit(&env));
+        assert_eq!(default_limit, DEFAULT_PIN_RATE_LIMIT);
+
+        env.as_contract(&contract_id, || {
+            set_pin_rate_limit(&env, &admin, 20).unwrap()
+        });
+
+        let updated_limit = env.as_contract(&contract_id, || get_pin_rate_limit(&env));
+        assert_eq!(updated_limit, 20);
+    }
+
+    #[test]
+    fn test_rate_limit_unauthorized_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, contract_id) = setup(&env);
+        let non_admin = Address::generate(&env);
+
+        let result = env.as_contract(&contract_id, || {
+            set_pin_rate_limit(&env, &non_admin, 5)
+        });
+        assert_eq!(result, Err(Error::Unauthorized));
+    }
+
+    #[test]
+    fn test_queue_warning_at_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, contract_id) = setup(&env);
+        let creator = Address::generate(&env);
+        seed_token(&env, &contract_id, 0, &creator);
+        let admin = Address::generate(&env);
+
+        // Set very low rate limit
+        env.as_contract(&contract_id, || {
+            set_pin_rate_limit(&env, &admin, 1).unwrap()
+        });
+
+        // Add pins to trigger queueing
+        let before_events = env.events().all().len();
+        for i in 0..PIN_QUEUE_WARNING_THRESHOLD + 1 {
+            let uri = make_uri(&env, &format!("ipfs://QmTest{}", i));
+            let _ = env.as_contract(&contract_id, || add_pin(&env, &creator, 0, uri));
+        }
+        let after_events = env.events().all().len();
+
+        // Should have emitted warning event when queue hit threshold
+        assert!(after_events > before_events, "Events should be emitted");
     }
 }

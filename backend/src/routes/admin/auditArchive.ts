@@ -9,10 +9,11 @@
 import { Router } from "express";
 import { Database } from "../../config/database";
 import { checkpointStore } from "../../services/auditRetentionJob";
+import { authenticateAdmin } from "../../middleware/auth";
 
 export const auditArchiveRouter = Router();
 
-auditArchiveRouter.get("/archive-status", async (_req, res) => {
+auditArchiveRouter.get("/archive-status", authenticateAdmin, async (_req, res) => {
   try {
     // Load the latest persisted checkpoint (no-op if already cached).
     const checkpoint = await checkpointStore.load();

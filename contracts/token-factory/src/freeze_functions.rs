@@ -73,6 +73,7 @@ pub fn freeze_address(
 
     // Freeze the address
     storage::set_address_frozen(env, token_address, address_to_freeze, true);
+    storage::set_freeze_timestamp(env, token_address, address_to_freeze, env.ledger().timestamp());
 
     // Emit freeze event
     env.events().publish(
@@ -157,6 +158,15 @@ pub fn unfreeze_address(
         return Err(Error::InvalidParameters);
     }
 
+    // Check freeze cooldown grace period
+    let cooldown = storage::get_freeze_cooldown(env, token_address);
+    if cooldown > 0 {
+        let freeze_ts = storage::get_freeze_timestamp(env, token_address, address_to_unfreeze);
+        if env.ledger().timestamp() < freeze_ts + cooldown {
+            return Err(Error::FreezeCooldownActive);
+        }
+    }
+
     // Unfreeze the address
     storage::set_address_frozen(env, token_address, address_to_unfreeze, false);
 
@@ -235,4 +245,34 @@ pub fn set_freeze_enabled(
     );
 
     Ok(())
+}
+
+/// Configure the unfreeze cooldown grace period for a token (creator/admin only)
+pub fn set_freeze_cooldown(
+    env: &Env,
+    token_address: &Address,
+    admin: &Address,
+    cooldown_seconds: u64,
+) -> Result<(), Error> {
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+    admin.require_auth();
+    let token_info = storage::get_token_info_by_address(env, token_address)
+        .ok_or(Error::TokenNotFound)?;
+    let governance = storage::get_governance(env);
+    if let Some(gov_addr) = governance {
+        if *admin != gov_addr {
+            return Err(Error::Unauthorized);
+        }
+    } else if token_info.creator != *admin {
+        return Err(Error::Unauthorized);
+    }
+    storage::set_freeze_cooldown(env, token_address, cooldown_seconds);
+    Ok(())
+}
+
+/// Get the unfreeze cooldown grace period for a token
+pub fn get_freeze_cooldown(env: &Env, token_address: &Address) -> u64 {
+    storage::get_freeze_cooldown(env, token_address)
 }

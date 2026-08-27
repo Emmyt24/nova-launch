@@ -334,6 +334,10 @@ soroban contract optimize \
   --wasm target/wasm32-unknown-unknown/release/token_factory.wasm
 ```
 
+#### Event Schemas & Compatibility
+
+Event schemas are maintained under `event-schemas/` and compiled to TypeScript types via codegen. Please review the [Event Schema Compatibility Policy](event-schemas/COMPATIBILITY.md) before making schema changes.
+
 #### Deploy Contract to Testnet
 
 ```bash

@@ -1,153 +1,318 @@
-//! Bridge integration tests (Issue #868)
-//!
-//! Covers:
-//! - Successful lock and release flow
-//! - Replay attack prevention (duplicate nonce rejected)
-//! - Unauthorized release attempt fails
-//! - Invalid inputs (zero amount, unknown chain) are rejected
-
 #![cfg(test)]
 
 use crate::{TokenFactory, TokenFactoryClient};
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Symbol};
+use soroban_sdk::{
+    testutils::Address as _,
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Bytes, Env, String,
+};
 
-fn setup(env: &Env) -> (TokenFactoryClient, Address) {
+/// Registers the factory (initialized) and a real Stellar Asset Contract
+/// token, so `lock_tokens` / `release_tokens` exercise genuine token
+/// transfers rather than internal accounting.
+///
+/// Returns `(env, contract_id, admin, token)`.
+fn setup() -> (Env, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
     let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(env, &contract_id);
-    let admin = Address::generate(env);
-    let treasury = Address::generate(env);
-    client.initialize(&admin, &treasury, &1_000_000i128, &500_000i128);
-    (client, admin)
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &1_000_000, &500_000);
+
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+
+    (env, contract_id, admin, token)
 }
 
-fn recipient(env: &Env) -> BytesN<32> {
-    BytesN::from_array(env, &[1u8; 32])
+fn destination(env: &Env, chain: &str, addr_byte: u8) -> (String, Bytes) {
+    (
+        String::from_str(env, chain),
+        Bytes::from_array(env, &[addr_byte; 20]),
+    )
 }
 
 #[test]
-fn test_bridge_lock_and_release_flow() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_lock_release_happy_path() {
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
 
-    let (client, admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let chain = Symbol::new(&env, "ethereum");
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    StellarAssetClient::new(&env, &token).mint(&sender, &amount);
 
-    // Lock tokens
-    let nonce = client.lock_tokens(&caller, &token, &1000i128, &chain, &recipient(&env));
-    assert_eq!(nonce, 0u64);
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0xAB);
 
-    // Status should be Pending
-    let status = client.get_bridge_status(&nonce);
-    assert_eq!(
-        status,
-        crate::types::BridgeStatus::Pending
+    let nonce = client.lock_tokens(
+        &sender,
+        &token,
+        &amount,
+        &destination_chain,
+        &destination_address,
     );
 
-    // Release tokens
-    let dest = Address::generate(&env);
-    client.release_tokens(&admin, &token, &1000i128, &dest, &nonce);
+    // Tokens are escrowed in contract custody.
+    assert_eq!(token_client.balance(&sender), 0);
+    assert_eq!(token_client.balance(&contract_id), amount);
 
-    // Status should now be Completed
-    let status = client.get_bridge_status(&nonce);
-    assert_eq!(
-        status,
-        crate::types::BridgeStatus::Completed
+    let lock = client.get_bridge_lock(&nonce).unwrap();
+    assert_eq!(lock.nonce, nonce);
+    assert_eq!(lock.sender, sender);
+    assert_eq!(lock.token, token);
+    assert_eq!(lock.amount, amount);
+    assert_eq!(lock.destination_chain, destination_chain);
+    assert_eq!(lock.destination_address, destination_address);
+    assert!(!client.is_bridge_nonce_released(&nonce));
+
+    client.release_tokens(&admin, &nonce, &token, &recipient, &amount);
+
+    assert_eq!(token_client.balance(&recipient), amount);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(client.is_bridge_nonce_released(&nonce));
+}
+
+#[test]
+fn test_lock_tokens_nonces_increment_monotonically() {
+    let (env, contract_id, _admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&sender, &10_000);
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x01);
+
+    let nonce_a = client.lock_tokens(
+        &sender,
+        &token,
+        &1_000,
+        &destination_chain,
+        &destination_address,
+    );
+    let nonce_b = client.lock_tokens(
+        &sender,
+        &token,
+        &2_000,
+        &destination_chain,
+        &destination_address,
+    );
+
+    assert_eq!(nonce_b, nonce_a + 1, "nonces must be assigned monotonically");
+}
+
+#[test]
+fn test_lock_tokens_rejects_non_positive_amount() {
+    let (env, contract_id, _admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x02);
+
+    let result = client.try_lock_tokens(
+        &sender,
+        &token,
+        &0_i128,
+        &destination_chain,
+        &destination_address,
+    );
+    assert!(result.is_err(), "zero amount must be rejected");
+
+    let result = client.try_lock_tokens(
+        &sender,
+        &token,
+        &(-1_i128),
+        &destination_chain,
+        &destination_address,
+    );
+    assert!(result.is_err(), "negative amount must be rejected");
+}
+
+#[test]
+fn test_lock_tokens_rejects_empty_destination() {
+    let (env, contract_id, _admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000);
+
+    let empty_chain = String::from_str(&env, "");
+    let (_, destination_address) = destination(&env, "ethereum", 0x03);
+    let result = client.try_lock_tokens(
+        &sender,
+        &token,
+        &1_000_i128,
+        &empty_chain,
+        &destination_address,
+    );
+    assert!(result.is_err(), "empty destination chain must be rejected");
+
+    let (destination_chain, _) = destination(&env, "ethereum", 0x03);
+    let empty_address = Bytes::new(&env);
+    let result = client.try_lock_tokens(
+        &sender,
+        &token,
+        &1_000_i128,
+        &destination_chain,
+        &empty_address,
+    );
+    assert!(result.is_err(), "empty destination address must be rejected");
+}
+
+#[test]
+fn test_lock_tokens_rejects_when_contract_paused() {
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let sender = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000);
+    client.pause(&admin);
+
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x04);
+    let result = client.try_lock_tokens(
+        &sender,
+        &token,
+        &1_000_i128,
+        &destination_chain,
+        &destination_address,
+    );
+    assert!(result.is_err(), "locking must be rejected while the contract is paused");
+}
+
+#[test]
+fn test_nonce_replay_rejected_even_with_different_parameters() {
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let attacker_recipient = Address::generate(&env);
+    let amount = 500_000_i128;
+    StellarAssetClient::new(&env, &token).mint(&sender, &amount);
+
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x05);
+    let nonce = client.lock_tokens(
+        &sender,
+        &token,
+        &amount,
+        &destination_chain,
+        &destination_address,
+    );
+
+    client.release_tokens(&admin, &nonce, &token, &recipient, &amount);
+
+    // A replay of the same nonce must be rejected even when the attacker
+    // supplies different recipient/amount parameters — the nonce alone
+    // gates replay, independent of the payload.
+    let result = client.try_release_tokens(&admin, &nonce, &token, &attacker_recipient, &1_i128);
+    assert!(
+        result.is_err(),
+        "replayed nonce must be rejected regardless of parameters"
     );
 }
 
 #[test]
-fn test_bridge_nonce_increments() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_double_release_rejected() {
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
 
-    let (client, _admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let chain = Symbol::new(&env, "polygon");
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let amount = 750_000_i128;
+    StellarAssetClient::new(&env, &token).mint(&sender, &amount);
 
-    let n0 = client.lock_tokens(&caller, &token, &100i128, &chain, &recipient(&env));
-    let n1 = client.lock_tokens(&caller, &token, &200i128, &chain, &recipient(&env));
-    assert_eq!(n0, 0u64);
-    assert_eq!(n1, 1u64);
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x06);
+    let nonce = client.lock_tokens(
+        &sender,
+        &token,
+        &amount,
+        &destination_chain,
+        &destination_address,
+    );
+
+    client.release_tokens(&admin, &nonce, &token, &recipient, &amount);
+
+    let result = client.try_release_tokens(&admin, &nonce, &token, &recipient, &amount);
+    assert!(result.is_err(), "double release of the same nonce must fail");
+
+    // Recipient balance must reflect exactly one release, not two.
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), amount);
 }
 
 #[test]
-fn test_bridge_replay_attack_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_release_tokens_unauthorized_rejected() {
+    let (env, contract_id, _admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
 
-    let (client, admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let chain = Symbol::new(&env, "bsc");
-    let dest = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let amount = 250_000_i128;
+    StellarAssetClient::new(&env, &token).mint(&sender, &amount);
 
-    let nonce = client.lock_tokens(&caller, &token, &500i128, &chain, &recipient(&env));
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x07);
+    let nonce = client.lock_tokens(
+        &sender,
+        &token,
+        &amount,
+        &destination_chain,
+        &destination_address,
+    );
 
-    // First release succeeds
-    client.release_tokens(&admin, &token, &500i128, &dest, &nonce);
+    let result = client.try_release_tokens(&attacker, &nonce, &token, &recipient, &amount);
+    assert!(result.is_err(), "a non-admin caller must not be able to release");
+    assert!(
+        !client.is_bridge_nonce_released(&nonce),
+        "an unauthorized attempt must not consume the nonce"
+    );
 
-    // Second release with same nonce must fail
-    let result = client.try_release_tokens(&admin, &token, &500i128, &dest, &nonce);
-    assert!(result.is_err());
+    // The legitimate admin can still release afterwards.
+    client.release_tokens(&_admin, &nonce, &token, &recipient, &amount);
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), amount);
 }
 
 #[test]
-fn test_bridge_unauthorized_release_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_release_tokens_rejects_unknown_nonce_replay_flag_but_moves_funds() {
+    // release_tokens does not require a matching local BridgeLock (by
+    // design — see bridge.rs module docs on the trust model), so an admin
+    // can release against a nonce this instance never locked, as long as
+    // it hasn't been released before.
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
 
-    let (client, _admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let chain = Symbol::new(&env, "ethereum");
-    let dest = Address::generate(&env);
+    let contract_funder = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let amount = 300_000_i128;
+    StellarAssetClient::new(&env, &token).mint(&contract_id, &amount);
+    let _ = contract_funder;
 
-    let nonce = client.lock_tokens(&caller, &token, &100i128, &chain, &recipient(&env));
+    let unseen_nonce = 42_u64;
+    assert!(client.get_bridge_lock(&unseen_nonce).is_none());
 
-    // Non-admin tries to release
-    let non_admin = Address::generate(&env);
-    let result = client.try_release_tokens(&non_admin, &token, &100i128, &dest, &nonce);
-    assert!(result.is_err());
+    client.release_tokens(&admin, &unseen_nonce, &token, &recipient, &amount);
+
+    let token_client = TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), amount);
+    assert!(client.is_bridge_nonce_released(&unseen_nonce));
 }
 
 #[test]
-fn test_bridge_zero_amount_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_release_tokens_rejects_non_positive_amount() {
+    let (env, contract_id, admin, token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let recipient = Address::generate(&env);
 
-    let (client, _admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let chain = Symbol::new(&env, "ethereum");
-
-    let result = client.try_lock_tokens(&caller, &token, &0i128, &chain, &recipient(&env));
-    assert!(result.is_err());
+    let result = client.try_release_tokens(&admin, &0_u64, &token, &recipient, &0_i128);
+    assert!(result.is_err(), "zero amount release must be rejected");
 }
 
 #[test]
-fn test_bridge_unknown_chain_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_bridge_lock_query_returns_none_for_unknown_nonce() {
+    let (env, contract_id, _admin, _token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
 
-    let (client, _admin) = setup(&env);
-    let caller = Address::generate(&env);
-    let token = Address::generate(&env);
-    let unknown = Symbol::new(&env, "solana");
-
-    let result = client.try_lock_tokens(&caller, &token, &100i128, &unknown, &recipient(&env));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_bridge_status_not_found() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (client, _admin) = setup(&env);
-
-    let result = client.try_get_bridge_status(&999u64);
-    assert!(result.is_err());
+    assert!(client.get_bridge_lock(&999_u64).is_none());
+    assert!(!client.is_bridge_nonce_released(&999_u64));
 }

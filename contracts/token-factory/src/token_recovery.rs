@@ -113,7 +113,7 @@ pub fn initiate_recovery(
 ) -> Result<u64, Error> {
     // ── Authorization ────────────────────────────────────────────────────────
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -182,7 +182,7 @@ pub fn initiate_recovery(
 /// * `Error::ArithmeticError`   – Arithmetic overflow.
 pub fn execute_recovery(env: &Env, admin: &Address, request_id: u64) -> Result<(), Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -244,7 +244,7 @@ pub fn execute_recovery(env: &Env, admin: &Address, request_id: u64) -> Result<(
 /// * `Error::InvalidParameters` – Request is not in Pending status.
 pub fn cancel_recovery(env: &Env, admin: &Address, request_id: u64) -> Result<(), Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

@@ -1,7 +1,7 @@
 /**
  * GET /api/admin/operational
  * Aggregated operational state for the admin dashboard.
- * Returns campaign counts, token counts, and event listener cursor status.
+ * Returns token counts and event listener cursor status.
  * All fields are read-only — no mutations here.
  */
 import { Router } from 'express';
@@ -18,28 +18,14 @@ const router = Router();
 
 router.get('/', authenticateAdmin, async (_req, res) => {
   try {
-    const [
-      totalTokens,
-      totalCampaigns,
-      activeCampaigns,
-      completedCampaigns,
-      cursorState,
-    ] = await Promise.all([
+    const [totalTokens, cursorState] = await Promise.all([
       prisma.token.count(),
-      prisma.campaign.count(),
-      prisma.campaign.count({ where: { status: 'ACTIVE' } }),
-      prisma.campaign.count({ where: { status: 'COMPLETED' } }),
       prisma.integrationState.findUnique({ where: { key: 'event_cursor' } }),
     ]);
 
     res.json(
       successResponse({
         tokens: { total: totalTokens },
-        campaigns: {
-          total: totalCampaigns,
-          active: activeCampaigns,
-          completed: completedCampaigns,
-        },
         eventListener: {
           cursor: cursorState?.value ?? null,
           updatedAt: cursorState?.updatedAt ?? null,

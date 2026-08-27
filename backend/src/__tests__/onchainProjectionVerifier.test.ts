@@ -4,7 +4,6 @@ import {
   OnChainDataFetcher,
   type VerifierConfig,
   type OnChainTokenState,
-  type OnChainCampaignState,
   type ConsistencyCheckResult,
 } from "../services/consistency/onchainProjectionVerifier";
 
@@ -18,14 +17,6 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
       count: vi.fn().mockResolvedValue(0),
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn().mockResolvedValue(null),
-    },
-    campaign: {
-      findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn().mockResolvedValue(null),
-    },
-    campaignExecution: {
-      count: vi.fn().mockResolvedValue(0),
-      aggregate: vi.fn().mockResolvedValue({ _sum: { amount: BigInt(0) } }),
     },
     ...overrides,
   } as any;
@@ -501,189 +492,6 @@ describe("checkTokenBurnConsistency", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkSingleCampaign
-// ---------------------------------------------------------------------------
-
-describe("checkSingleCampaign", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  const onChain: OnChainCampaignState = {
-    campaignId: 42,
-    tokenId: "TK",
-    creator: "CR",
-    status: "ACTIVE",
-    targetAmount: BigInt(10_000),
-    currentAmount: BigInt(5_000),
-    executionCount: 3,
-  };
-
-  const backendCampaign = {
-    campaignId: 42,
-    status: "ACTIVE",
-    targetAmount: BigInt(10_000),
-    currentAmount: BigInt(5_000),
-    executionCount: 3,
-  };
-
-  it("returns empty diffs when all fields match", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue(backendCampaign);
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    expect(diffs).toHaveLength(0);
-  });
-
-  it("returns existence diff when campaign not found", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue(null);
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    expect(diffs).toHaveLength(1);
-    expect(diffs[0].field).toBe("existence");
-    expect(diffs[0].severity).toBe("error");
-    expect(diffs[0].entity).toBe("campaign");
-    expect(diffs[0].identifier).toBe("42");
-  });
-
-  it("detects status mismatch", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      ...backendCampaign,
-      status: "COMPLETED",
-    });
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    const d = diffs.find((x) => x.field === "status");
-    expect(d).toBeDefined();
-    expect(d!.backendValue).toBe("COMPLETED");
-    expect(d!.onChainValue).toBe("ACTIVE");
-  });
-
-  it("detects currentAmount mismatch", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      ...backendCampaign,
-      currentAmount: BigInt(1),
-    });
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    const d = diffs.find((x) => x.field === "currentAmount");
-    expect(d).toBeDefined();
-    expect(d!.backendValue).toBe("1");
-    expect(d!.onChainValue).toBe("5000");
-  });
-
-  it("detects executionCount mismatch", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      ...backendCampaign,
-      executionCount: 0,
-    });
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    const d = diffs.find((x) => x.field === "executionCount");
-    expect(d).toBeDefined();
-    expect(d!.backendValue).toBe(0);
-    expect(d!.onChainValue).toBe(3);
-  });
-
-  it("detects targetAmount mismatch", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      ...backendCampaign,
-      targetAmount: BigInt(1),
-    });
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    const d = diffs.find((x) => x.field === "targetAmount");
-    expect(d).toBeDefined();
-    expect(d!.onChainValue).toBe("10000");
-  });
-
-  it("severity is always error for field mismatches", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      ...backendCampaign,
-      status: "PAUSED",
-    });
-
-    const diffs = await verifier.checkSingleCampaign(42, onChain);
-    expect(diffs.every((d) => d.severity === "error")).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkCampaignProjections
-// ---------------------------------------------------------------------------
-
-describe("checkCampaignProjections", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("returns no diff when executionCount and currentAmount are consistent", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(200), executionCount: 2, targetAmount: BigInt(1000) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(2);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({
-      _sum: { amount: BigInt(200) },
-    });
-
-    const result = await verifier.checkCampaignProjections();
-    expect(result.diffs).toHaveLength(0);
-    expect(result.checked).toBe(1);
-  });
-
-  it("emits diff when executionCount mismatches DB execution count", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 5, targetAmount: BigInt(1000) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(2);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({
-      _sum: { amount: BigInt(0) },
-    });
-
-    const result = await verifier.checkCampaignProjections();
-    const d = result.diffs.find((x) => x.field === "executionCount");
-    expect(d).toBeDefined();
-    expect(d!.backendValue).toBe(5);
-    expect(d!.onChainValue).toBe(2);
-  });
-
-  it("emits diff when currentAmount mismatches execution sum", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(999), executionCount: 1, targetAmount: BigInt(1000) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(1);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({
-      _sum: { amount: BigInt(500) },
-    });
-
-    const result = await verifier.checkCampaignProjections();
-    const d = result.diffs.find((x) => x.field === "currentAmount");
-    expect(d).toBeDefined();
-    expect(d!.backendValue).toBe("999");
-    expect(d!.onChainValue).toBe("500");
-  });
-
-  it("treats null aggregate sum as BigInt(0)", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(1000) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({
-      _sum: { amount: null },
-    });
-
-    const result = await verifier.checkCampaignProjections();
-    expect(result.diffs).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // runFullCheck
 // ---------------------------------------------------------------------------
 
@@ -694,7 +502,6 @@ describe("runFullCheck", () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(0);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(0);
 
     const result = await verifier.runFullCheck();
@@ -707,7 +514,6 @@ describe("runFullCheck", () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(5);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(10);
 
     const result = await verifier.runFullCheck();
@@ -719,7 +525,6 @@ describe("runFullCheck", () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(3);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(null);
 
     const result = await verifier.runFullCheck();
@@ -727,28 +532,20 @@ describe("runFullCheck", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it("totalChecked = tokensChecked + burnsChecked + campaignsChecked", async () => {
+  it("totalChecked = tokensChecked + burnsChecked", async () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(3);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(3);
 
     const result = await verifier.runFullCheck();
-    expect(result.totalChecked).toBe(
-      result.tokensChecked + result.burnsChecked + result.campaignsChecked
-    );
+    expect(result.totalChecked).toBe(result.tokensChecked + result.burnsChecked);
   });
 
   it("populates timestamp and duration", async () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(0);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(0);
 
     const result = await verifier.runFullCheck();
@@ -760,7 +557,6 @@ describe("runFullCheck", () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockRejectedValue(new Error("catastrophic"));
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
 
     const result = await verifier.runFullCheck();
     expect(result.consistent).toBe(false);
@@ -776,10 +572,9 @@ describe("formatResults", () => {
   const baseResult: ConsistencyCheckResult = {
     consistent: true,
     timestamp: new Date("2026-01-01T00:00:00Z"),
-    totalChecked: 10,
+    totalChecked: 8,
     tokensChecked: 5,
     burnsChecked: 3,
-    campaignsChecked: 2,
     diffs: [],
     errors: [],
     duration: 42,
@@ -802,8 +597,7 @@ describe("formatResults", () => {
     const output = verifier.formatResults(baseResult);
     expect(output).toContain("5");
     expect(output).toContain("3");
-    expect(output).toContain("2");
-    expect(output).toContain("10");
+    expect(output).toContain("8");
     expect(output).toContain("42");
   });
 
@@ -851,10 +645,9 @@ describe("generateReport", () => {
   const baseResult: ConsistencyCheckResult = {
     consistent: true,
     timestamp: new Date("2026-01-01T00:00:00Z"),
-    totalChecked: 7,
+    totalChecked: 6,
     tokensChecked: 4,
     burnsChecked: 2,
-    campaignsChecked: 1,
     diffs: [],
     errors: [],
     duration: 99,
@@ -883,8 +676,7 @@ describe("generateReport", () => {
     const report = verifier.generateReport(baseResult) as any;
     expect(report.summary.tokens_checked).toBe(4);
     expect(report.summary.burns_checked).toBe(2);
-    expect(report.summary.campaigns_checked).toBe(1);
-    expect(report.summary.total_checked).toBe(7);
+    expect(report.summary.total_checked).toBe(6);
     expect(report.summary.inconsistencies).toBe(0);
     expect(report.summary.errors).toBe(0);
   });
@@ -925,86 +717,6 @@ describe("generateReport", () => {
     const report = verifier.generateReport(baseResult) as any;
     expect(typeof report.timestamp).toBe("string");
     expect(report.timestamp).toContain("2026-01-01");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkMultipleCampaigns
-// ---------------------------------------------------------------------------
-
-describe("checkMultipleCampaigns", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  const makeState = (id: number): OnChainCampaignState => ({
-    campaignId: id,
-    tokenId: "TK",
-    creator: "CR",
-    status: "ACTIVE",
-    targetAmount: BigInt(1000),
-    currentAmount: BigInt(500),
-    executionCount: 1,
-  });
-
-  it("consistent=true when all campaigns match", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1,
-      status: "ACTIVE",
-      targetAmount: BigInt(1000),
-      currentAmount: BigInt(500),
-      executionCount: 1,
-    });
-
-    const result = await verifier.checkMultipleCampaigns([makeState(1)]);
-    expect(result.consistent).toBe(true);
-    expect(result.campaignsChecked).toBe(1);
-    expect(result.tokensChecked).toBe(0);
-    expect(result.burnsChecked).toBe(0);
-  });
-
-  it("consistent=false when a campaign has a mismatch", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1,
-      status: "COMPLETED",
-      targetAmount: BigInt(1000),
-      currentAmount: BigInt(500),
-      executionCount: 1,
-    });
-
-    const result = await verifier.checkMultipleCampaigns([makeState(1)]);
-    expect(result.consistent).toBe(false);
-    expect(result.diffs.length).toBeGreaterThan(0);
-  });
-
-  it("records error and continues when individual campaign check throws", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockRejectedValue(new Error("db error"));
-
-    const result = await verifier.checkMultipleCampaigns([makeState(7)]);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/Campaign 7/);
-  });
-
-  it("totalChecked equals number of input states", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1,
-      status: "ACTIVE",
-      targetAmount: BigInt(1000),
-      currentAmount: BigInt(500),
-      executionCount: 1,
-    });
-
-    const result = await verifier.checkMultipleCampaigns([makeState(1), makeState(2), makeState(3)]);
-    expect(result.totalChecked).toBe(3);
-  });
-
-  it("empty input returns consistent=true with zero counts", async () => {
-    const { verifier } = makeVerifier();
-    const result = await verifier.checkMultipleCampaigns([]);
-    expect(result.consistent).toBe(true);
-    expect(result.totalChecked).toBe(0);
   });
 });
 
@@ -1086,7 +798,6 @@ describe("runFullCheck – arithmetic invariants", () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(0);
     (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(0);
 
     const before = Date.now();
@@ -1100,40 +811,16 @@ describe("runFullCheck – arithmetic invariants", () => {
   it("totalChecked is sum not difference of sub-counts", async () => {
     const { verifier } = makeVerifier();
     (verifier as any).prisma.token.count.mockResolvedValue(4);
-    (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-      { campaignId: 2, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
+    (verifier as any).prisma.token.findMany.mockResolvedValue([
+      { address: "GTOKEN1", totalBurned: BigInt(0), burnCount: 1 },
     ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(4);
+    vi.spyOn(OnChainDataFetcher.prototype, "fetchBurnEvents").mockResolvedValue([]);
 
     const result = await verifier.runFullCheck();
-    // tokensChecked=4, burnsChecked=0, campaignsChecked=2 → total=6
-    expect(result.totalChecked).toBe(result.tokensChecked + result.burnsChecked + result.campaignsChecked);
+    // tokensChecked=4, burnsChecked=1 → total=5
+    expect(result.totalChecked).toBe(result.tokensChecked + result.burnsChecked);
     expect(result.totalChecked).toBeGreaterThan(result.tokensChecked);
-    expect(result.totalChecked).toBeGreaterThan(result.campaignsChecked);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkMultipleCampaigns – duration arithmetic (L638)
-// ---------------------------------------------------------------------------
-
-describe("checkMultipleCampaigns – duration arithmetic", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("duration is non-negative", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1, status: "ACTIVE", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-    const result = await verifier.checkMultipleCampaigns([{
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    }]);
-    expect(result.duration).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -1145,10 +832,9 @@ describe("formatResults – exact string assertions", () => {
   const makeResult = (overrides: Partial<ConsistencyCheckResult> = {}): ConsistencyCheckResult => ({
     consistent: true,
     timestamp: new Date("2026-01-01T00:00:00.000Z"),
-    totalChecked: 10,
+    totalChecked: 8,
     tokensChecked: 5,
     burnsChecked: 3,
-    campaignsChecked: 2,
     diffs: [],
     errors: [],
     duration: 42,
@@ -1196,18 +882,11 @@ describe("formatResults – exact string assertions", () => {
     expect(out).toContain("3");
   });
 
-  it("contains Campaigns checked label with count", () => {
-    const { verifier } = makeVerifier();
-    const out = verifier.formatResults(makeResult());
-    expect(out).toContain("Campaigns checked:");
-    expect(out).toContain("2");
-  });
-
   it("contains Total checked label with count", () => {
     const { verifier } = makeVerifier();
     const out = verifier.formatResults(makeResult());
     expect(out).toContain("Total checked:");
-    expect(out).toContain("10");
+    expect(out).toContain("8");
   });
 
   it("contains ERRORS section when errors present", () => {
@@ -1271,10 +950,9 @@ describe("generateReport – exact field names", () => {
   const makeResult = (overrides: Partial<ConsistencyCheckResult> = {}): ConsistencyCheckResult => ({
     consistent: true,
     timestamp: new Date("2026-06-01T12:00:00.000Z"),
-    totalChecked: 9,
+    totalChecked: 7,
     tokensChecked: 3,
     burnsChecked: 4,
-    campaignsChecked: 2,
     diffs: [],
     errors: [],
     duration: 55,
@@ -1305,7 +983,6 @@ describe("generateReport – exact field names", () => {
     const report = verifier.generateReport(makeResult()) as any;
     expect(Object.prototype.hasOwnProperty.call(report.summary, "tokens_checked")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(report.summary, "burns_checked")).toBe(true);
-    expect(Object.prototype.hasOwnProperty.call(report.summary, "campaigns_checked")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(report.summary, "total_checked")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(report.summary, "inconsistencies")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(report.summary, "errors")).toBe(true);
@@ -1333,7 +1010,7 @@ describe("generateReport – exact field names", () => {
     const { verifier } = makeVerifier();
     const report = verifier.generateReport(makeResult({
       consistent: false,
-      diffs: [{ entity: "campaign", identifier: "1", field: "status", backendValue: "ACTIVE", onChainValue: "DONE", severity: "error" }],
+      diffs: [{ entity: "token", identifier: "1", field: "status", backendValue: "ACTIVE", onChainValue: "DONE", severity: "error" }],
     })) as any;
     expect(Object.prototype.hasOwnProperty.call(report.diffs[0], "backend_value")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(report.diffs[0], "onchain_value")).toBe(true);
@@ -1502,74 +1179,6 @@ describe("checkBurnTotals – Prisma query arguments", () => {
   });
 });
 
-describe("checkCampaignProjections – Prisma query arguments", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("queries campaigns with status='ACTIVE' filter", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
-
-    await verifier.checkCampaignProjections();
-
-    expect((verifier as any).prisma.campaign.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { status: "ACTIVE" },
-      })
-    );
-  });
-
-  it("selects campaignId, status, currentAmount, executionCount, targetAmount", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
-
-    await verifier.checkCampaignProjections();
-
-    expect((verifier as any).prisma.campaign.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        select: {
-          campaignId: true,
-          status: true,
-          currentAmount: true,
-          executionCount: true,
-          targetAmount: true,
-        },
-      })
-    );
-  });
-
-  it("executionCount diff has entity='campaign', field='executionCount', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 99, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 7, targetAmount: BigInt(100) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(3);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
-
-    const result = await verifier.checkCampaignProjections();
-    const d = result.diffs.find((x) => x.field === "executionCount")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.identifier).toBe("99");
-    expect(d.backendValue).toBe(7);
-    expect(d.onChainValue).toBe(3);
-  });
-
-  it("currentAmount diff has entity='campaign', field='currentAmount', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 5, status: "ACTIVE", currentAmount: BigInt(999), executionCount: 1, targetAmount: BigInt(100) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(1);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(1) } });
-
-    const result = await verifier.checkCampaignProjections();
-    const d = result.diffs.find((x) => x.field === "currentAmount")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.backendValue).toBe("999");
-    expect(d.onChainValue).toBe("1");
-  });
-});
 
 describe("checkTokenCounts – diff field assertions", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -1587,60 +1196,6 @@ describe("checkTokenCounts – diff field assertions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Kill L630 ConditionalExpression: checkMultipleCampaigns consistent = allDiffs===0 && errors===0
-// already partly covered, add explicit test where consistent flips due to errors only
-// ---------------------------------------------------------------------------
-
-describe("checkMultipleCampaigns – consistent requires BOTH no diffs AND no errors", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("consistent=false when only errors (no diffs)", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockRejectedValue(new Error("fail"));
-
-    const result = await verifier.checkMultipleCampaigns([{
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    }]);
-
-    expect(result.consistent).toBe(false);
-    expect(result.diffs).toHaveLength(0);
-    expect(result.errors.length).toBeGreaterThan(0);
-  });
-
-  it("consistent=false when only diffs (no errors)", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1, status: "DONE", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const result = await verifier.checkMultipleCampaigns([{
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    }]);
-
-    expect(result.consistent).toBe(false);
-    expect(result.errors).toHaveLength(0);
-    expect(result.diffs.length).toBeGreaterThan(0);
-  });
-
-  it("tokensChecked and burnsChecked are always 0", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1, status: "ACTIVE", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const result = await verifier.checkMultipleCampaigns([{
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    }]);
-
-    expect(result.tokensChecked).toBe(0);
-    expect(result.burnsChecked).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Kill L661 EqualityOperator: result.errors.length > 0 vs >= 0
 // errors.length === 0 branch: no-inconsistencies only shown when errors.length === 0 AND diffs.length === 0
 // ---------------------------------------------------------------------------
@@ -1650,7 +1205,7 @@ describe("formatResults – errors.length > 0 conditional (L661)", () => {
     const { verifier } = makeVerifier();
     const result: ConsistencyCheckResult = {
       consistent: true, timestamp: new Date(), totalChecked: 0,
-      tokensChecked: 0, burnsChecked: 0, campaignsChecked: 0,
+      tokensChecked: 0, burnsChecked: 0,
       diffs: [], errors: [], duration: 0,
     };
     const out = verifier.formatResults(result);
@@ -1661,7 +1216,7 @@ describe("formatResults – errors.length > 0 conditional (L661)", () => {
     const { verifier } = makeVerifier();
     const result: ConsistencyCheckResult = {
       consistent: false, timestamp: new Date(), totalChecked: 0,
-      tokensChecked: 0, burnsChecked: 0, campaignsChecked: 0,
+      tokensChecked: 0, burnsChecked: 0,
       diffs: [], errors: ["one error"], duration: 0,
     };
     const out = verifier.formatResults(result);
@@ -1731,47 +1286,6 @@ describe("isWithinTolerance – equal values with non-zero tolerance", () => {
 
     const result = await verifier.checkBurnTotals();
     expect(result.diffs.filter((d) => d.field === "totalBurned")).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Kill L429-L447: campaignExecution query argument assertions
-// ---------------------------------------------------------------------------
-
-describe("checkCampaignProjections – campaignExecution query arguments", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("queries campaignExecution.count with campaignId as string", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 42, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
-
-    await verifier.checkCampaignProjections();
-
-    expect((verifier as any).prisma.campaignExecution.count).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { campaignId: "42" } })
-    );
-  });
-
-  it("queries campaignExecution.aggregate with _sum: {amount: true}", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 7, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
-
-    await verifier.checkCampaignProjections();
-
-    expect((verifier as any).prisma.campaignExecution.aggregate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { campaignId: "7" },
-        _sum: { amount: true },
-      })
-    );
   });
 });
 
@@ -1856,153 +1370,6 @@ describe("checkTokenBurnConsistency – Prisma query arguments and exact diff va
 });
 
 // ---------------------------------------------------------------------------
-// Kill L542-L598: checkSingleCampaign Prisma args + exact diff field values
-// ---------------------------------------------------------------------------
-
-describe("checkSingleCampaign – Prisma query arguments and exact diff values", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("queries campaign.findUnique with campaignId as where clause", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue(null);
-
-    await verifier.checkSingleCampaign(99, {
-      campaignId: 99, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    expect((verifier as any).prisma.campaign.findUnique).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { campaignId: 99 } })
-    );
-  });
-
-  it("status diff: exact entity='campaign', field='status', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1, status: "PAUSED", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const diffs = await verifier.checkSingleCampaign(1, {
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const d = diffs.find((x) => x.field === "status")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.backendValue).toBe("PAUSED");
-    expect(d.onChainValue).toBe("ACTIVE");
-  });
-
-  it("currentAmount diff: exact entity='campaign', field='currentAmount', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 2, status: "ACTIVE", targetAmount: BigInt(100), currentAmount: BigInt(50), executionCount: 1,
-    });
-
-    const diffs = await verifier.checkSingleCampaign(2, {
-      campaignId: 2, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(100), currentAmount: BigInt(99), executionCount: 1,
-    });
-
-    const d = diffs.find((x) => x.field === "currentAmount")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.backendValue).toBe("50");
-    expect(d.onChainValue).toBe("99");
-  });
-
-  it("executionCount diff: exact entity='campaign', field='executionCount', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 3, status: "ACTIVE", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 1,
-    });
-
-    const diffs = await verifier.checkSingleCampaign(3, {
-      campaignId: 3, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 4,
-    });
-
-    const d = diffs.find((x) => x.field === "executionCount")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.backendValue).toBe(1);
-    expect(d.onChainValue).toBe(4);
-  });
-
-  it("targetAmount diff: exact entity='campaign', field='targetAmount', severity='error'", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 4, status: "ACTIVE", targetAmount: BigInt(100), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const diffs = await verifier.checkSingleCampaign(4, {
-      campaignId: 4, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(200), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const d = diffs.find((x) => x.field === "targetAmount")!;
-    expect(d.entity).toBe("campaign");
-    expect(d.severity).toBe("error");
-    expect(d.backendValue).toBe("100");
-    expect(d.onChainValue).toBe("200");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Kill L278 ArithmeticOperator: totalChecked = tokensChecked + burnsChecked + campaignsChecked
-// (not tokensChecked - burnsChecked)
-// Already covered but add a 3-way check to strongly distinguish + from -
-// ---------------------------------------------------------------------------
-
-describe("runFullCheck – totalChecked is sum (kills - mutant)", () => {
-  beforeEach(() => vi.restoreAllMocks());
-
-  it("totalChecked > tokensChecked alone when campaigns exist", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.token.count.mockResolvedValue(3);
-    (verifier as any).prisma.token.findMany.mockResolvedValue([]);
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([
-      { campaignId: 1, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-      { campaignId: 2, status: "ACTIVE", currentAmount: BigInt(0), executionCount: 0, targetAmount: BigInt(0) },
-    ]);
-    (verifier as any).prisma.campaignExecution.count.mockResolvedValue(0);
-    (verifier as any).prisma.campaignExecution.aggregate.mockResolvedValue({ _sum: { amount: BigInt(0) } });
-    vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(3);
-
-    const result = await verifier.runFullCheck();
-    expect(result.totalChecked).toBe(5); // 3 tokens + 0 burns + 2 campaigns
-    expect(result.tokensChecked).toBe(3);
-    expect(result.campaignsChecked).toBe(2);
-    expect(result.burnsChecked).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Kill L638 ArithmeticOperator: checkMultipleCampaigns duration = Date.now() - startTime
-// ---------------------------------------------------------------------------
-
-describe("checkMultipleCampaigns – duration is subtraction not addition", () => {
-  it("duration is << 1000ms (not Date.now()*2)", async () => {
-    const { verifier } = makeVerifier();
-    (verifier as any).prisma.campaign.findUnique.mockResolvedValue({
-      campaignId: 1, status: "ACTIVE", targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    });
-
-    const before = Date.now();
-    const result = await verifier.checkMultipleCampaigns([{
-      campaignId: 1, tokenId: "T", creator: "C", status: "ACTIVE",
-      targetAmount: BigInt(0), currentAmount: BigInt(0), executionCount: 0,
-    }]);
-    const elapsed = Date.now() - before;
-
-    // If duration was Date.now()+startTime it would be ~2*Date.now() ≈ 3.4e12
-    expect(result.duration).toBeGreaterThanOrEqual(0);
-    expect(result.duration).toBeLessThanOrEqual(elapsed + 50);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Kill formatResults remaining StringLiteral survivors (L646-L685)
 // These are the exact string template literals inside lines[] push calls
 // ---------------------------------------------------------------------------
@@ -2010,7 +1377,7 @@ describe("checkMultipleCampaigns – duration is subtraction not addition", () =
 describe("formatResults – remaining string literal kills", () => {
   const mkR = (overrides: Partial<ConsistencyCheckResult> = {}): ConsistencyCheckResult => ({
     consistent: true, timestamp: new Date("2025-05-01T00:00:00.000Z"),
-    totalChecked: 6, tokensChecked: 2, burnsChecked: 1, campaignsChecked: 3,
+    totalChecked: 3, tokensChecked: 2, burnsChecked: 1,
     diffs: [], errors: [], duration: 7, ...overrides,
   });
 
@@ -2310,7 +1677,6 @@ describe("runFullCheck – top-level catch (L267)", () => {
     vi.spyOn(OnChainDataFetcher.prototype, "fetchTokenCount").mockResolvedValue(0);
     // Make checkBurnTotals throw by having findMany throw after token count passes
     (verifier as any).prisma.token.findMany.mockRejectedValue(new Error("unexpected db error"));
-    (verifier as any).prisma.campaign.findMany.mockResolvedValue([]);
 
     const result = await verifier.runFullCheck();
     expect(result.consistent).toBe(false);

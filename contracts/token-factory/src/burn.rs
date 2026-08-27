@@ -74,7 +74,7 @@ pub fn admin_burn(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -152,7 +152,7 @@ pub fn batch_burn(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if admin != current_admin {
         return Err(Error::Unauthorized);
     }

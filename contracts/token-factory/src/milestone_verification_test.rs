@@ -872,3 +872,130 @@ mod property_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod oracle_verification_tests {
+    use crate::milestone_verification::{MilestoneVerifier, OracleMilestoneVerifier};
+    use crate::types::Error;
+    use crate::storage;
+    use soroban_sdk::{Bytes, BytesN, Env};
+
+    fn create_valid_proof(env: &Env, milestone_hash: &BytesN<32>, oracle_id: &Bytes, timestamp: u64) -> Bytes {
+        let mut proof_data = vec![];
+        proof_data.extend_from_slice(&[0u8; 64]);
+        proof_data.extend_from_slice(milestone_hash.as_ref());
+        proof_data.extend_from_slice(&timestamp.to_be_bytes());
+        proof_data.extend_from_slice(oracle_id.as_ref());
+
+        Bytes::from_slice(env, &proof_data)
+    }
+
+    #[test]
+    fn test_oracle_valid_proof_verification() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let oracle_id = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &oracle_id);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let timestamp = env.ledger().timestamp();
+        let proof = create_valid_proof(&env, &milestone_hash, &oracle_id, timestamp);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &proof);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn test_oracle_stale_proof_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let oracle_id = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &oracle_id);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let stale_timestamp = env.ledger().timestamp().saturating_sub(7200);
+        let proof = create_valid_proof(&env, &milestone_hash, &oracle_id, stale_timestamp);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &proof);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Error::VerificationUnavailable);
+    }
+
+    #[test]
+    fn test_oracle_future_timestamp_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let oracle_id = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &oracle_id);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let future_timestamp = env.ledger().timestamp() + 1000;
+        let proof = create_valid_proof(&env, &milestone_hash, &oracle_id, future_timestamp);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &proof);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Error::InvalidProof);
+    }
+
+    #[test]
+    fn test_oracle_invalid_proof_format() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let oracle_id = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &oracle_id);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let invalid_proof = Bytes::from_slice(&env, &[0u8; 100]);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &invalid_proof);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Error::InvalidProof);
+    }
+
+    #[test]
+    fn test_oracle_unauthorized_oracle_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let authorized_oracle = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &authorized_oracle);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let unauthorized_oracle = Bytes::from_slice(&env, &[2u8; 32]);
+        let timestamp = env.ledger().timestamp();
+        let proof = create_valid_proof(&env, &milestone_hash, &unauthorized_oracle, timestamp);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &proof);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Error::InvalidProof);
+    }
+
+    #[test]
+    fn test_oracle_milestone_hash_mismatch() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let oracle_id = Bytes::from_slice(&env, &[1u8; 32]);
+        storage::set_authorized_oracle(&env, &oracle_id);
+
+        let verifier = OracleMilestoneVerifier::new(&env);
+        let milestone_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let wrong_milestone_hash = BytesN::from_array(&env, &[99u8; 32]);
+        let timestamp = env.ledger().timestamp();
+        let proof = create_valid_proof(&env, &wrong_milestone_hash, &oracle_id, timestamp);
+
+        let result = verifier.verify_milestone(&env, &milestone_hash, &proof);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Error::InvalidProof);
+    }
+}

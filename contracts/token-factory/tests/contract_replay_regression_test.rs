@@ -7,6 +7,9 @@ enum Error {
     Unauthorized, InvalidParameters, InvalidAmount, TokenNotFound,
     ContractPaused, AlreadyExecuted, ProposalCancelled, ProposalNotQueued,
     NoPendingAdmin, WrongPendingAdmin, AlreadyVoted,
+    // Issue #1765: recurring payment streams
+    RecurringStreamNotFound, RecurringStreamCancelled,
+    RecurringPeriodNotElapsed, RecurringStreamLimitReached,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -381,8 +384,6 @@ struct VaultState {
     unlock_time:    u64,
     status:         VaultStatus,
 }
-
-use std::cell::RefCell;
 
 thread_local! {
     static VAULTS: RefCell<std::collections::HashMap<u64, VaultState>> =
@@ -899,4 +900,152 @@ fn replay_protection_campaign_execute_terminal_state_is_immutable() {
 
     assert_eq!(sim_pause_campaign(2, &owner),   Err(CampaignError::CampaignCompleted));
     assert_eq!(sim_resume_campaign(2, &owner),  Err(CampaignError::CampaignCompleted));
+}
+
+// =============================================================================
+// REPLAY REGRESSION TESTS: RECURRING STREAM TRIGGER (Issue #1765)
+// =============================================================================
+//
+// trigger_recurring_period is REPLAY-PROTECTED: calling it again before the
+// next period is due, after the recurring stream is cancelled, or after
+// total_periods (without auto-renew) has been reached must return a typed
+// error, not create a duplicate child stream or panic.
+
+#[derive(Clone)]
+struct RecurringStreamState {
+    creator: Address,
+    cancelled: bool,
+    total_periods: u32,
+    periods_created: u32,
+    period_ledgers: u64,
+    current_period_start_ledger: u64,
+    auto_renew: bool,
+}
+
+thread_local! {
+    static RECURRING: RefCell<HashMap<u64, RecurringStreamState>> = RefCell::new(HashMap::new());
+}
+
+fn recurring_reset() { RECURRING.with(|m| m.borrow_mut().clear()); }
+fn recurring_set(id: u64, s: RecurringStreamState) { RECURRING.with(|m| { m.borrow_mut().insert(id, s); }); }
+fn recurring_get(id: u64) -> Option<RecurringStreamState> { RECURRING.with(|m| m.borrow().get(&id).cloned()) }
+
+fn make_recurring_fixture(env: &Env) -> (u64, Address) {
+    recurring_reset();
+    let creator = Address::generate(env);
+    recurring_set(0, RecurringStreamState {
+        creator: creator.clone(),
+        cancelled: false,
+        total_periods: 3,
+        periods_created: 1,
+        period_ledgers: 10,
+        current_period_start_ledger: 0,
+        auto_renew: false,
+    });
+    (0, creator)
+}
+
+fn sim_trigger_recurring_period(env: &Env, rid: u64) -> Result<u32, Error> {
+    let mut s = recurring_get(rid).ok_or(Error::RecurringStreamNotFound)?;
+    if s.cancelled {
+        return Err(Error::RecurringStreamCancelled);
+    }
+    let now = env.ledger().sequence() as u64;
+    if now < s.current_period_start_ledger + s.period_ledgers {
+        return Err(Error::RecurringPeriodNotElapsed);
+    }
+    if s.periods_created >= s.total_periods && !s.auto_renew {
+        return Err(Error::RecurringStreamLimitReached);
+    }
+    s.periods_created += 1;
+    s.current_period_start_ledger = now;
+    let created = s.periods_created;
+    recurring_set(rid, s);
+    Ok(created)
+}
+
+fn sim_cancel_recurring(rid: u64, caller: &Address) -> Result<(), Error> {
+    let mut s = recurring_get(rid).ok_or(Error::RecurringStreamNotFound)?;
+    if s.creator != *caller {
+        return Err(Error::Unauthorized);
+    }
+    if s.cancelled {
+        return Err(Error::RecurringStreamCancelled);
+    }
+    s.cancelled = true;
+    recurring_set(rid, s);
+    Ok(())
+}
+
+/// Triggering before the current period has elapsed is rejected — and
+/// replaying the same too-early call again stays rejected (no drift toward
+/// eventually succeeding without the ledger actually advancing).
+#[test]
+fn replay_protection_recurring_trigger_before_due_replay_fails() {
+    let env = make_env();
+    let (rid, _creator) = make_recurring_fixture(&env);
+    env.ledger().with_mut(|li| li.sequence_number = 5); // period is 10 ledgers
+
+    assert_eq!(sim_trigger_recurring_period(&env, rid), Err(Error::RecurringPeriodNotElapsed));
+    // Replay at the same (still too-early) ledger — deterministically rejected.
+    assert_eq!(sim_trigger_recurring_period(&env, rid), Err(Error::RecurringPeriodNotElapsed));
+}
+
+/// Cancelling twice — second call returns error, first cancellation is not undone.
+#[test]
+fn replay_protection_recurring_cancel_replay_fails() {
+    let env = make_env();
+    let (rid, creator) = make_recurring_fixture(&env);
+
+    sim_cancel_recurring(rid, &creator).expect("first cancel must succeed");
+    assert_eq!(
+        sim_cancel_recurring(rid, &creator),
+        Err(Error::RecurringStreamCancelled),
+        "replay cancel must be rejected"
+    );
+    assert!(recurring_get(rid).unwrap().cancelled);
+}
+
+/// Once cancelled, triggering the next period is permanently rejected —
+/// including on replay after the period would otherwise have been due.
+#[test]
+fn replay_protection_recurring_trigger_after_cancel_replay_fails() {
+    let env = make_env();
+    let (rid, creator) = make_recurring_fixture(&env);
+    sim_cancel_recurring(rid, &creator).unwrap();
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    for i in 0..3 {
+        assert_eq!(
+            sim_trigger_recurring_period(&env, rid),
+            Err(Error::RecurringStreamCancelled),
+            "trigger attempt #{} after cancel must be rejected", i + 1
+        );
+    }
+}
+
+/// Once `total_periods` is reached without auto-renew, further triggers are
+/// rejected deterministically on every replay, never silently exceeding the
+/// configured bound.
+#[test]
+fn replay_protection_recurring_trigger_beyond_total_periods_replay_fails() {
+    let env = make_env();
+    let (rid, _creator) = make_recurring_fixture(&env); // total_periods = 3, periods_created = 1
+
+    env.ledger().with_mut(|li| li.sequence_number = 10);
+    assert_eq!(sim_trigger_recurring_period(&env, rid), Ok(2));
+
+    env.ledger().with_mut(|li| li.sequence_number = 20);
+    assert_eq!(sim_trigger_recurring_period(&env, rid), Ok(3));
+
+    // periods_created (3) now equals total_periods (3) — every further
+    // trigger, no matter how far the ledger advances, must be rejected.
+    for seq in [30_u32, 40, 1_000] {
+        env.ledger().with_mut(|li| li.sequence_number = seq);
+        assert_eq!(
+            sim_trigger_recurring_period(&env, rid),
+            Err(Error::RecurringStreamLimitReached)
+        );
+    }
+    assert_eq!(recurring_get(rid).unwrap().periods_created, 3, "no phantom period ever created past the bound");
 }

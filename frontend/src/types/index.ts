@@ -230,3 +230,4 @@ export interface VaultProjection {
 }
 
 export * from './governance';
+export * from './streams';

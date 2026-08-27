@@ -71,7 +71,7 @@ pub fn update_governance_config(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -184,7 +184,7 @@ pub fn configure_dynamic_quorum(
     config: DynamicQuorumConfig,
 ) -> Result<(), Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }
@@ -436,7 +436,7 @@ fn snapshot_one_proposal(env: &Env, proposal_id: u64, proposal: &crate::types::P
 /// * `Error::Unauthorized` – Caller is not the admin.
 pub fn snapshot_proposals(env: &Env, admin: &Address) -> Result<u32, Error> {
     admin.require_auth();
-    let stored_admin = storage::get_admin(env);
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != stored_admin {
         return Err(Error::Unauthorized);
     }

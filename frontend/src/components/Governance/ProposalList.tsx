@@ -14,7 +14,8 @@ import {
     fetchProposals,
     type ProposalParams,
 } from '../../services/governanceApi';
-import type { GovernanceProposal, ProposalStatus } from '../../types';
+import { ProposalStatus } from '../../types';
+import type { GovernanceProposal } from '../../types';
 
 export interface ProposalListProps {
     /** Props for the proposal list; date filters are controlled inside the component. */
@@ -32,12 +33,12 @@ export interface ProposalListProps {
  */
 const STATUS_OPTIONS: { value: ProposalStatus | ''; label: string }[] = [
     { value: '', label: 'All' },
-    { value: 'draft', label: 'Draft' },
-    { value: 'active', label: 'Active' },
-    { value: 'passed', label: 'Passed' },
-    { value: 'failed', label: 'Failed' },
-    { value: 'executed', label: 'Executed' },
-    { value: 'cancelled', label: 'Cancelled' },
+    { value: ProposalStatus.ACTIVE, label: 'Active' },
+    { value: ProposalStatus.PASSED, label: 'Passed' },
+    { value: ProposalStatus.REJECTED, label: 'Rejected' },
+    { value: ProposalStatus.EXECUTED, label: 'Executed' },
+    { value: ProposalStatus.CANCELLED, label: 'Cancelled' },
+    { value: ProposalStatus.EXPIRED, label: 'Expired' },
 ];
 
 /**
@@ -45,18 +46,18 @@ const STATUS_OPTIONS: { value: ProposalStatus | ''; label: string }[] = [
  */
 function getStatusBadge(status: ProposalStatus): string {
     switch (status) {
-        case 'draft':
-            return 'bg-gray-100 text-gray-700';
-        case 'active':
+        case ProposalStatus.ACTIVE:
             return 'bg-blue-100 text-blue-700';
-        case 'passed':
+        case ProposalStatus.PASSED:
             return 'bg-green-100 text-green-700';
-        case 'failed':
+        case ProposalStatus.REJECTED:
             return 'bg-red-100 text-red-700';
-        case 'executed':
+        case ProposalStatus.EXECUTED:
             return 'bg-purple-100 text-purple-700';
-        case 'cancelled':
+        case ProposalStatus.CANCELLED:
             return 'bg-yellow-100 text-yellow-700';
+        case ProposalStatus.EXPIRED:
+            return 'bg-gray-100 text-gray-700';
         default:
             return 'bg-gray-100 text-gray-700';
     }
@@ -305,7 +306,7 @@ export function ProposalList({
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-4">
-                                        {proposal.status === 'active' && (
+                                        {proposal.status === ProposalStatus.ACTIVE && (
                                             <span className="text-blue-600">
                                                 {getTimeRemaining(proposal.votingEndsAt)}
                                             </span>
@@ -317,7 +318,7 @@ export function ProposalList({
                                 </div>
 
                                 {/* Vote progress bar */}
-                                {proposal.status === 'active' && (
+                                {proposal.status === ProposalStatus.ACTIVE && (
                                     <div className="mt-3">
                                         <div className="flex justify-between text-xs text-gray-500 mb-1">
                                             <span>For: {proposal.votesFor}</span>

@@ -73,7 +73,7 @@ router.get("/failed", authenticateAdmin, (req, res) => {
         errorResponse({
           code: "VALIDATION_ERROR",
           message: "Invalid query parameters",
-          details: error.errors,
+          details: error.issues,
         })
       );
     }

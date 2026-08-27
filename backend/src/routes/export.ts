@@ -18,7 +18,7 @@ const exportQuerySchema = z.object({
     .refine((n) => n >= 1 && n <= 10_000, {
       message: "limit must be between 1 and 10000",
     })
-    .default("1000"),
+    .default(1000),
 });
 
 // ─── CSV helpers ───────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ router.get("/tokens", async (req: Request, res: Response) => {
       errorResponse({
         code: "VALIDATION_ERROR",
         message: "Invalid query parameters",
-        details: parsed.error.errors,
+        details: parsed.error.issues,
       })
     );
   }
@@ -214,7 +214,7 @@ router.get("/burn-records", async (req: Request, res: Response) => {
       errorResponse({
         code: "VALIDATION_ERROR",
         message: "Invalid query parameters",
-        details: parsed.error.errors,
+        details: parsed.error.issues,
       })
     );
   }

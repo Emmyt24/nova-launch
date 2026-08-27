@@ -54,7 +54,7 @@ router.get("/", authenticateAdmin, async (req, res) => {
         errorResponse({
           code: "VALIDATION_ERROR",
           message: "Invalid filters",
-          details: error.errors,
+          details: error.issues,
         })
       );
     }

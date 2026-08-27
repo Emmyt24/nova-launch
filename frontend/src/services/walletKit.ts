@@ -1,16 +1,12 @@
 import {
     StellarWalletsKit,
-    FreighterModule,
-    LobstrModule,
-    AlbedoModule,
-    xBullModule,
     Networks,
-    FREIGHTER_ID,
-    LOBSTR_ID,
-    ALBEDO_ID,
-    XBULL_ID,
     type ISupportedWallet,
 } from '@creit.tech/stellar-wallets-kit';
+import { FreighterModule, FREIGHTER_ID } from '@creit.tech/stellar-wallets-kit/modules/freighter';
+import { LobstrModule, LOBSTR_ID } from '@creit.tech/stellar-wallets-kit/modules/lobstr';
+import { AlbedoModule, ALBEDO_ID } from '@creit.tech/stellar-wallets-kit/modules/albedo';
+import { xBullModule, XBULL_ID } from '@creit.tech/stellar-wallets-kit/modules/xbull';
 import type { WalletType } from '../types';
 
 export { FREIGHTER_ID, LOBSTR_ID, ALBEDO_ID, XBULL_ID };

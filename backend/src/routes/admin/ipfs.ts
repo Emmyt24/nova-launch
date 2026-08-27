@@ -160,7 +160,7 @@ router.post("/re-pin/:cid", authenticateAdmin, async (req, res) => {
         errorResponse({
           code: "VALIDATION_ERROR",
           message: "Invalid CID",
-          details: error.errors,
+          details: error.issues,
         })
       );
     }

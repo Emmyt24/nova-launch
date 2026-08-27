@@ -1,10 +1,34 @@
+//! Multi-pool staking (#1757).
+//!
+//! Users create staking pools for a given token and stake into them to earn
+//! rewards in a (possibly different) reward token, accrued over time via a
+//! precision-scaled reward-per-share accumulator — the standard "MasterChef"
+//! checkpoint pattern.
+//!
+//! `stake` / `unstake` / `claim_rewards` all call [`update_pool`] first, which
+//! rolls the pool's `acc_reward_per_share` forward to the current ledger
+//! timestamp before touching the caller's position. This guarantees every
+//! mutation is checkpointed against a consistent accumulator value:
+//! - Rewards that accrue while a pool has zero stakers are simply not
+//!   accrued (no elapsed-time reward is materialized into
+//!   `acc_reward_per_share`), so they are never later attributed to a
+//!   staker who wasn't there to earn them.
+//! - A staker's `reward_debt` is always re-anchored to the accumulator value
+//!   at the moment their `amount` changes, so reward accrued before they
+//!   entered (or after they fully exited) is neither double-counted nor lost.
+
 use crate::events;
 use crate::storage;
 use crate::types::{Error, StakeInfo, StakingPool};
 use soroban_sdk::{Address, Env};
 
+/// Fixed-point scaling factor for the reward-per-share accumulator.
 const PRECISION: i128 = 1_000_000_000_000;
 
+/// Create a new staking pool paying `reward_rate` units of the reward token
+/// per second to stakers, proportional to their share of the pool.
+///
+/// Caller must be either the factory admin or the creator of `token_index`.
 pub fn create_staking_pool(
     env: &Env,
     creator: Address,
@@ -18,8 +42,11 @@ pub fn create_staking_pool(
         return Err(Error::InvalidRewardRate);
     }
 
-    let admin = storage::get_admin(env);
-    if creator != admin {
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    let token = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
+    storage::get_token_info(env, reward_token_index).ok_or(Error::TokenNotFound)?;
+
+    if creator != admin && creator != token.creator {
         return Err(Error::Unauthorized);
     }
 
@@ -39,17 +66,14 @@ pub fn create_staking_pool(
     storage::set_staking_pool(env, pool_id, &pool);
     storage::increment_staking_pool_count(env)?;
 
-    events::emit_staking_pool_created(
-        env,
-        pool_id,
-        token_index,
-        reward_token_index,
-        reward_rate,
-    );
+    events::emit_staking_pool_created(env, pool_id, token_index, reward_token_index, reward_rate);
 
     Ok(pool_id)
 }
 
+/// Roll a pool's `acc_reward_per_share` forward to the current ledger
+/// timestamp. Must be called before reading or mutating any staker's
+/// position so accrual is always computed against a consistent checkpoint.
 fn update_pool(env: &Env, pool: &mut StakingPool) -> Result<(), Error> {
     let current_time = env.ledger().timestamp();
     if current_time <= pool.last_reward_time {
@@ -57,6 +81,9 @@ fn update_pool(env: &Env, pool: &mut StakingPool) -> Result<(), Error> {
     }
 
     if pool.total_staked == 0 {
+        // No stakers to attribute rewards to; skip accrual for this
+        // interval entirely rather than letting it land on whoever stakes
+        // next.
         pool.last_reward_time = current_time;
         return Ok(());
     }
@@ -81,6 +108,49 @@ fn update_pool(env: &Env, pool: &mut StakingPool) -> Result<(), Error> {
     Ok(())
 }
 
+/// Compute a staker's currently accrued (unclaimed) reward against `pool`'s
+/// up-to-date `acc_reward_per_share`, without mutating anything.
+fn accrued_reward(pool: &StakingPool, user_stake: &StakeInfo) -> Result<i128, Error> {
+    user_stake
+        .amount
+        .checked_mul(pool.acc_reward_per_share)
+        .ok_or(Error::ArithmeticError)?
+        .checked_div(PRECISION)
+        .ok_or(Error::ArithmeticError)?
+        .checked_sub(user_stake.reward_debt)
+        .ok_or(Error::ArithmeticError)
+}
+
+/// Re-anchor `user_stake.reward_debt` to `pool`'s current
+/// `acc_reward_per_share`, marking all currently-accrued reward as settled.
+fn checkpoint_debt(pool: &StakingPool, user_stake: &mut StakeInfo) -> Result<(), Error> {
+    user_stake.reward_debt = user_stake
+        .amount
+        .checked_mul(pool.acc_reward_per_share)
+        .ok_or(Error::ArithmeticError)?
+        .checked_div(PRECISION)
+        .ok_or(Error::ArithmeticError)?;
+    Ok(())
+}
+
+/// Pay out `amount` of `pool.reward_token_index` to `user`, if positive, and
+/// emit `stk_clm1`.
+fn payout_reward(env: &Env, pool: &StakingPool, user: &Address, amount: i128) -> Result<(), Error> {
+    if amount <= 0 {
+        return Ok(());
+    }
+    let reward_balance = storage::get_balance(env, pool.reward_token_index, user);
+    let new_reward_balance = reward_balance
+        .checked_add(amount)
+        .ok_or(Error::ArithmeticError)?;
+    storage::set_balance(env, pool.reward_token_index, user, new_reward_balance);
+    events::emit_reward_claimed(env, pool.id, user, amount);
+    Ok(())
+}
+
+/// Stake `amount` of a pool's staking token. Settles any pending reward for
+/// the caller first, against the checkpoint immediately before `amount` is
+/// applied.
 pub fn stake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
     caller.require_auth();
 
@@ -89,37 +159,23 @@ pub fn stake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result<(
     }
 
     let mut pool = storage::get_staking_pool(env, pool_id).ok_or(Error::StakingPoolNotFound)?;
-
     if !pool.active {
         return Err(Error::StakingNotActive);
     }
 
     update_pool(env, &mut pool)?;
 
-    // Update or create user stake
     let mut user_stake = storage::get_user_stake(env, pool_id, &caller).unwrap_or(StakeInfo {
         amount: 0,
         reward_debt: 0,
     });
 
-    // If user already staked, they have pending rewards.
-    // They must be claimed or accounted for. For simplicity, we just calculate it and
-    // normally it would be transferred, but here we can just update the debt.
-    // However, if we do transfer, we need to interact with balances.
-    
-    // Instead of auto-claiming, let's claim it first if amount > 0
-    let mut pending = 0;
-    if user_stake.amount > 0 {
-        pending = user_stake.amount
-            .checked_mul(pool.acc_reward_per_share)
-            .ok_or(Error::ArithmeticError)?
-            .checked_div(PRECISION)
-            .ok_or(Error::ArithmeticError)?
-            .checked_sub(user_stake.reward_debt)
-            .ok_or(Error::ArithmeticError)?;
-    }
+    let pending = if user_stake.amount > 0 {
+        accrued_reward(&pool, &user_stake)?
+    } else {
+        0
+    };
 
-    // Process token transfer for the staked token
     let balance = storage::get_balance(env, pool.token_index, &caller);
     if balance < amount {
         return Err(Error::InsufficientBalance);
@@ -131,11 +187,7 @@ pub fn stake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result<(
         .amount
         .checked_add(amount)
         .ok_or(Error::ArithmeticError)?;
-    user_stake.reward_debt = user_stake.amount
-        .checked_mul(pool.acc_reward_per_share)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(PRECISION)
-        .ok_or(Error::ArithmeticError)?;
+    checkpoint_debt(&pool, &mut user_stake)?;
 
     pool.total_staked = pool
         .total_staked
@@ -146,18 +198,14 @@ pub fn stake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result<(
     storage::set_user_stake(env, pool_id, &caller, &user_stake);
 
     events::emit_staked(env, pool_id, &caller, amount);
-
-    // If there is pending reward, we give it to them
-    if pending > 0 {
-        let reward_bal = storage::get_balance(env, pool.reward_token_index, &caller);
-        let new_reward_bal = reward_bal.checked_add(pending).ok_or(Error::ArithmeticError)?;
-        storage::set_balance(env, pool.reward_token_index, &caller, new_reward_bal);
-        events::emit_reward_claimed(env, pool_id, &caller, pending);
-    }
+    payout_reward(env, &pool, &caller, pending)?;
 
     Ok(())
 }
 
+/// Unstake `amount` of a pool's staking token. Settles any pending reward
+/// for the caller first, against the checkpoint immediately before `amount`
+/// is applied.
 pub fn unstake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result<(), Error> {
     caller.require_auth();
 
@@ -168,37 +216,25 @@ pub fn unstake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result
     let mut pool = storage::get_staking_pool(env, pool_id).ok_or(Error::StakingPoolNotFound)?;
     update_pool(env, &mut pool)?;
 
-    let mut user_stake = storage::get_user_stake(env, pool_id, &caller).ok_or(Error::InsufficientStake)?;
-
+    let mut user_stake =
+        storage::get_user_stake(env, pool_id, &caller).ok_or(Error::InsufficientStake)?;
     if user_stake.amount < amount {
         return Err(Error::InsufficientStake);
     }
 
-    let pending = user_stake.amount
-        .checked_mul(pool.acc_reward_per_share)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(PRECISION)
-        .ok_or(Error::ArithmeticError)?
-        .checked_sub(user_stake.reward_debt)
-        .ok_or(Error::ArithmeticError)?;
+    let pending = accrued_reward(&pool, &user_stake)?;
 
     user_stake.amount = user_stake
         .amount
         .checked_sub(amount)
         .ok_or(Error::ArithmeticError)?;
-        
-    user_stake.reward_debt = user_stake.amount
-        .checked_mul(pool.acc_reward_per_share)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(PRECISION)
-        .ok_or(Error::ArithmeticError)?;
+    checkpoint_debt(&pool, &mut user_stake)?;
 
     pool.total_staked = pool
         .total_staked
         .checked_sub(amount)
         .ok_or(Error::ArithmeticError)?;
 
-    // Transfer staked tokens back
     let balance = storage::get_balance(env, pool.token_index, &caller);
     let new_balance = balance.checked_add(amount).ok_or(Error::ArithmeticError)?;
     storage::set_balance(env, pool.token_index, &caller, new_balance);
@@ -207,62 +243,43 @@ pub fn unstake(env: &Env, caller: Address, pool_id: u64, amount: i128) -> Result
     storage::set_user_stake(env, pool_id, &caller, &user_stake);
 
     events::emit_unstaked(env, pool_id, &caller, amount);
-
-    // Distribute pending rewards
-    if pending > 0 {
-        let reward_bal = storage::get_balance(env, pool.reward_token_index, &caller);
-        let new_reward_bal = reward_bal.checked_add(pending).ok_or(Error::ArithmeticError)?;
-        storage::set_balance(env, pool.reward_token_index, &caller, new_reward_bal);
-        events::emit_reward_claimed(env, pool_id, &caller, pending);
-    }
+    payout_reward(env, &pool, &caller, pending)?;
 
     Ok(())
 }
 
+/// Pay out a staker's currently accrued reward without unstaking.
 pub fn claim_rewards(env: &Env, caller: Address, pool_id: u64) -> Result<(), Error> {
     caller.require_auth();
 
     let mut pool = storage::get_staking_pool(env, pool_id).ok_or(Error::StakingPoolNotFound)?;
     update_pool(env, &mut pool)?;
 
-    let mut user_stake = storage::get_user_stake(env, pool_id, &caller).ok_or(Error::InsufficientStake)?;
+    let mut user_stake =
+        storage::get_user_stake(env, pool_id, &caller).ok_or(Error::InsufficientStake)?;
 
-    let pending = user_stake.amount
-        .checked_mul(pool.acc_reward_per_share)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(PRECISION)
-        .ok_or(Error::ArithmeticError)?
-        .checked_sub(user_stake.reward_debt)
-        .ok_or(Error::ArithmeticError)?;
-
-    if pending > 0 {
-        user_stake.reward_debt = user_stake.amount
-            .checked_mul(pool.acc_reward_per_share)
-            .ok_or(Error::ArithmeticError)?
-            .checked_div(PRECISION)
-            .ok_or(Error::ArithmeticError)?;
-
-        storage::set_user_stake(env, pool_id, &caller, &user_stake);
-
-        let reward_bal = storage::get_balance(env, pool.reward_token_index, &caller);
-        let new_reward_bal = reward_bal.checked_add(pending).ok_or(Error::ArithmeticError)?;
-        storage::set_balance(env, pool.reward_token_index, &caller, new_reward_bal);
-
-        events::emit_reward_claimed(env, pool_id, &caller, pending);
-    } else {
+    let pending = accrued_reward(&pool, &user_stake)?;
+    if pending <= 0 {
         return Err(Error::NothingToClaim);
     }
+
+    checkpoint_debt(&pool, &mut user_stake)?;
+    storage::set_staking_pool(env, pool_id, &pool);
+    storage::set_user_stake(env, pool_id, &caller, &user_stake);
+
+    payout_reward(env, &pool, &caller, pending)?;
 
     Ok(())
 }
 
+/// Preview a staker's currently accrued (unclaimed) reward without
+/// mutating any state.
 pub fn pending_rewards(env: &Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
     let pool = storage::get_staking_pool(env, pool_id).ok_or(Error::StakingPoolNotFound)?;
-    let user_stake = storage::get_user_stake(env, pool_id, &caller).unwrap_or(StakeInfo { amount: 0, reward_debt: 0 });
-
-    if user_stake.amount == 0 {
-        return Ok(0);
-    }
+    let user_stake = match storage::get_user_stake(env, pool_id, &caller) {
+        Some(s) if s.amount > 0 => s,
+        _ => return Ok(0),
+    };
 
     let mut acc_reward_per_share = pool.acc_reward_per_share;
     let current_time = env.ledger().timestamp();
@@ -281,13 +298,9 @@ pub fn pending_rewards(env: &Env, caller: Address, pool_id: u64) -> Result<i128,
             .ok_or(Error::ArithmeticError)?;
     }
 
-    let pending = user_stake.amount
-        .checked_mul(acc_reward_per_share)
-        .ok_or(Error::ArithmeticError)?
-        .checked_div(PRECISION)
-        .ok_or(Error::ArithmeticError)?
-        .checked_sub(user_stake.reward_debt)
-        .ok_or(Error::ArithmeticError)?;
-
-    Ok(pending)
+    let projected_pool = StakingPool {
+        acc_reward_per_share,
+        ..pool
+    };
+    accrued_reward(&projected_pool, &user_stake)
 }

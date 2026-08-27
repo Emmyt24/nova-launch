@@ -15,6 +15,19 @@
  *
  * Results are cached in-process for 5 minutes.
  *
+ * Aggregation consistency & timeout budget (#1617):
+ *   Each sort mode fans out into two or three DB reads (page query + count,
+ *   or an id lookup + page query + count for full-text search). Those reads
+ *   run inside a single REPEATABLE READ transaction so every fan-out call
+ *   sees the same snapshot of the Token table — a write landing between the
+ *   page query and the count query can no longer produce a total that
+ *   disagrees with the page it's counting. The snapshot instant is returned
+ *   as `asOf` on the response.
+ *   The transaction as a whole is bounded by an aggregation timeout budget
+ *   (DISCOVERY_AGGREGATION_TIMEOUT_MS, default 5000ms) so one slow dependency
+ *   can't block the response indefinitely. On timeout the route degrades
+ *   explicitly — HTTP 503 with code AGGREGATION_TIMEOUT — rather than hanging.
+ *
  * PATCH /api/tokens/:address/visibility
  *
  * Owner-only endpoint to toggle isPublic on a token.
@@ -23,6 +36,7 @@
 
 import { Router, Request, Response } from "express";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { tenantMiddleware, type TenantRequest } from "../middleware/tenancy";
 import { successResponse, errorResponse } from "../utils/response";
@@ -55,6 +69,38 @@ function cacheSet(key: string, data: unknown) {
 /** Exposed for tests only */
 export function clearDiscoveryCache() {
   discoveryCache.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation timeout budget
+// ---------------------------------------------------------------------------
+const DEFAULT_AGGREGATION_TIMEOUT_MS = 5000;
+
+function aggregationTimeoutMs(): number {
+  const raw = process.env.DISCOVERY_AGGREGATION_TIMEOUT_MS;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_AGGREGATION_TIMEOUT_MS;
+}
+
+export class AggregationTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Discovery aggregation exceeded its ${ms}ms timeout budget`);
+    this.name = "AggregationTimeoutError";
+  }
+}
+
+/**
+ * Races `promise` against the aggregation timeout budget. The underlying
+ * query isn't cancelled on timeout (Prisma/Postgres don't expose that here),
+ * but the caller stops waiting and the client gets an explicit degraded
+ * response instead of hanging indefinitely.
+ */
+function withTimeoutBudget<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new AggregationTimeoutError(ms)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +183,7 @@ router.get("/tokens", discoveryRateLimiter, async (req: Request, res: Response) 
   const parsed = discoveryQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json(
-      errorResponse({ code: "VALIDATION_ERROR", message: "Invalid query parameters", details: parsed.error.errors })
+      errorResponse({ code: "VALIDATION_ERROR", message: "Invalid query parameters", details: parsed.error.issues })
     );
   }
 
@@ -149,78 +195,105 @@ router.get("/tokens", discoveryRateLimiter, async (req: Request, res: Response) 
   const cached = cacheGet(cacheKey);
   if (cached) return res.json({ ...cached as object, cached: true });
 
+  // Snapshot instant shared across every fan-out call in this request so the
+  // page query, count query (and id lookup, for FTS) are all "consistent
+  // as-of" the same moment rather than each observing a different DB state.
+  const snapshotAt = new Date();
+  const timeoutMs = aggregationTimeoutMs();
+  const REPEATABLE_READ = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead };
+
   try {
     let tokens: unknown[];
     let total: number;
 
     if (sortBy === "trending") {
       const hasMetadataBool = hasMetadata === "true" ? true : hasMetadata === "false" ? false : null;
-      const [rows, countRows] = await Promise.all([
-        prisma.$queryRawUnsafe<any[]>(TRENDING_SQL, q ?? null, category ?? null, network ?? null, hasMetadataBool, limit, offset),
-        prisma.$queryRawUnsafe<{ cnt: number }[]>(TRENDING_COUNT_SQL, q ?? null, category ?? null, network ?? null, hasMetadataBool),
-      ]);
+      const [rows, countRows] = await withTimeoutBudget(
+        prisma.$transaction(
+          [
+            prisma.$queryRawUnsafe<any[]>(TRENDING_SQL, q ?? null, category ?? null, network ?? null, hasMetadataBool, limit, offset),
+            prisma.$queryRawUnsafe<{ cnt: number }[]>(TRENDING_COUNT_SQL, q ?? null, category ?? null, network ?? null, hasMetadataBool),
+          ],
+          REPEATABLE_READ
+        ),
+        timeoutMs
+      );
       tokens = rows.map(({ _score, ...r }) => r); // strip internal score
       total  = countRows[0]?.cnt ?? 0;
-    } else {
-      // Build Prisma where clause
-      const where: Record<string, unknown> = { isPublic: true };
+    } else if (q) {
+      // Full-text search: look up matching ids, then page + count against
+      // that id list. All three reads share one snapshot so a concurrent
+      // visibility change or delete can't produce an inconsistent page/total.
+      const { fetchedTokens, count, ids } = await withTimeoutBudget(
+        prisma.$transaction(async (tx) => {
+          const idRows = await tx.$queryRawUnsafe<{ id: string }[]>(
+            `SELECT id FROM "Token"
+             WHERE "isPublic" = true
+               AND to_tsvector('english', name || ' ' || symbol) @@ plainto_tsquery('english', $1)
+               ${category  ? `AND category = '${category}'::"TokenCategory"` : ""}
+               ${network   ? `AND network  = '${network}'` : ""}
+               ${hasMetadata === "true"  ? `AND "metadataUri" IS NOT NULL` : ""}
+               ${hasMetadata === "false" ? `AND "metadataUri" IS NULL` : ""}`,
+            q
+          );
+          const ids = idRows.map((r) => r.id);
+          if (ids.length === 0) {
+            return { fetchedTokens: [] as any[], count: 0, ids };
+          }
+          const orderBy = buildOrderBy(sortBy, sortOrder);
+          const [fetchedTokens, count] = await Promise.all([
+            tx.token.findMany({ where: { id: { in: ids } }, orderBy, take: limit, skip: offset, select: TOKEN_SELECT }),
+            tx.token.count({ where: { id: { in: ids } } }),
+          ]);
+          return { fetchedTokens, count, ids };
+        }, REPEATABLE_READ),
+        timeoutMs
+      );
 
-      if (q) {
-        // Use raw SQL fragment for tsvector search; fall back to Prisma raw for safety
-        where.AND = [
-          prisma.token.fields
-            ? undefined
-            : undefined,
-        ];
-        // We inject the FTS condition via a raw where expression
-        // Prisma doesn't expose tsvector natively, so we use $queryRaw for FTS.
-        // For non-trending sorts we run a two-step: get matching IDs via raw, then fetch with Prisma.
-        const idRows = await prisma.$queryRawUnsafe<{ id: string }[]>(
-          `SELECT id FROM "Token"
-           WHERE "isPublic" = true
-             AND to_tsvector('english', name || ' ' || symbol) @@ plainto_tsquery('english', $1)
-             ${category  ? `AND category = '${category}'::"TokenCategory"` : ""}
-             ${network   ? `AND network  = '${network}'` : ""}
-             ${hasMetadata === "true"  ? `AND "metadataUri" IS NOT NULL` : ""}
-             ${hasMetadata === "false" ? `AND "metadataUri" IS NULL` : ""}`,
-          q
-        );
-        const ids = idRows.map((r) => r.id);
-        if (ids.length === 0) {
-          return res.json(successResponse({ tokens: [], total: 0, limit, offset }));
-        }
-        // Replace where clause with ID list
-        const orderBy = buildOrderBy(sortBy, sortOrder);
-        const [fetchedTokens, count] = await Promise.all([
-          prisma.token.findMany({ where: { id: { in: ids } }, orderBy, take: limit, skip: offset, select: TOKEN_SELECT }),
-          prisma.token.count({ where: { id: { in: ids } } }),
-        ]);
-        tokens = serializeTokens(fetchedTokens);
-        total  = count;
-        const response = successResponse({ tokens, total, limit, offset });
-        cacheSet(cacheKey, response);
-        return res.json(response);
+      if (ids.length === 0) {
+        return res.json(successResponse({ tokens: [], total: 0, limit, offset, asOf: snapshotAt.toISOString() }));
       }
-
+      tokens = serializeTokens(fetchedTokens);
+      total  = count;
+      const response = successResponse({ tokens, total, limit, offset, asOf: snapshotAt.toISOString() });
+      cacheSet(cacheKey, response);
+      return res.json(response);
+    } else {
       // No FTS — pure Prisma filtering
+      const where: Record<string, unknown> = { isPublic: true };
       if (category)            where.category    = category;
       if (network)             where.network     = network;
       if (hasMetadata === "true")  where.metadataUri = { not: null };
       if (hasMetadata === "false") where.metadataUri = null;
 
       const orderBy = buildOrderBy(sortBy, sortOrder);
-      const [fetchedTokens, count] = await Promise.all([
-        prisma.token.findMany({ where, orderBy, take: limit, skip: offset, select: TOKEN_SELECT }),
-        prisma.token.count({ where }),
-      ]);
+      const [fetchedTokens, count] = await withTimeoutBudget(
+        prisma.$transaction(
+          [
+            prisma.token.findMany({ where, orderBy, take: limit, skip: offset, select: TOKEN_SELECT }),
+            prisma.token.count({ where }),
+          ],
+          REPEATABLE_READ
+        ),
+        timeoutMs
+      );
       tokens = serializeTokens(fetchedTokens);
       total  = count;
     }
 
-    const response = successResponse({ tokens, total, limit, offset });
+    const response = successResponse({ tokens, total, limit, offset, asOf: snapshotAt.toISOString() });
     cacheSet(cacheKey, response);
     return res.json(response);
   } catch (err) {
+    if (err instanceof AggregationTimeoutError) {
+      // Documented graceful degradation: we stop waiting on the slow
+      // dependency and tell the client explicitly rather than hanging.
+      console.error("[discovery] aggregation timeout:", err.message);
+      return res.status(503).json(errorResponse({
+        code: "AGGREGATION_TIMEOUT",
+        message: "Discovery aggregation exceeded its time budget and was degraded rather than left to hang. Please retry.",
+      }));
+    }
     console.error("[discovery] GET /tokens error:", err);
     return res.status(500).json(errorResponse({ code: "INTERNAL_ERROR", message: "Discovery query failed" }));
   }

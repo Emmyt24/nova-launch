@@ -174,7 +174,7 @@ pub fn withdraw_fees(
     admin.require_auth();
 
     // Verify admin
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -203,7 +203,7 @@ pub fn withdraw_fees(
 pub fn add_allowed_recipient(env: &Env, admin: &Address, recipient: &Address) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -230,7 +230,7 @@ pub fn remove_allowed_recipient(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -259,7 +259,7 @@ pub fn update_treasury_policy(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }

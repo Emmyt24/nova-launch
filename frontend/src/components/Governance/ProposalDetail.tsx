@@ -17,8 +17,8 @@ import {
     fetchExecutionHistory,
     type ExecutionEntry,
 } from '../../services/governanceApi';
+import { ProposalStatus } from '../../types';
 import type { GovernanceProposal, GovernanceVote, WalletState } from '../../types';
-import { QuorumProgressBar } from './QuorumProgressBar';
 
 export interface ProposalDetailProps {
     /** Proposal ID */
@@ -34,20 +34,20 @@ export interface ProposalDetailProps {
 /**
  * Get status badge color
  */
-function getStatusBadge(status: string): string {
+function getStatusBadge(status: ProposalStatus): string {
     switch (status) {
-        case 'draft':
-            return 'bg-gray-100 text-gray-700';
-        case 'active':
+        case ProposalStatus.ACTIVE:
             return 'bg-blue-100 text-blue-700';
-        case 'passed':
+        case ProposalStatus.PASSED:
             return 'bg-green-100 text-green-700';
-        case 'failed':
+        case ProposalStatus.REJECTED:
             return 'bg-red-100 text-red-700';
-        case 'executed':
+        case ProposalStatus.EXECUTED:
             return 'bg-purple-100 text-purple-700';
-        case 'cancelled':
+        case ProposalStatus.CANCELLED:
             return 'bg-yellow-100 text-yellow-700';
+        case ProposalStatus.EXPIRED:
+            return 'bg-gray-100 text-gray-700';
         default:
             return 'bg-gray-100 text-gray-700';
     }
@@ -99,7 +99,7 @@ export function ProposalDetail({
     // Poll for live vote updates every 5 seconds while proposal is active
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     useEffect(() => {
-        if (proposal?.status !== 'active') return;
+        if (proposal?.status !== ProposalStatus.ACTIVE) return;
         pollRef.current = setInterval(async () => {
             try {
                 const [proposalData, votesData] = await Promise.all([
@@ -214,11 +214,7 @@ export function ProposalDetail({
                 </div>
                 <div className="p-3 bg-gray-50 rounded-lg">
                     <div className="text-sm text-gray-500">Voters</div>
-                    <div className="font-medium">{proposal.voterCount}</div>
-                </div>
-                <div className="p-3 bg-gray-50 rounded-lg">
-                    <div className="text-sm text-gray-500">Quorum</div>
-                    <div className="font-medium">{proposal.quorum}</div>
+                    <div className="font-medium">{proposal.voteCount}</div>
                 </div>
             </div>
 
@@ -247,19 +243,10 @@ export function ProposalDetail({
                         />
                     </div>
                 </div>
-
-                {/* Quorum progress */}
-                <div className="mt-4">
-                    <QuorumProgressBar
-                        votesFor={proposal.votesFor}
-                        votesAgainst={proposal.votesAgainst}
-                        quorum={proposal.quorum}
-                    />
-                </div>
             </div>
 
             {/* Voting buttons */}
-            {proposal.status === 'active' && wallet.connected && (
+            {proposal.status === ProposalStatus.ACTIVE && wallet.connected && (
                 <div className="mb-6 p-4 bg-blue-50 rounded-lg">
                     <h3 className="font-medium text-gray-900 mb-3">Cast Your Vote</h3>
                     <div className="flex gap-3">
@@ -296,7 +283,7 @@ export function ProposalDetail({
                     >
                         Votes ({votes.length})
                     </button>
-                    {proposal.status === 'executed' && (
+                    {proposal.status === ProposalStatus.EXECUTED && (
                         <button
                             onClick={() => setActiveTab('execution')}
                             className={`pb-2 font-medium ${

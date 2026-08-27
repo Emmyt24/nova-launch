@@ -49,7 +49,7 @@ BACKEND_URL=https://api.nova-launch.io \
 ```
 
 ### In CI
-The gate runs automatically on every `v*` tag push via `.github/workflows/production-readiness-gate.yml`. It can also be triggered manually from the Actions tab.
+The gate runs automatically on every `v*` tag push via the `readiness-gate` job in `.github/workflows/production-deploy.yml`. It can also be triggered manually from the Actions tab.
 
 ---
 

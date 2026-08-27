@@ -1,0 +1,423 @@
+##############################################################################
+# Production Deployment Workflow — Nova Launch
+#
+# Implements zero-downtime deployments by:
+#   1. Building and pushing a new container image to ECR
+#   2. Running the blue-green deployment script
+#   3. Verifying the new slot is healthy post-deployment
+#   4. Automatically rolling back on failure
+#
+# Also runs the production readiness gate on version tags, verifying the
+# deployed stack (Horizon, Soroban RPC, backend) before a release is trusted.
+#
+# Triggers:
+#   - Push to main (auto-deploys to staging)
+#   - Push of a v* tag (runs the readiness gate)
+#   - Manual dispatch (deploy to staging or production, or run the gate)
+#
+# Required secrets:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+#   ECR_REGISTRY (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com)
+##############################################################################
+
+name: Production Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, production]
+      service:
+        description: "Service to deploy"
+        required: true
+        default: "backend"
+        type: choice
+        options: [backend, frontend, both]
+      image_tag:
+        description: "Image tag to deploy (default: git SHA)"
+        required: false
+        default: ""
+      canary:
+        description: "Use canary traffic shifting"
+        required: false
+        default: "false"
+        type: boolean
+      dry_run:
+        description: "Dry run (plan only, no changes)"
+        required: false
+        default: "false"
+        type: boolean
+      network:
+        description: "Stellar network to verify against (readiness gate)"
+        required: false
+        default: "testnet"
+        type: choice
+        options: [testnet, mainnet]
+
+permissions:
+  contents: read
+  id-token: write
+  deployments: write
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  PROJECT: nova-launch
+
+jobs:
+  ##############################################################################
+  # 1. Determine deployment parameters
+  ##############################################################################
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    concurrency:
+      group: blue-green-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+    outputs:
+      environment: ${{ steps.params.outputs.environment }}
+      service: ${{ steps.params.outputs.service }}
+      image_tag: ${{ steps.params.outputs.image_tag }}
+      backend_image: ${{ steps.params.outputs.backend_image }}
+      frontend_image: ${{ steps.params.outputs.frontend_image }}
+      canary: ${{ steps.params.outputs.canary }}
+      dry_run: ${{ steps.params.outputs.dry_run }}
+      # A version-tag push only runs the readiness gate below, never a blue-green deploy
+      is_tag_push: ${{ steps.params.outputs.is_tag_push }}
+      deploy_backend: ${{ steps.params.outputs.deploy_backend }}
+      deploy_frontend: ${{ steps.params.outputs.deploy_frontend }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Determine parameters
+        id: params
+        run: |
+          # Environment
+          ENV="${{ github.event.inputs.environment || 'staging' }}"
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+
+          # Service
+          SERVICE="${{ github.event.inputs.service || 'backend' }}"
+          echo "service=${SERVICE}" >> $GITHUB_OUTPUT
+
+          # Image tag
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [[ -z "${TAG}" ]]; then
+            TAG="sha-$(echo '${{ github.sha }}' | cut -c1-8)"
+          fi
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+
+          # Full image URIs
+          REGISTRY="${{ secrets.ECR_REGISTRY }}"
+          echo "backend_image=${REGISTRY}/${PROJECT}/${ENV}/backend:${TAG}" >> $GITHUB_OUTPUT
+          echo "frontend_image=${REGISTRY}/${PROJECT}/${ENV}/frontend:${TAG}" >> $GITHUB_OUTPUT
+
+          # Flags
+          echo "canary=${{ github.event.inputs.canary || 'false' }}" >> $GITHUB_OUTPUT
+          echo "dry_run=${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_OUTPUT
+
+          # Which services to deploy
+          echo "deploy_backend=$([[ '${SERVICE}' == 'backend' || '${SERVICE}' == 'both' ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "deploy_frontend=$([[ '${SERVICE}' == 'frontend' || '${SERVICE}' == 'both' ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+          # A tag push (e.g. v1.2.3) only runs the readiness gate, never a blue-green deploy
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            echo "is_tag_push=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_tag_push=false" >> $GITHUB_OUTPUT
+          fi
+
+  ##############################################################################
+  # 2. Build and push backend image
+  ##############################################################################
+  build-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.deploy_backend == 'true' && needs.setup.outputs.is_tag_push == 'false'
+    concurrency:
+      group: blue-green-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ needs.setup.outputs.dry_run == 'false' }}
+          tags: |
+            ${{ needs.setup.outputs.backend_image }}
+            ${{ secrets.ECR_REGISTRY }}/${{ env.PROJECT }}/${{ needs.setup.outputs.environment }}/backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+
+  ##############################################################################
+  # 3. Build and push frontend image
+  ##############################################################################
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.deploy_frontend == 'true' && needs.setup.outputs.is_tag_push == 'false'
+    concurrency:
+      group: blue-green-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: ${{ needs.setup.outputs.dry_run == 'false' }}
+          tags: |
+            ${{ needs.setup.outputs.frontend_image }}
+            ${{ secrets.ECR_REGISTRY }}/${{ env.PROJECT }}/${{ needs.setup.outputs.environment }}/frontend:latest
+          build-args: |
+            VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+            VITE_NETWORK=${{ needs.setup.outputs.environment == 'production' && 'mainnet' || 'testnet' }}
+            VITE_FACTORY_CONTRACT_ID=${{ secrets.FACTORY_CONTRACT_ID }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  ##############################################################################
+  # 4. Deploy backend (blue-green)
+  ##############################################################################
+  deploy-backend:
+    name: Deploy Backend (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, build-backend]
+    if: needs.setup.outputs.deploy_backend == 'true' && needs.setup.outputs.is_tag_push == 'false'
+    environment: ${{ needs.setup.outputs.environment }}
+    concurrency:
+      group: blue-green-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run blue-green deployment
+        run: |
+          ARGS=(
+            --env "${{ needs.setup.outputs.environment }}"
+            --service backend
+            --image "${{ needs.setup.outputs.backend_image }}"
+            --region "${{ env.AWS_REGION }}"
+          )
+
+          if [[ "${{ needs.setup.outputs.canary }}" == "true" ]]; then
+            ARGS+=(--canary)
+          fi
+
+          if [[ "${{ needs.setup.outputs.dry_run }}" == "true" ]]; then
+            ARGS+=(--dry-run)
+          fi
+
+          chmod +x ./scripts/deploy-blue-green.sh
+          ./scripts/deploy-blue-green.sh "${ARGS[@]}"
+
+      - name: Post-deployment health check
+        if: needs.setup.outputs.dry_run == 'false'
+        run: |
+          # Wait for ALB to stabilise
+          sleep 30
+
+          # Check the ALB health endpoint
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --region "${{ env.AWS_REGION }}" \
+            --query "LoadBalancers[?contains(LoadBalancerName, '${{ env.PROJECT }}-${{ needs.setup.outputs.environment }}')].DNSName | [0]" \
+            --output text)
+
+          if [[ -n "${ALB_DNS}" && "${ALB_DNS}" != "None" ]]; then
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 10 \
+              --max-time 15 \
+              "https://${ALB_DNS}/health" \
+              -H "Host: ${{ secrets.APP_DOMAIN }}" 2>/dev/null || echo "000")
+
+            echo "Post-deployment health check: HTTP ${HTTP_STATUS}"
+
+            if [[ "${HTTP_STATUS}" != "200" && "${HTTP_STATUS}" != "207" ]]; then
+              echo "::error::Post-deployment health check failed (HTTP ${HTTP_STATUS})"
+              exit 1
+            fi
+          fi
+
+      - name: Create GitHub deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment?.id ?? 0,
+              state: status,
+              description: `Blue-green deployment ${status}`,
+              environment_url: 'https://${{ secrets.APP_DOMAIN }}',
+            }).catch(() => {}); // Ignore if no deployment context
+
+  ##############################################################################
+  # 5. Deploy frontend (blue-green)
+  ##############################################################################
+  deploy-frontend:
+    name: Deploy Frontend (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, build-frontend]
+    if: needs.setup.outputs.deploy_frontend == 'true' && needs.setup.outputs.is_tag_push == 'false'
+    environment: ${{ needs.setup.outputs.environment }}
+    concurrency:
+      group: blue-green-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run blue-green deployment
+        run: |
+          ARGS=(
+            --env "${{ needs.setup.outputs.environment }}"
+            --service frontend
+            --image "${{ needs.setup.outputs.frontend_image }}"
+            --region "${{ env.AWS_REGION }}"
+          )
+
+          if [[ "${{ needs.setup.outputs.canary }}" == "true" ]]; then
+            ARGS+=(--canary)
+          fi
+
+          if [[ "${{ needs.setup.outputs.dry_run }}" == "true" ]]; then
+            ARGS+=(--dry-run)
+          fi
+
+          chmod +x ./scripts/deploy-blue-green.sh
+          ./scripts/deploy-blue-green.sh "${ARGS[@]}"
+
+  ##############################################################################
+  # 6. Deployment summary
+  ##############################################################################
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [setup, deploy-backend, deploy-frontend]
+    if: always()
+
+    steps:
+      - name: Write summary
+        run: |
+          echo "## 🚀 Blue-Green Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ needs.setup.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | \`${{ needs.setup.outputs.service }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | \`${{ needs.setup.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Canary | ${{ needs.setup.outputs.canary }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ needs.setup.outputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Deploy | ${{ needs.deploy-backend.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Deploy | ${{ needs.deploy-frontend.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  ##############################################################################
+  # 7. Production readiness gate — runs on version tags
+  ##############################################################################
+  readiness-gate:
+    name: Production Readiness Gate
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.network || 'testnet' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Run production readiness gate
+        env:
+          FACTORY_CONTRACT_ID: ${{ secrets.FACTORY_CONTRACT_ID }}
+          STELLAR_NETWORK: ${{ github.event.inputs.network || 'testnet' }}
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'http://localhost:3001' }}
+        run: |
+          chmod +x scripts/run-production-readiness-gate.sh
+          ./scripts/run-production-readiness-gate.sh \
+            --network "$STELLAR_NETWORK" \
+            --backend-url "$BACKEND_URL"
+
+      - name: Gate result summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## ✅ Production Readiness Gate PASSED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ❌ Production Readiness Gate FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "See job logs for failing checks and remediation steps." >> "$GITHUB_STEP_SUMMARY"
+            echo "Refer to [docs/PRODUCTION_READINESS_GATE.md](docs/PRODUCTION_READINESS_GATE.md)." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -109,7 +109,7 @@ pub fn schedule_fee_update(
 ) -> Result<u64, Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -175,7 +175,7 @@ pub fn schedule_fee_update(
 pub fn schedule_pause_update(env: &Env, admin: &Address, paused: bool) -> Result<u64, Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -228,7 +228,7 @@ pub fn schedule_treasury_update(
 ) -> Result<u64, Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -298,10 +298,10 @@ pub fn execute_change(env: &Env, change_id: u64) -> Result<(), Error> {
 
             let new_base = pending_change
                 .base_fee
-                .unwrap_or_else(|| storage::get_base_fee(env));
+                .unwrap_or_else(|| storage::get_base_fee(env).unwrap_or(0));
             let new_metadata = pending_change
                 .metadata_fee
-                .unwrap_or_else(|| storage::get_metadata_fee(env));
+                .unwrap_or_else(|| storage::get_metadata_fee(env).unwrap_or(0));
             events::emit_fees_updated_v2(env, &pending_change.scheduled_by, new_base, new_metadata);
         }
         ChangeType::PauseUpdate => {
@@ -348,7 +348,7 @@ pub fn execute_change(env: &Env, change_id: u64) -> Result<(), Error> {
 pub fn cancel_change(env: &Env, admin: &Address, change_id: u64) -> Result<(), Error> {
     admin.require_auth();
 
-    let current_admin = storage::get_admin(env);
+    let current_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *admin != current_admin {
         return Err(Error::Unauthorized);
     }
@@ -531,7 +531,7 @@ pub fn create_proposal(
 ) -> Result<u64, Error> {
     // Verify proposer is admin
     proposer.require_auth();
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if proposer != &admin {
         return Err(Error::Unauthorized);
     }
@@ -657,7 +657,7 @@ pub fn cancel_proposal(env: &Env, caller: &Address, proposal_id: u64) -> Result<
 
     let mut proposal = storage::get_proposal(env, proposal_id).ok_or(Error::ProposalNotFound)?;
 
-    let admin = storage::get_admin(env);
+    let admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
     if *caller != proposal.proposer && *caller != admin {
         return Err(Error::Unauthorized);
     }
@@ -1123,19 +1123,19 @@ pub fn vote_proposal(
             proposal.votes_for = proposal
                 .votes_for
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
         VoteChoice::Against => {
             proposal.votes_against = proposal
                 .votes_against
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
         VoteChoice::Abstain => {
             proposal.votes_abstain = proposal
                 .votes_abstain
                 .checked_add(1)
-                .expect("Vote count overflow");
+                .ok_or(Error::ArithmeticError)?;
         }
     }
 

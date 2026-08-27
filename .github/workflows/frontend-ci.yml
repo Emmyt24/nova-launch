@@ -1,0 +1,264 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  frontend-lifecycle-e2e:
+    name: Frontend Lifecycle E2E
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      TZ: UTC
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Run deterministic lifecycle E2E suite
+        run: npm run test:e2e:lifecycle
+
+  deploy-frontend:
+    name: Deploy Frontend (production)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build for production
+        working-directory: ./frontend
+        env:
+          VITE_NETWORK: mainnet
+          VITE_FACTORY_CONTRACT_ID: ${{ secrets.MAINNET_CONTRACT_ID }}
+          VITE_IPFS_API_KEY: ${{ secrets.IPFS_API_KEY }}
+          VITE_IPFS_API_SECRET: ${{ secrets.IPFS_API_SECRET }}
+        run: npm run build
+
+      - name: Deploy to Vercel Production
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./frontend
+          vercel-args: '--prod'
+
+      - name: Create deployment notification
+        if: success()
+        run: |
+          echo "✅ Production deployment successful!"
+
+  lighthouse:
+    name: Lighthouse CI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run Lighthouse CI
+        run: |
+          npm install -g @lhci/cli@0.13.x
+          lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Upload Lighthouse results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lighthouse-results
+          path: frontend/.lighthouseci
+          retention-days: 30
+
+  bundle-analysis:
+    name: Bundle Size Analysis
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Analyze bundle
+        run: node scripts/analyze-bundle.js
+
+      - name: Upload bundle analysis
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-analysis
+          path: frontend/bundle-analysis.json
+          retention-days: 30
+
+      - name: Comment PR with bundle size
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = JSON.parse(fs.readFileSync('frontend/bundle-analysis.json', 'utf8'));
+
+            const comment = `## 📦 Bundle Size Analysis
+
+            **Total Size:** ${analysis.totalSize} KB
+            **Budget:** ${analysis.budgets.totalBundle} KB
+            **Status:** ${parseFloat(analysis.totalSize) <= analysis.budgets.totalBundle ? '✅ PASS' : '❌ FAIL'}
+
+            ### Breakdown
+            - **Scripts:** ${analysis.totals.scripts.toFixed(2)} KB (Budget: ${analysis.budgets.script} KB)
+            - **Stylesheets:** ${analysis.totals.stylesheets.toFixed(2)} KB (Budget: ${analysis.budgets.stylesheet} KB)
+            - **Images:** ${analysis.totals.images.toFixed(2)} KB (Budget: ${analysis.budgets.image} KB)
+            - **Fonts:** ${analysis.totals.fonts.toFixed(2)} KB (Budget: ${analysis.budgets.font} KB)
+
+            ${analysis.opportunities.length > 0 ? '### 💡 Optimization Opportunities\n' + analysis.opportunities.join('\n') : '✅ No major optimization opportunities detected!'}
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  performance-benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run performance tests
+        run: npm run test:performance
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: performance-test-results
+          path: frontend/test-results
+          retention-days: 30
+
+  performance-monitoring:
+    name: Performance Monitoring
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    needs: [lighthouse, bundle-analysis]
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: frontend/artifacts
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run Lighthouse CI
+        run: |
+          npm install -g @lhci/cli@0.13.x
+          lhci autorun
+
+      - name: Analyze bundle
+        run: node scripts/analyze-bundle.js
+
+      - name: Generate performance report
+        run: node scripts/performance-monitor.js
+
+      - name: Commit performance history
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add performance-history.json || true
+          git commit -m "chore: update performance history [skip ci]" || true
+          git push || true

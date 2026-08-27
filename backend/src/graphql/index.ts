@@ -72,7 +72,7 @@ import {
   type ComplexityEstimator,
 } from "graphql-query-complexity";
 import { WebSocketServer } from "ws";
-import { useServer } from "graphql-ws/lib/use/ws";
+import { useServer } from "graphql-ws/use/ws";
 import type { Server } from "http";
 import { typeDefs } from "./schema";
 import { resolvers } from "./resolvers";
@@ -84,6 +84,7 @@ import {
   SLOW_CONSUMER_THRESHOLD,
   createSubscriptionMetrics,
 } from "./subscriptions";
+import { tenantComplexityBudgetService } from "../services/tenantComplexityBudgetService";
 
 const MAX_DEPTH = parseInt(process.env.GRAPHQL_MAX_DEPTH ?? "6", 10);
 const MAX_COMPLEXITY = parseInt(
@@ -103,7 +104,6 @@ const LIST_FIELDS = new Set([
   "streams",
   "proposals",
   "votes",
-  "campaigns",
 ]);
 
 function maxQueryDepth(node: any, depth = 0): number {
@@ -225,7 +225,7 @@ export function attachGraphqlSubscriptions(
       schema,
       execute,
       subscribe,
-      rootValue,
+      roots: { query: rootValue, mutation: rootValue, subscription: rootValue },
 
       // Validate the JWT on the connection_init handshake and stash the tenant.
       onConnect: (ctx) => {
@@ -247,9 +247,9 @@ export function attachGraphqlSubscriptions(
       }),
 
       // Enforce the per-connection concurrent-subscription cap.
-      onSubscribe: (ctx, msg) => {
+      onSubscribe: (ctx, id, payload) => {
         if (
-          !isSubscriptionOperation(msg.payload.query, msg.payload.operationName)
+          !isSubscriptionOperation(payload.query, payload.operationName)
         ) {
           return undefined; // queries/mutations don't count toward the cap
         }
@@ -263,12 +263,12 @@ export function attachGraphqlSubscriptions(
             ),
           ];
         }
-        extra.activeSubscriptionIds.add(msg.id);
+        extra.activeSubscriptionIds.add(id);
         return undefined;
       },
 
       // Track outbound message queue depth; disconnect slow consumers.
-      onNext: (ctx, _msg, _args, result) => {
+      onNext: (ctx, _id, _payload, _args, result) => {
         const extra = ctx.extra as unknown as ConnectionExtra;
         extra.queueDepth = (extra.queueDepth ?? 0) + 1;
 
@@ -286,18 +286,18 @@ export function attachGraphqlSubscriptions(
       },
 
       // Decrement depth when a message is acknowledged (onComplete of a subscribe op).
-      onComplete: (ctx, msg) => {
+      onComplete: (ctx, id) => {
         const extra = ctx.extra as unknown as ConnectionExtra;
-        extra?.activeSubscriptionIds?.delete(msg.id);
+        extra?.activeSubscriptionIds?.delete(id);
         if (extra?.queueDepth !== undefined && extra.queueDepth > 0) {
           extra.queueDepth -= 1;
         }
       },
 
-      onError: (ctx, msg) => {
+      onError: (ctx, id) => {
         (
           ctx.extra as unknown as ConnectionExtra
-        )?.activeSubscriptionIds?.delete(msg.id);
+        )?.activeSubscriptionIds?.delete(id);
       },
     },
     wsServer
@@ -310,14 +310,18 @@ export function attachGraphqlSubscriptions(
 const router = Router();
 
 /**
- * Tracks the computed complexity score for the in-flight request so it can
- * be attached to the response `extensions` from `onOperation`, which runs
- * after `onSubscribe` but doesn't have direct access to the score otherwise.
+ * Tracks both the computed complexity score and the budget for the in-flight request
+ * so they can be attached to the response `extensions` from `onOperation`.
  * Keyed by the `graphql-http` request object reference, which is identical
  * across both hooks for a single HTTP call; entries are removed once read so
  * the map can't grow unbounded.
  */
-const complexityByRequest = new WeakMap<object, number>();
+interface RequestComplexityInfo {
+  complexity: number;
+  budget: number;
+}
+
+const complexityByRequest = new WeakMap<object, RequestComplexityInfo>();
 
 /** Builds the `400 Bad Request` response body/init tuple graphql-http expects
  *  when returned directly from `onSubscribe`, guaranteeing the HTTP status is
@@ -355,7 +359,7 @@ router.all(
   createHandler({
     schema,
     rootValue,
-    onSubscribe(req, params) {
+    async onSubscribe(req, params) {
       // Disable introspection in production
       if (
         process.env.NODE_ENV === "production" &&
@@ -393,13 +397,17 @@ router.all(
             ],
           });
 
-          if (complexity > MAX_COMPLEXITY) {
-            return tooComplexResponse(complexity, MAX_COMPLEXITY);
+          // Get tenant-specific complexity budget
+          const tenant = (req as any).tenant as TenantContext | undefined;
+          const budget = await tenantComplexityBudgetService.getBudgetForTenant(tenant);
+
+          if (complexity > budget) {
+            return tooComplexResponse(complexity, budget);
           }
 
-          // Stash the score so onOperation can echo it back in `extensions`
+          // Stash the score and budget so onOperation can echo them back in `extensions`
           // for accepted queries too.
-          complexityByRequest.set(req, complexity);
+          complexityByRequest.set(req, { complexity, budget });
         } catch {
           return [new GraphQLError("Failed to parse query")];
         }
@@ -408,16 +416,16 @@ router.all(
       return undefined;
     },
     onOperation(req, _args, result) {
-      const complexity = complexityByRequest.get(req);
-      if (complexity === undefined) return undefined;
+      const info = complexityByRequest.get(req);
+      if (info === undefined) return undefined;
       complexityByRequest.delete(req);
 
       return {
         ...result,
         extensions: {
           ...result.extensions,
-          complexity,
-          maxComplexity: MAX_COMPLEXITY,
+          complexity: info.complexity,
+          maxComplexity: info.budget,
         },
       };
     },

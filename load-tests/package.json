@@ -13,6 +13,7 @@
     "test:ci": "k6 run --env CI_VUS=10 --env CI_DURATION=60 scenarios/ci-load.js",
     "test:concurrent-deploy": "k6 run scenarios/concurrent-deploy.js",
     "test:graphql-subscription-load": "k6 run scenarios/graphql-subscription-load.js",
+    "test:event-latency-slo": "k6 run event-latency-slo.js",
     "test:all": "npm run test:normal && npm run test:peak && npm run test:stress",
     "test:unit": "vitest run",
     "test:unit:coverage": "vitest run --coverage",

@@ -214,6 +214,69 @@ async function checkDatabase(url: string): Promise<void> {
   }
 }
 
+interface NetworkReport {
+  horizon: { reachable: boolean; latencyMs: number | null; passphraseMatches: boolean };
+  rpc: { reachable: boolean };
+  ipfs: { reachable: boolean };
+}
+
+/**
+ * Probe Horizon, Soroban RPC, and the IPFS gateway for reachability.
+ * Never throws — unreachable dependencies are reflected in the report so
+ * callers (both `runStartupValidation` and the admin network-validate route)
+ * can decide how to react.
+ */
+export async function runNetworkValidation(env: BackendEnv): Promise<NetworkReport> {
+  const horizonStart = Date.now();
+  let horizonReachable = false;
+  let horizonPassphraseMatches = false;
+  let horizonLatencyMs: number | null = null;
+  try {
+    const res = await outboundFetch(env.STELLAR_HORIZON_URL);
+    horizonLatencyMs = Date.now() - horizonStart;
+    if (res.ok) {
+      horizonReachable = true;
+      const body = await res.json().catch(() => null) as { network_passphrase?: string } | null;
+      horizonPassphraseMatches = body?.network_passphrase === env.STELLAR_NETWORK_PASSPHRASE;
+    }
+  } catch {
+    // Leave horizonReachable = false.
+  }
+
+  let rpcReachable = false;
+  try {
+    const res = await outboundFetch(env.STELLAR_SOROBAN_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+    });
+    rpcReachable = res.ok;
+  } catch {
+    // Leave rpcReachable = false.
+  }
+
+  let ipfsReachable = false;
+  try {
+    const gateway = process.env.PINATA_GATEWAY_URL ?? 'https://gateway.pinata.cloud/ipfs';
+    const res = await outboundFetch(gateway, { method: 'HEAD' });
+    // Gateways commonly reject a bare root path without a CID (4xx) — any
+    // response short of a server error means the host itself is reachable.
+    ipfsReachable = res.status < 500;
+  } catch {
+    // Leave ipfsReachable = false.
+  }
+
+  return {
+    horizon: {
+      reachable: horizonReachable,
+      latencyMs: horizonLatencyMs,
+      passphraseMatches: horizonPassphraseMatches,
+    },
+    rpc: { reachable: rpcReachable },
+    ipfs: { reachable: ipfsReachable },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Multi-network Stellar configuration validation
 // ---------------------------------------------------------------------------
@@ -307,9 +370,23 @@ export async function runStartupValidation(env: BackendEnv): Promise<void> {
     return;
   }
 
+  const failures: CheckResult[] = [];
+  if (!networkReport.horizon.reachable) {
+    failures.push({ name: 'Horizon', ok: false, error: 'unreachable' });
+  }
+  if (!networkReport.rpc.reachable) {
+    failures.push({ name: 'Soroban RPC', ok: false, error: 'unreachable' });
+  }
+  if (!networkReport.ipfs.reachable) {
+    failures.push({ name: 'IPFS gateway', ok: false, error: 'unreachable' });
+  }
+  if (!dbCheck.ok) {
+    failures.push(dbCheck);
+  }
+
   const report = failures.map((c) => `  • ${c.name}: ${c.error}`).join('\n');
 
-  const message = `Startup validation failed:\n${failures.join('\n')}`;
+  const message = `Startup validation failed:\n${report}`;
 
   if (isProduction) {
     throw new Error(message);

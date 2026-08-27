@@ -95,7 +95,7 @@ fn create_and_pass_proposal(
 fn test_execute_proposal_fee_change_success() {
     let (env, admin) = setup_governance();
     
-    let initial_base_fee = storage::get_base_fee(&env);
+    let initial_base_fee = storage::get_base_fee(&env).unwrap();
     
     // Create and pass fee change proposal
     let proposal_id = create_and_pass_proposal(&env, &admin, ActionType::FeeChange);

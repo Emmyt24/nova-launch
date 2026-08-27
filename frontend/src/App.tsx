@@ -13,8 +13,8 @@ import { LanguageSelector } from "./components/LanguageSelector";
 const LandingPage = lazy(() => import("./pages/LandingPage"));
 const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
-const CampaignDashboard = lazy(() => import("./app/dashboard/CampaignDashboard"));
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
+const StreamDashboard = lazy(() => import("./components/Streams/StreamDashboard"));
 
 // Loading fallback
 function PageLoader() {
@@ -85,20 +85,6 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
   }, [pathname]);
 
   const page = useMemo(() => {
-    if (pathname === "/campaign-dashboard") {
-      return (
-        <DashboardLayout
-          wallet={wallet}
-          onConnect={connect}
-          onDisconnect={disconnect}
-          isConnecting={isConnecting}
-          currentPath={pathname}
-        >
-          <CampaignDashboard />
-        </DashboardLayout>
-      );
-    }
-
     if (pathname === "/recurring-payments") {
       return (
         <DashboardLayout
@@ -109,6 +95,20 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
           currentPath={pathname}
         >
           <RecurringPayments />
+        </DashboardLayout>
+      );
+    }
+
+    if (pathname === "/streams") {
+      return (
+        <DashboardLayout
+          wallet={wallet}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          isConnecting={isConnecting}
+          currentPath={pathname}
+        >
+          <StreamDashboard />
         </DashboardLayout>
       );
     }

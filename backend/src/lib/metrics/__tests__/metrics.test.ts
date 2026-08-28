@@ -204,10 +204,10 @@ describe("IntegrationMetrics", () => {
   it("recordWebhookDelivery success without retry", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "success",
         "TokenMinted",
-        0.3,
-        false
+        "success",
+        300,
+        0
       )
     ).not.toThrow();
   });
@@ -215,20 +215,20 @@ describe("IntegrationMetrics", () => {
   it("recordWebhookDelivery failure with retry", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "failure",
         "TokenBurned",
-        5.0,
-        true
+        "failed",
+        5000,
+        1
       )
     ).not.toThrow();
   });
 
-  it("recordWebhookDelivery uses default isRetry=false", () => {
+  it("recordWebhookDelivery uses default retries=0", () => {
     expect(() =>
       IntegrationMetrics.recordWebhookDelivery(
-        "success",
         "TokenTransferred",
-        0.1
+        "success",
+        100
       )
     ).not.toThrow();
   });
@@ -321,6 +321,38 @@ describe("createMetricsMiddleware", () => {
     };
     middleware(req, res, next);
     expect(() => finishCallback?.()).not.toThrow();
+  });
+
+  it("uses a bounded label for unmatched paths", () => {
+    const middleware = createMetricsMiddleware();
+    const recordRequest = vi.spyOn(MetricsCollector, "recordHttpRequest");
+    let finishCallback: (() => void) | undefined;
+    const req = {
+      method: "GET",
+      path: "/api/tokens/variable-address",
+      headers: {},
+      route: undefined,
+    };
+    const res = {
+      statusCode: 404,
+      on: (event: string, cb: () => void) => {
+        if (event === "finish") finishCallback = cb;
+      },
+      getHeader: vi.fn().mockReturnValue(undefined),
+    };
+
+    middleware(req, res, vi.fn());
+    finishCallback?.();
+
+    expect(recordRequest).toHaveBeenCalledWith(
+      "GET",
+      "unmatched",
+      404,
+      expect.any(Number),
+      undefined,
+      undefined,
+    );
+    recordRequest.mockRestore();
   });
 
   it("records request bytes from content-length header", () => {

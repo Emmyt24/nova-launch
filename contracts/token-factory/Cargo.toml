@@ -17,10 +17,15 @@ soroban-sdk = { version = "27.0.3", features = ["testutils", "hazmat-address"] }
 proptest = "1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core"] }
 
 [[test]]
 name = "contract_replay_regression_test"
 path = "tests/contract_replay_regression_test.rs"
+
+[[test]]
+name = "dividend_distribution_multi_epoch_test"
+path = "tests/dividend_distribution_multi_epoch_test.rs"
 
 [features]
 legacy-tests = []

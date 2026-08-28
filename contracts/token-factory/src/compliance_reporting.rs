@@ -197,7 +197,14 @@ fn generate_report_windowed(
         .set(&ComplianceKey::Report(report_id), &report);
 
     // ── Emit event ───────────────────────────────────────────────────────────
-    emit_report_generated(env, report_id, admin, token_count, total_supply, total_burned);
+    emit_report_generated(
+        env,
+        report_id,
+        admin,
+        token_count,
+        total_supply,
+        total_burned,
+    );
 
     Ok(report)
 }
@@ -256,9 +263,10 @@ pub fn add_compliance_rule(
         jurisdiction: jurisdiction.clone(),
         rule_type: rule_type.clone(),
     });
-    env.storage()
-        .persistent()
-        .set(&ComplianceKey::JurisdictionRules(jurisdiction.clone()), &rules);
+    env.storage().persistent().set(
+        &ComplianceKey::JurisdictionRules(jurisdiction.clone()),
+        &rules,
+    );
 
     emit_rule_added(env, admin, &jurisdiction);
     Ok(())
@@ -317,6 +325,41 @@ pub fn get_jurisdiction_rules(env: &Env, jurisdiction: &String) -> Vec<Complianc
         .persistent()
         .get(&ComplianceKey::JurisdictionRules(jurisdiction.clone()))
         .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Assign the compliance jurisdiction that `mint`/`burn`/`admin_burn` enforce
+/// rules against for `token_address` (admin only).
+///
+/// This is the sole way a token's jurisdiction is set — it is never left to
+/// the caller of a balance-mutating operation to supply arbitrarily.
+///
+/// # Errors
+/// * `Error::Unauthorized` – Caller is not the admin.
+/// * `Error::TokenNotFound` – `token_address` is not a registered token.
+pub fn set_token_jurisdiction(
+    env: &Env,
+    admin: &Address,
+    token_address: Address,
+    jurisdiction: String,
+) -> Result<(), Error> {
+    admin.require_auth();
+    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
+    if *admin != stored_admin {
+        return Err(Error::Unauthorized);
+    }
+
+    if storage::get_token_info_by_address(env, &token_address).is_none() {
+        return Err(Error::TokenNotFound);
+    }
+
+    storage::set_token_jurisdiction(env, &token_address, &jurisdiction);
+    Ok(())
+}
+
+/// Return the compliance jurisdiction currently assigned to `token_address`
+/// (the default jurisdiction if none has been explicitly assigned).
+pub fn get_token_jurisdiction(env: &Env, token_address: &Address) -> String {
+    storage::get_token_jurisdiction(env, token_address)
 }
 
 /// Evaluate every compliance rule registered for `jurisdiction` against
@@ -459,10 +502,8 @@ fn emit_report_generated(
 /// **Payload** (non-indexed):
 /// - `admin: Address`
 fn emit_rule_added(env: &Env, admin: &Address, jurisdiction: &String) {
-    env.events().publish(
-        (symbol_short!("cmp_add"), jurisdiction.clone()),
-        admin,
-    );
+    env.events()
+        .publish((symbol_short!("cmp_add"), jurisdiction.clone()), admin);
 }
 
 /// Emit event when a compliance rule is removed.
@@ -476,10 +517,8 @@ fn emit_rule_added(env: &Env, admin: &Address, jurisdiction: &String) {
 /// **Payload** (non-indexed):
 /// - `admin: Address`
 fn emit_rule_removed(env: &Env, admin: &Address, jurisdiction: &String) {
-    env.events().publish(
-        (symbol_short!("cmp_del"), jurisdiction.clone()),
-        admin,
-    );
+    env.events()
+        .publish((symbol_short!("cmp_del"), jurisdiction.clone()), admin);
 }
 
 /// Emit a compliance check result event.
@@ -495,15 +534,14 @@ fn emit_rule_removed(env: &Env, admin: &Address, jurisdiction: &String) {
 /// - `token_address: Address`
 /// - `from: Address`
 /// - `amount: i128`
-fn emit_compliance_check(
-    env: &Env,
-    jurisdiction: &String,
-    params: &TransferParams,
-    passed: bool,
-) {
+fn emit_compliance_check(env: &Env, jurisdiction: &String, params: &TransferParams, passed: bool) {
     env.events().publish(
         (symbol_short!("cmp_chk"), jurisdiction.clone(), passed),
-        (params.token_address.clone(), params.from.clone(), params.amount),
+        (
+            params.token_address.clone(),
+            params.from.clone(),
+            params.amount,
+        ),
     );
 }
 
@@ -534,9 +572,7 @@ mod tests {
         env.mock_all_auths();
         let (_, admin, contract_id) = setup(&env);
 
-        let report = env.as_contract(&contract_id, || {
-            generate_report(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
 
         assert_eq!(report.report_id, 0);
         assert_eq!(report.generated_by, admin);
@@ -697,8 +733,7 @@ mod tests {
         let (_, admin, contract_id) = setup(&env);
 
         for expected_id in 0u64..5 {
-            let report =
-                env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
+            let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
             assert_eq!(report.report_id, expected_id);
         }
 
@@ -706,7 +741,9 @@ mod tests {
 
         // All reports retrievable
         for id in 0u64..5 {
-            assert!(env.as_contract(&contract_id, || get_report(&env, id)).is_some());
+            assert!(env
+                .as_contract(&contract_id, || get_report(&env, id))
+                .is_some());
         }
     }
 
@@ -742,7 +779,12 @@ mod tests {
         let token = Address::generate(&env);
         let jurisdiction = soroban_sdk::String::from_str(&env, "EU");
 
-        let params = TransferParams { token_address: token, from, to, amount: 500 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 500,
+        };
 
         let result = env.as_contract(&contract_id, || {
             check_compliance(&env, jurisdiction, params)
@@ -764,9 +806,7 @@ mod tests {
             add_compliance_rule(&env, &admin, jurisdiction.clone(), rule_type.clone()).unwrap();
         });
 
-        let rules = env.as_contract(&contract_id, || {
-            get_jurisdiction_rules(&env, &jurisdiction)
-        });
+        let rules = env.as_contract(&contract_id, || get_jurisdiction_rules(&env, &jurisdiction));
         assert_eq!(rules.len(), 1);
         assert_eq!(rules.get(0).unwrap().rule_type, rule_type);
     }
@@ -825,7 +865,12 @@ mod tests {
         let token = Address::generate(&env);
         let from = Address::generate(&env);
         let to = Address::generate(&env);
-        let params = TransferParams { token_address: token, from, to, amount: 100 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 100,
+        };
 
         // Add then verify it blocks
         env.as_contract(&contract_id, || {
@@ -894,7 +939,12 @@ mod tests {
             check_compliance(
                 &env,
                 jurisdiction.clone(),
-                TransferParams { token_address: token.clone(), from: from.clone(), to: to.clone(), amount: 500 },
+                TransferParams {
+                    token_address: token.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    amount: 500,
+                },
             )
         });
         assert!(ok.is_ok());
@@ -904,7 +954,12 @@ mod tests {
             check_compliance(
                 &env,
                 jurisdiction,
-                TransferParams { token_address: token, from, to, amount: 501 },
+                TransferParams {
+                    token_address: token,
+                    from,
+                    to,
+                    amount: 501,
+                },
             )
         });
         assert_eq!(err, Err(Error::ComplianceCheckFailed));
@@ -921,13 +976,127 @@ mod tests {
         let token = Address::generate(&env);
         let from = Address::generate(&env);
         let to = Address::generate(&env);
-        let params = TransferParams { token_address: token, from, to, amount: 100 };
+        let params = TransferParams {
+            token_address: token,
+            from,
+            to,
+            amount: 100,
+        };
 
         let before = env.events().all().len();
         env.as_contract(&contract_id, || {
             check_compliance(&env, jurisdiction, params).unwrap();
         });
         assert_eq!(env.events().all().len(), before + 1);
+    }
+
+    // ── Enforcement on real token operations (#1853) ──────────────────────────
+
+    fn create_test_token(env: &Env, client: &TokenFactoryClient, creator: &Address) -> Address {
+        client.create_token(
+            creator,
+            &soroban_sdk::String::from_str(env, "Test"),
+            &soroban_sdk::String::from_str(env, "TST"),
+            &7u32,
+            &1_000_000i128,
+            &None,
+            &1_000_000i128,
+        )
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `mint`, not just the standalone `check_compliance` query.
+    #[test]
+    fn test_transfers_suspended_blocks_mint() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        let token_address = create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+        let recipient = Address::generate(&env);
+
+        let jurisdiction =
+            soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION);
+        client.add_compliance_rule(&admin, &jurisdiction, &ComplianceRuleType::TransfersSuspended);
+
+        let balance_before = storage::get_balance(&env, token_index, &recipient);
+        let result = client.try_mint(&admin, &token_index, &recipient, &1_000i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+
+        // No value moved: the rejected mint must not have mutated balances.
+        assert_eq!(storage::get_balance(&env, token_index, &recipient), balance_before);
+        let _ = token_address;
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `burn`, not just the standalone `check_compliance` query.
+    #[test]
+    fn test_transfers_suspended_blocks_burn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+
+        let jurisdiction =
+            soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION);
+        client.add_compliance_rule(&admin, &jurisdiction, &ComplianceRuleType::TransfersSuspended);
+
+        let balance_before = storage::get_balance(&env, token_index, &admin);
+        let result = client.try_burn(&admin, &token_index, &100i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+
+        // No value moved: the rejected burn must not have mutated balances/supply.
+        assert_eq!(storage::get_balance(&env, token_index, &admin), balance_before);
+    }
+
+    /// Mint succeeds normally once the blocking rule is removed, and a rule
+    /// registered under a *different* jurisdiction never affects this token.
+    #[test]
+    fn test_mint_unaffected_by_other_jurisdiction_rule() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+        let recipient = Address::generate(&env);
+
+        // A TransfersSuspended rule for an unrelated jurisdiction must not
+        // affect this token, which is assigned the default jurisdiction.
+        client.add_compliance_rule(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "EU"),
+            &ComplianceRuleType::TransfersSuspended,
+        );
+
+        client.mint(&admin, &token_index, &recipient, &1_000i128);
+        assert_eq!(storage::get_balance(&env, token_index, &recipient), 1_000i128);
+    }
+
+    /// A `TransfersSuspended` rule registered for a token's jurisdiction
+    /// actually blocks `admin_burn` as well.
+    #[test]
+    fn test_transfers_suspended_blocks_admin_burn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _contract_id) = setup(&env);
+
+        create_test_token(&env, &client, &admin);
+        let token_index = 0u32;
+
+        client.add_compliance_rule(
+            &admin,
+            &soroban_sdk::String::from_str(&env, storage::DEFAULT_COMPLIANCE_JURISDICTION),
+            &ComplianceRuleType::TransfersSuspended,
+        );
+
+        let balance_before = storage::get_balance(&env, token_index, &admin);
+        let result = client.try_admin_burn(&admin, &token_index, &admin, &100i128);
+        assert_eq!(result, Err(Ok(Error::ComplianceCheckFailed)));
+        assert_eq!(storage::get_balance(&env, token_index, &admin), balance_before);
     }
 }
 
@@ -990,9 +1159,7 @@ mod compliance_reporting_bounded_tests {
         });
 
         // Bounded report should succeed without exceeding any budget.
-        let report = env.as_contract(&contract_id, || {
-            generate_report(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report(&env, &admin).unwrap());
 
         // token_count in the report reflects the real count.
         assert_eq!(report.token_count, large_count);
@@ -1041,9 +1208,7 @@ mod compliance_reporting_bounded_tests {
                 .set(&crate::types::DataKey::TokenCount, &token_count);
         });
 
-        let report = env.as_contract(&contract_id, || {
-            generate_report_full(&env, &admin).unwrap()
-        });
+        let report = env.as_contract(&contract_id, || generate_report_full(&env, &admin).unwrap());
 
         assert_eq!(report.total_supply, token_count as i128 * 500);
     }

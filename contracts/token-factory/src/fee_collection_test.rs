@@ -68,7 +68,8 @@ fn test_direct_fee_update_rejected_proposal_alone_does_not_change_fees() {
     let end = start + 86_400;
     let eta = end + ONE_HOUR;
 
-    let proposal_id = client.propose_fee_update(&admin, &200_0000000, &75_0000000, &start, &end, &eta);
+    let proposal_id =
+        client.propose_fee_update(&admin, &200_0000000, &75_0000000, &start, &end, &eta);
 
     // Fees must be unchanged immediately after proposing — there is no
     // direct admin path that can apply them ahead of governance.
@@ -97,7 +98,8 @@ fn test_propose_fee_update_rejects_non_admin() {
     let end = start + 86_400;
     let eta = end + ONE_HOUR;
 
-    let result = client.try_propose_fee_update(&stranger, &200_0000000, &75_0000000, &start, &end, &eta);
+    let result =
+        client.try_propose_fee_update(&stranger, &200_0000000, &75_0000000, &start, &end, &eta);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
@@ -259,7 +261,8 @@ fn test_propose_fee_update_rejects_eta_below_minimum_timelock() {
     let end = start + 86_400;
     let eta = end + 10; // Far below MIN_TIMELOCK_DELAY (1 hour)
 
-    let result = client.try_propose_fee_update(&admin, &200_0000000, &75_0000000, &start, &end, &eta);
+    let result =
+        client.try_propose_fee_update(&admin, &200_0000000, &75_0000000, &start, &end, &eta);
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
@@ -304,7 +307,8 @@ fn test_propose_fee_update_payload_round_trips_both_fees() {
     let end = start + 86_400;
     let eta = end + ONE_HOUR;
 
-    let proposal_id = client.propose_fee_update(&admin, &123_4567890, &9_8765432, &start, &end, &eta);
+    let proposal_id =
+        client.propose_fee_update(&admin, &123_4567890, &9_8765432, &start, &end, &eta);
 
     let proposal = env
         .as_contract(&contract_id, || timelock::get_proposal(&env, proposal_id))

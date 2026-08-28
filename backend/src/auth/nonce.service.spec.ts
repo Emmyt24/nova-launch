@@ -175,9 +175,7 @@ describe("NonceService (Redis-backed)", () => {
       const { nonce } = service.generateNonce("GPUBKEY1");
       await new Promise((r) => setImmediate(r)); // let SET settle
 
-      await expect(service.consumeNonce(nonce, "GPUBKEY1")).resolves.toBe(
-        true
-      );
+      await expect(service.consumeNonce(nonce, "GPUBKEY1")).resolves.toBe(true);
     });
 
     it("returns false on second consumption (replay protection)", async () => {
@@ -200,9 +198,9 @@ describe("NonceService (Redis-backed)", () => {
       const { nonce } = service.generateNonce("GPUBKEY1");
       await new Promise((r) => setImmediate(r));
 
-      await expect(
-        service.consumeNonce(nonce, "GDIFFERENTKEY")
-      ).resolves.toBe(false);
+      await expect(service.consumeNonce(nonce, "GDIFFERENTKEY")).resolves.toBe(
+        false
+      );
     });
 
     it("returns false for an expired nonce", async () => {

@@ -291,6 +291,39 @@ docker compose down -v
 
 > **Note:** `VITE_*` variables are baked into the frontend at build time. If you change them in `.env`, rebuild with `docker compose up --build frontend`.
 
+#### Running with the API gateway in the loop
+
+By default the frontend talks to the backend directly (`http://localhost:3001/api`),
+so `docker compose up` does **not** exercise the `gateway/` service — its rate
+limiting, JWT auth, and idempotency-key propagation are never in the request
+path. To run the stack with the gateway in front of the backend, add the
+`docker-compose.gateway.yml` overlay:
+
+```bash
+# Backend-direct (default — unchanged)
+docker compose -f docker-compose.yml up -d --build
+
+# With the gateway in the request path
+docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
+```
+
+The overlay adds a `gateway` service on port **4000** and repoints the
+frontend's `VITE_*` API URLs at it, so browser traffic flows
+frontend → gateway → backend. Verify the proxy end-to-end:
+
+```bash
+curl -i http://localhost:4000/api/tokens
+# → 200, proxied to the backend, with X-RateLimit-Limit / X-RateLimit-Remaining
+#   / X-RateLimit-Reset headers added by the gateway
+```
+
+| Service | Port | Notes                                                        |
+| ------- | ---- | ----------------------------------------------------------- |
+| gateway | 4000 | Express reverse proxy; `PORT` (canonical) or `GATEWAY_PORT` |
+
+> The gateway reads its listening port from `PORT`, falling back to
+> `GATEWAY_PORT` for older deployments.
+
 ---
 
 ### Development

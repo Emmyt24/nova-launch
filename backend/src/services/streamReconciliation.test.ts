@@ -16,7 +16,7 @@ describe("StreamReconciliationService", () => {
     vi.restoreAllMocks();
   });
 
-  it("flags a divergence and publishes stream.divergence_detected when balances mismatch", async () => {
+  it("flags a divergence and publishes stream.divergence_detected when balances genuinely mismatch", async () => {
     const publishSpy = vi.spyOn(eventBus, "publish");
     const prisma = mockPrisma([
       {
@@ -30,6 +30,7 @@ describe("StreamReconciliationService", () => {
     ]);
 
     const service = new StreamReconciliationService(prisma, 300_000);
+    vi.spyOn(service as any, "fetchOnChainBalance").mockResolvedValue(BigInt(500));
     const result = await service.reconcile();
 
     expect(result.divergences).toHaveLength(1);
@@ -37,18 +38,39 @@ describe("StreamReconciliationService", () => {
       streamId: 1,
       field: "balance",
       projectedValue: "1000",
-      onChainValue: "0",
+      onChainValue: "500",
     });
 
     expect(publishSpy).toHaveBeenCalledWith("stream.divergence_detected", {
       streamId: 1,
       field: "balance",
-      onChainValue: "0",
+      onChainValue: "500",
       projectedValue: "1000",
     });
   });
 
-  it("does not publish an event when the projected balance matches on-chain state", async () => {
+  it("does not flag a divergence when on-chain fetch matches projected active stream balance", async () => {
+    const publishSpy = vi.spyOn(eventBus, "publish");
+    const prisma = mockPrisma([
+      {
+        streamId: 1,
+        creator: "GCREATOR",
+        recipient: "GRECIPIENT",
+        amount: BigInt(1000),
+        claimedAt: null,
+        status: StreamStatus.CREATED,
+      },
+    ]);
+
+    const service = new StreamReconciliationService(prisma, 300_000);
+    vi.spyOn(service as any, "fetchOnChainBalance").mockResolvedValue(BigInt(1000));
+    const result = await service.reconcile();
+
+    expect(result.divergences).toHaveLength(0);
+    expect(publishSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not publish an event when the projected balance matches on-chain state for claimed stream", async () => {
     const publishSpy = vi.spyOn(eventBus, "publish");
     const prisma = mockPrisma([
       {
@@ -62,13 +84,35 @@ describe("StreamReconciliationService", () => {
     ]);
 
     const service = new StreamReconciliationService(prisma, 300_000);
+    vi.spyOn(service as any, "fetchOnChainBalance").mockResolvedValue(BigInt(0));
     const result = await service.reconcile();
 
     expect(result.divergences).toHaveLength(0);
     expect(publishSpy).not.toHaveBeenCalled();
   });
 
-  it("reports a divergence per mismatched stream across multiple streams", async () => {
+  it("skips divergence reporting when on-chain fetch returns null (transient error)", async () => {
+    const publishSpy = vi.spyOn(eventBus, "publish");
+    const prisma = mockPrisma([
+      {
+        streamId: 1,
+        creator: "GCREATOR",
+        recipient: "GRECIPIENT",
+        amount: BigInt(1000),
+        claimedAt: null,
+        status: StreamStatus.CREATED,
+      },
+    ]);
+
+    const service = new StreamReconciliationService(prisma, 300_000);
+    vi.spyOn(service as any, "fetchOnChainBalance").mockResolvedValue(null);
+    const result = await service.reconcile();
+
+    expect(result.divergences).toHaveLength(0);
+    expect(publishSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a divergence per genuinely mismatched stream across multiple streams", async () => {
     const publishSpy = vi.spyOn(eventBus, "publish");
     const prisma = mockPrisma([
       {
@@ -98,11 +142,25 @@ describe("StreamReconciliationService", () => {
     ]);
 
     const service = new StreamReconciliationService(prisma, 300_000);
+    vi.spyOn(service as any, "fetchOnChainBalance").mockImplementation(
+      async (streamId: number) => {
+        if (streamId === 1) return BigInt(1000); // Matches projected
+        if (streamId === 2) return BigInt(0);    // Matches projected
+        if (streamId === 3) return BigInt(200);  // Mismatches projected (500 vs 200)
+        return null;
+      }
+    );
     const result = await service.reconcile();
 
     expect(result.totalStreams).toBe(3);
-    expect(result.divergences.map((d) => d.streamId)).toEqual([1, 3]);
-    expect(publishSpy).toHaveBeenCalledTimes(2);
+    expect(result.divergences.map((d) => d.streamId)).toEqual([3]);
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    expect(publishSpy).toHaveBeenCalledWith("stream.divergence_detected", {
+      streamId: 3,
+      field: "balance",
+      onChainValue: "200",
+      projectedValue: "500",
+    });
   });
 
   it("defaults to a 5-minute reconciliation interval", () => {

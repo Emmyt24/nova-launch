@@ -6,7 +6,7 @@
 //!
 //! Keeping events lean reduces gas costs (fewer bytes serialised).
 
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, Address, Env, String};
 
 /// Emitted when a delegator assigns their vote power to a delegatee.
 ///
@@ -100,5 +100,22 @@ pub fn emit_error_detail(env: &Env, error_code: u32, context: i128) {
     env.events().publish(
         (symbol_short!("err_det"), error_code),
         (context,),
+    );
+}
+
+/// Emitted when a governance proposal is executed.
+///
+/// Routed through this module so the event shape is discoverable and
+/// testable in the same way as every other governance event.  The on-chain
+/// topic (`exec_prop`) and data payload are **identical** to the inline
+/// `env.events().publish(...)` call that previously appeared in
+/// `execute_proposal` — this is a pure internal refactor; no ABI change.
+///
+/// Topic: ("exec_prop", proposal_id)
+/// Data:  description
+pub fn emit_proposal_executed(env: &Env, proposal_id: u32, description: &String) {
+    env.events().publish(
+        (symbol_short!("exec_prop"), proposal_id),
+        description.clone(),
     );
 }

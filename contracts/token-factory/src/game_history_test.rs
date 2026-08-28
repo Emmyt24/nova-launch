@@ -9,9 +9,7 @@ mod game_history_test {
     use crate::game_history::{self, DeploymentRecord};
     use crate::storage;
     use crate::types::TokenInfo;
-    use soroban_sdk::{
-        testutils::Address as _, Address, Env, String,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
     fn setup() -> (Env, Address) {
         let env = Env::default();
@@ -69,9 +67,36 @@ mod game_history_test {
             let base_time = env.ledger().timestamp();
 
             // Record 3 deployments with ascending timestamps
-            record_deployment(&env, &contract_id, &creator, 0, "Token A", "TKA", 1_000_000, base_time);
-            record_deployment(&env, &contract_id, &creator, 1, "Token B", "TKB", 2_000_000, base_time + 100);
-            record_deployment(&env, &contract_id, &creator, 2, "Token C", "TKC", 3_000_000, base_time + 200);
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                0,
+                "Token A",
+                "TKA",
+                1_000_000,
+                base_time,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                1,
+                "Token B",
+                "TKB",
+                2_000_000,
+                base_time + 100,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                2,
+                "Token C",
+                "TKC",
+                3_000_000,
+                base_time + 200,
+            );
 
             // Verify they're stored in order by querying
             let record_0 = game_history::get_history_record(&env, 0).unwrap();
@@ -139,7 +164,11 @@ mod game_history_test {
             }
 
             // Verify total and ordering
-            assert_eq!(all_records.len(), 15, "Concatenated pages must cover all 15 records");
+            assert_eq!(
+                all_records.len(),
+                15,
+                "Concatenated pages must cover all 15 records"
+            );
 
             // Verify no duplicates by checking history indices
             let mut seen_indices = std::collections::HashSet::new();
@@ -202,7 +231,11 @@ mod game_history_test {
 
             assert_eq!(page1.len(), 5);
             assert_eq!(page2.len(), 5);
-            assert_eq!(page3.len(), 0, "Requesting beyond available records must return empty");
+            assert_eq!(
+                page3.len(),
+                0,
+                "Requesting beyond available records must return empty"
+            );
         });
     }
 
@@ -231,9 +264,36 @@ mod game_history_test {
             let base_time = env.ledger().timestamp();
 
             // Record 3 deployments at times 100, 200, 300
-            record_deployment(&env, &contract_id, &creator, 0, "Token A", "TKA", 1_000_000, base_time + 100);
-            record_deployment(&env, &contract_id, &creator, 1, "Token B", "TKB", 2_000_000, base_time + 200);
-            record_deployment(&env, &contract_id, &creator, 2, "Token C", "TKC", 3_000_000, base_time + 300);
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                0,
+                "Token A",
+                "TKA",
+                1_000_000,
+                base_time + 100,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                1,
+                "Token B",
+                "TKB",
+                2_000_000,
+                base_time + 200,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                2,
+                "Token C",
+                "TKC",
+                3_000_000,
+                base_time + 300,
+            );
 
             // Query a time range with no deployments (base_time + 1 to base_time + 50)
             let result = game_history::query_by_time_range(&env, base_time + 1, base_time + 50, 10)
@@ -304,20 +364,49 @@ mod game_history_test {
             let base_time = env.ledger().timestamp();
 
             // Record deployments at times 100, 200, 300
-            record_deployment(&env, &contract_id, &creator, 0, "Token A", "TKA", 1_000_000, base_time + 100);
-            record_deployment(&env, &contract_id, &creator, 1, "Token B", "TKB", 2_000_000, base_time + 200);
-            record_deployment(&env, &contract_id, &creator, 2, "Token C", "TKC", 3_000_000, base_time + 300);
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                0,
+                "Token A",
+                "TKA",
+                1_000_000,
+                base_time + 100,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                1,
+                "Token B",
+                "TKB",
+                2_000_000,
+                base_time + 200,
+            );
+            record_deployment(
+                &env,
+                &contract_id,
+                &creator,
+                2,
+                "Token C",
+                "TKC",
+                3_000_000,
+                base_time + 300,
+            );
 
             // Query [100, 200] (inclusive) should return records 0 and 1
-            let result = game_history::query_by_time_range(&env, base_time + 100, base_time + 200, 10)
-                .unwrap();
+            let result =
+                game_history::query_by_time_range(&env, base_time + 100, base_time + 200, 10)
+                    .unwrap();
             assert_eq!(result.len(), 2);
             assert_eq!(result[0].deployed_at, base_time + 100);
             assert_eq!(result[1].deployed_at, base_time + 200);
 
             // Query [200, 300] should return records 1 and 2
-            let result = game_history::query_by_time_range(&env, base_time + 200, base_time + 300, 10)
-                .unwrap();
+            let result =
+                game_history::query_by_time_range(&env, base_time + 200, base_time + 300, 10)
+                    .unwrap();
             assert_eq!(result.len(), 2);
             assert_eq!(result[0].deployed_at, base_time + 200);
             assert_eq!(result[1].deployed_at, base_time + 300);
@@ -351,7 +440,11 @@ mod game_history_test {
             // Query with limit=100 should still cap at max allowed (100)
             // and return all 50 records
             let result = game_history::query_by_creator(&env, &creator, 0, 100).unwrap();
-            assert_eq!(result.len(), 50, "Should return all 50 records when limit allows");
+            assert_eq!(
+                result.len(),
+                50,
+                "Should return all 50 records when limit allows"
+            );
 
             // Query with limit=20 should return exactly 20
             let result = game_history::query_by_creator(&env, &creator, 0, 20).unwrap();

@@ -11,9 +11,7 @@ mod freeze_functions_test {
     use crate::test_helpers::TestEnv;
     use crate::token_creation;
     use crate::types::{Error, TokenInfo};
-    use soroban_sdk::{
-        testutils::Address as _, Address, Env, String,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
     fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
@@ -44,16 +42,22 @@ mod freeze_functions_test {
 
         env.as_contract(contract_id, || {
             let token_info = TokenInfo {
+                address: token_address.clone(),
                 creator: creator.clone(),
                 name,
                 symbol,
-                initial_supply: 1_000_000_000,
                 decimals: 6,
+                total_supply: 1_000_000_000,
+                initial_supply: 1_000_000_000,
+                max_supply: None,
+                total_burned: 0,
+                burn_count: 0,
+                metadata_uri: None,
+                metadata_version: 0,
                 created_at: env.ledger().timestamp(),
-                transfer_fee_basis_points: 0,
+                is_paused: false,
                 clawback_enabled: false,
                 freeze_enabled,
-                paused: false,
             };
 
             storage::set_token_info_by_address(env, &token_address, &token_info);
@@ -76,7 +80,10 @@ mod freeze_functions_test {
             assert!(result.is_ok(), "Authorized admin freeze must succeed");
 
             let is_frozen = freeze_functions::is_frozen(&env, &token, &target);
-            assert!(is_frozen, "Target address must be frozen after freeze_address");
+            assert!(
+                is_frozen,
+                "Target address must be frozen after freeze_address"
+            );
         });
     }
 
@@ -96,7 +103,10 @@ mod freeze_functions_test {
             assert!(result.is_ok(), "Authorized admin unfreeze must succeed");
 
             let is_frozen = freeze_functions::is_frozen(&env, &token, &target);
-            assert!(!is_frozen, "Target address must be unfrozen after unfreeze_address");
+            assert!(
+                !is_frozen,
+                "Target address must be unfrozen after unfreeze_address"
+            );
         });
     }
 
@@ -215,43 +225,92 @@ mod freeze_functions_test {
         });
     }
 
-    // ── Toggle freeze enabled ───────────────────────────────────────────────
+    // ── freeze_enabled immutability (issue #1854) ───────────────────────────
+    //
+    // `set_freeze_enabled` no longer exists: `freeze_enabled` is set once at
+    // creation time (mirroring `clawback_enabled`) and can never be toggled
+    // on an already-deployed token. These tests exercise the real creation
+    // path (`token_creation::create_token_with_all_options`) end to end.
 
     #[test]
-    fn test_toggle_freeze_enabled_by_creator() {
+    fn test_freeze_enabled_is_immutable_after_creation() {
         let (env, contract_id, admin, _treasury) = setup();
-        let token = create_token_with_freeze(&env, &contract_id, &admin, false);
+
+        let token_address = env
+            .as_contract(&contract_id, || {
+                token_creation::create_token_with_all_options(
+                    &env,
+                    admin.clone(),
+                    String::from_str(&env, "Test Token"),
+                    String::from_str(&env, "TST"),
+                    6,
+                    1_000_000_000,
+                    None,
+                    1_000_000,
+                    false,
+                    false, // freeze_enabled: false at creation
+                )
+                .unwrap()
+            });
 
         env.as_contract(&contract_id, || {
-            // Enable freeze
-            let result = freeze_functions::set_freeze_enabled(&env, &token, &admin, true);
-            assert!(result.is_ok(), "Creator must be able to enable freeze");
+            let info = storage::get_token_info_by_address(&env, &token_address).unwrap();
+            assert!(
+                !info.freeze_enabled,
+                "Token must be created with freeze disabled"
+            );
 
             let info = storage::get_token_info_by_address(&env, &token).unwrap();
-            assert!(info.freeze_enabled, "Freeze must be enabled after set_freeze_enabled(true)");
+            assert!(
+                info.freeze_enabled,
+                "Freeze must be enabled after set_freeze_enabled(true)"
+            );
 
             // Disable freeze
             let result = freeze_functions::set_freeze_enabled(&env, &token, &admin, false);
             assert!(result.is_ok(), "Creator must be able to disable freeze");
 
             let info = storage::get_token_info_by_address(&env, &token).unwrap();
-            assert!(!info.freeze_enabled, "Freeze must be disabled after set_freeze_enabled(false)");
+            assert!(
+                !info.freeze_enabled,
+                "Freeze must be disabled after set_freeze_enabled(false)"
+            );
         });
     }
 
     #[test]
-    fn test_toggle_freeze_enabled_non_creator_rejected() {
+    fn test_freeze_enabled_true_at_creation_is_usable_and_stays_immutable() {
         let (env, contract_id, admin, _treasury) = setup();
-        let token = create_token_with_freeze(&env, &contract_id, &admin, false);
-        let attacker = Address::generate(&env);
+
+        let token_address = env
+            .as_contract(&contract_id, || {
+                token_creation::create_token_with_all_options(
+                    &env,
+                    admin.clone(),
+                    String::from_str(&env, "Test Token"),
+                    String::from_str(&env, "TST"),
+                    6,
+                    1_000_000_000,
+                    None,
+                    1_000_000,
+                    false,
+                    true, // freeze_enabled: true at creation
+                )
+                .unwrap()
+            });
 
         env.as_contract(&contract_id, || {
-            let result = freeze_functions::set_freeze_enabled(&env, &token, &attacker, true);
-            assert_eq!(
-                result,
-                Err(Error::Unauthorized),
-                "Non-creator must not be able to toggle freeze enabled"
-            );
+            let info = storage::get_token_info_by_address(&env, &token_address).unwrap();
+            assert!(info.freeze_enabled);
+
+            // Freeze works, since it was opted into at creation.
+            let target = Address::generate(&env);
+            freeze_functions::freeze_address(&env, &token_address, &admin, &target).unwrap();
+            assert!(freeze_functions::is_frozen(&env, &token_address, &target));
+
+            // No entry point exists to ever flip this back off post-deployment.
+            let info_after = storage::get_token_info_by_address(&env, &token_address).unwrap();
+            assert!(info_after.freeze_enabled);
         });
     }
 
@@ -293,7 +352,8 @@ mod freeze_functions_test {
         let target = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            let result = freeze_functions::freeze_address(&env, &nonexistent_token, &admin, &target);
+            let result =
+                freeze_functions::freeze_address(&env, &nonexistent_token, &admin, &target);
             assert_eq!(
                 result,
                 Err(Error::TokenNotFound),

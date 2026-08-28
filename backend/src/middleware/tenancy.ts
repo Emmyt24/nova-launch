@@ -86,14 +86,20 @@ export interface TenancyOptions {
  */
 export function tenantMiddleware(options: TenancyOptions = {}) {
   const { required = false } = options;
+  const secret = options.jwtSecret ?? process.env.JWT_SECRET;
+
+  if (!secret) {
+    throw new Error(
+      "JWT secret is required for tenantMiddleware. " +
+      "Provide options.jwtSecret or set JWT_SECRET environment variable."
+    );
+  }
 
   return function resolveTenant(
     req: TenantRequest,
     res: Response,
     next: NextFunction
   ): void {
-    const secret =
-      options.jwtSecret ?? process.env.JWT_SECRET ?? "dev-secret-key";
 
     // 1. Header-based resolution
     const headerValue = req.headers["x-tenant-id"];

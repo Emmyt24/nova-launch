@@ -36,9 +36,12 @@ export async function createTokenFamily(
 /**
  * Rotate a refresh token within its family.
  *
+ * Uses a conditional update to atomically check that the token exists and is
+ * not yet used, preventing concurrent rotations from both succeeding.
+ *
  * Throws TokenFamilyError with:
  *  - REUSE_DETECTED — if the presented token was already used (entire family invalidated)
- *  - INVALID_TOKEN  — if the token is not found in the store
+ *  - INVALID_TOKEN  — if the token is not found in the store or is already used
  */
 export async function rotateTokenFamily(
   currentToken: string,
@@ -46,30 +49,48 @@ export async function rotateTokenFamily(
   nextExpiresAt: Date
 ): Promise<{ familyId: string }> {
   return (prisma as any).$transaction(async (tx: any) => {
+    // Atomically mark token as used only if it exists and is not yet used.
+    // This prevents two concurrent requests from both succeeding.
+    const updateResult = await tx.refreshToken.updateMany({
+      where: { token: currentToken, used: false },
+      data: { used: true },
+    });
+
+    // If updateMany affected 0 rows, either the token doesn't exist or it's already used.
+    // Re-fetch to determine which case applies so we can throw the appropriate error.
+    if (updateResult.count === 0) {
+      const record = await tx.refreshToken.findUnique({
+        where: { token: currentToken },
+      });
+
+      if (!record) {
+        throw new TokenFamilyError("INVALID_TOKEN", "Refresh token not found");
+      }
+
+      if (record.used) {
+        // Reuse detected — invalidate the whole family to contain the breach
+        await tx.refreshToken.deleteMany({
+          where: { familyId: record.familyId },
+        });
+        throw new TokenFamilyError(
+          "REUSE_DETECTED",
+          "Refresh token reuse detected — entire family invalidated"
+        );
+      }
+    }
+
+    // If we reach here, updateResult.count === 1, meaning we successfully marked
+    // the token as used. Fetch the record to get its familyId.
     const record = await tx.refreshToken.findUnique({
       where: { token: currentToken },
     });
 
     if (!record) {
-      throw new TokenFamilyError("INVALID_TOKEN", "Refresh token not found");
-    }
-
-    if (record.used) {
-      // Reuse detected — invalidate the whole family to contain the breach
-      await tx.refreshToken.deleteMany({
-        where: { familyId: record.familyId },
-      });
       throw new TokenFamilyError(
-        "REUSE_DETECTED",
-        "Refresh token reuse detected — entire family invalidated"
+        "INVALID_TOKEN",
+        "Refresh token not found after update"
       );
     }
-
-    // Mark current token as used
-    await tx.refreshToken.update({
-      where: { token: currentToken },
-      data: { used: true },
-    });
 
     // Issue new token in the same family
     await tx.refreshToken.create({
@@ -96,9 +117,7 @@ export async function invalidateFamily(familyId: string): Promise<void> {
  * Intended to be called by a periodic cleanup job.
  */
 export async function pruneExpiredFamilies(): Promise<{ deleted: number }> {
-  const cutoff = new Date(
-    Date.now() - FAMILY_TTL_DAYS * 24 * 60 * 60 * 1000
-  );
+  const cutoff = new Date(Date.now() - FAMILY_TTL_DAYS * 24 * 60 * 60 * 1000);
   const result = await (prisma as any).refreshToken.deleteMany({
     where: { expiresAt: { lt: cutoff } },
   });

@@ -56,8 +56,7 @@ mod staking_integration_tests {
         let (env, admin, _creator, _user1) = setup();
 
         let reward_rate = 10;
-        let pool_id =
-            staking::create_staking_pool(&env, admin.clone(), 0, 1, reward_rate).unwrap();
+        let pool_id = staking::create_staking_pool(&env, admin.clone(), 0, 1, reward_rate).unwrap();
 
         assert_eq!(pool_id, 0);
 
@@ -355,14 +354,8 @@ mod staking_integration_tests {
 
         env.ledger().with_mut(|li| li.timestamp += 10);
         // Now evenly split: 10s * 100 = 1000, 500 each.
-        assert_eq!(
-            staking::pending_rewards(&env, user1, pool_id).unwrap(),
-            500
-        );
-        assert_eq!(
-            staking::pending_rewards(&env, user2, pool_id).unwrap(),
-            500
-        );
+        assert_eq!(staking::pending_rewards(&env, user1, pool_id).unwrap(), 500);
+        assert_eq!(staking::pending_rewards(&env, user2, pool_id).unwrap(), 500);
     }
 
     #[test]
@@ -402,13 +395,7 @@ mod staking_integration_tests {
 
         // Rounding dust (7 - 2 - 4 = 1) is neither over- nor under-paid twice;
         // it simply isn't attributable at this precision and stays unclaimed.
-        assert_eq!(
-            staking::pending_rewards(&env, user1, pool_id).unwrap(),
-            0
-        );
-        assert_eq!(
-            staking::pending_rewards(&env, user2, pool_id).unwrap(),
-            0
-        );
+        assert_eq!(staking::pending_rewards(&env, user1, pool_id).unwrap(), 0);
+        assert_eq!(staking::pending_rewards(&env, user2, pool_id).unwrap(), 0);
     }
 }

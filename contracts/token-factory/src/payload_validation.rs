@@ -220,14 +220,20 @@ mod tests {
     fn test_fee_payload_negative_base_rejected() {
         let env = Env::default();
         let payload = fee_payload(&env, -1, 500_000);
-        assert_eq!(validate_fee_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_fee_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]
     fn test_fee_payload_negative_metadata_rejected() {
         let env = Env::default();
         let payload = fee_payload(&env, 1_000_000, -1);
-        assert_eq!(validate_fee_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_fee_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]
@@ -271,7 +277,10 @@ mod tests {
     fn test_pause_payload_non_empty_rejected() {
         let env = Env::default();
         let payload = Bytes::from_slice(&env, &[1u8]);
-        assert_eq!(validate_pause_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_pause_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]
@@ -296,7 +305,10 @@ mod tests {
     fn test_policy_payload_negative_cap_rejected() {
         let env = Env::default();
         let payload = policy_payload(&env, -1, true, 86400);
-        assert_eq!(validate_policy_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_policy_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]
@@ -304,14 +316,20 @@ mod tests {
         let env = Env::default();
         let mut payload = policy_payload(&env, 100_0000000, true, 86400);
         payload.set(16, 2); // invalid allowlist value
-        assert_eq!(validate_policy_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_policy_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]
     fn test_policy_payload_zero_period_rejected() {
         let env = Env::default();
         let payload = policy_payload(&env, 100_0000000, true, 0);
-        assert_eq!(validate_policy_payload(&payload), Err(Error::InvalidParameters));
+        assert_eq!(
+            validate_policy_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
     }
 
     #[test]

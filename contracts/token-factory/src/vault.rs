@@ -6,7 +6,7 @@ use crate::{
     storage,
     types::{Error, VaultStatus},
 };
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, token, Address, Env};
 
 // ── Circuit breaker public API ────────────────────────────────────────────────
 
@@ -97,11 +97,21 @@ pub fn fund_vault(env: &Env, vault_id: u64, funder: &Address, amount: i128) -> R
         return Err(Error::InvalidParameters);
     }
 
-    vault.total_amount = vault
+    let new_total = vault
         .total_amount
         .checked_add(amount)
         .ok_or(Error::ArithmeticError)?;
 
+    // Escrow the funder's tokens into contract custody before persisting the
+    // new total: if the transfer fails (insufficient balance/allowance), the
+    // whole call aborts and `total_amount` is left untouched. This mirrors
+    // the real-value-transfer pattern in `bridge.rs::lock_tokens` and
+    // `fractionalization.rs::fractionalize`, and matches how `claim_vault`
+    // later pays out `vault.token` from contract custody.
+    let token_client = token::Client::new(env, &vault.token);
+    token_client.transfer(funder, &env.current_contract_address(), &amount);
+
+    vault.total_amount = new_total;
     storage::set_vault(env, &vault)?;
     emit_vault_funded(env, vault_id, funder, amount);
 
@@ -143,17 +153,12 @@ fn emit_vault_funded(env: &Env, vault_id: u64, funder: &Address, amount: i128) {
 /// - Duplicate prevention: Tracks claimed_amount to prevent over-claiming
 /// - Atomicity: All checks pass or entire operation fails
 /// - Status update: Vault marked as Claimed when fully claimed
-pub fn claim_vault(
-    env: &Env,
-    vault_id: u64,
-    owner: &Address,
-) -> Result<i128, Error> {
+pub fn claim_vault(env: &Env, vault_id: u64, owner: &Address) -> Result<i128, Error> {
     // Require owner authorization
     owner.require_auth();
 
     // Get vault and validate it exists
-    let mut vault = storage::get_vault(env, vault_id)
-        .ok_or(Error::TokenNotFound)?;
+    let mut vault = storage::get_vault(env, vault_id).ok_or(Error::TokenNotFound)?;
 
     // Validate caller is the vault owner
     if vault.owner != *owner {
@@ -182,7 +187,8 @@ pub fn claim_vault(
     ensure_withdrawals_enabled(env)?;
 
     // Calculate claimable amount
-    let claimable = vault.total_amount
+    let claimable = vault
+        .total_amount
         .checked_sub(vault.claimed_amount)
         .ok_or(Error::ArithmeticError)?;
 
@@ -196,7 +202,8 @@ pub fn claim_vault(
     record_withdrawal(env, claimable)?;
 
     // Update claimed amount with checked arithmetic
-    vault.claimed_amount = vault.claimed_amount
+    vault.claimed_amount = vault
+        .claimed_amount
         .checked_add(claimable)
         .ok_or(Error::ArithmeticError)?;
 
@@ -228,13 +235,31 @@ mod tests {
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
+        token::StellarAssetClient,
         Address, BytesN, Env, FromVal, Symbol, Val,
     };
 
+    /// Registers a real Stellar Asset Contract token, so `fund_vault` exercises
+    /// a genuine token transfer rather than internal accounting.
+    fn setup_token(env: &Env) -> Address {
+        let token_admin = Address::generate(env);
+        env.register_stellar_asset_contract_v2(token_admin).address()
+    }
+
     fn seed_vault(env: &Env, vault_id: u64, status: VaultStatus, total_amount: i128) {
+        seed_vault_with_token(env, vault_id, status, total_amount, Address::generate(env))
+    }
+
+    fn seed_vault_with_token(
+        env: &Env,
+        vault_id: u64,
+        status: VaultStatus,
+        total_amount: i128,
+        token: Address,
+    ) {
         let vault = Vault {
             id: vault_id,
-            token: Address::generate(env),
+            token,
             owner: Address::generate(env),
             creator: Address::generate(env),
             total_amount,
@@ -321,12 +346,30 @@ mod tests {
 
         let vault_id = 1;
         let funder = Address::generate(&env);
-        seed_vault(&env, vault_id, VaultStatus::Active, i128::MAX - 10);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &10);
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, i128::MAX - 10, token.clone());
 
         fund_vault(&env, vault_id, &funder, 10).unwrap();
 
         let vault = storage::get_vault(&env, vault_id).unwrap();
         assert_eq!(vault.total_amount, i128::MAX);
+        assert_eq!(soroban_sdk::token::Client::new(&env, &token).balance(&funder), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_fund_vault_insufficient_balance_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let vault_id = 1;
+        let funder = Address::generate(&env);
+        let token = setup_token(&env);
+        // Funder has zero balance and no prior deposit — the transfer must panic.
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, 1_000, token);
+
+        let _ = fund_vault(&env, vault_id, &funder, 100);
     }
 
     #[test]
@@ -337,7 +380,9 @@ mod tests {
         let vault_id = 1;
         let funder = Address::generate(&env);
         let amount = 42;
-        seed_vault(&env, vault_id, VaultStatus::Active, 100);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &amount);
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, 100, token.clone());
 
         let before = env.events().all().len();
         fund_vault(&env, vault_id, &funder, amount).unwrap();
@@ -355,6 +400,7 @@ mod tests {
 
         assert_eq!(event_funder, funder);
         assert_eq!(event_amount, amount);
+        assert_eq!(soroban_sdk::token::Client::new(&env, &token).balance(&funder), 0);
     }
 
     // ============================================================================
@@ -394,8 +440,15 @@ mod tests {
 
         // Verify vault state
         let vault = storage::get_vault(&env, vault_id).unwrap();
-        assert_eq!(vault.claimed_amount, total_amount, "Claimed amount should match");
-        assert_eq!(vault.status, VaultStatus::Claimed, "Status should be Claimed");
+        assert_eq!(
+            vault.claimed_amount, total_amount,
+            "Claimed amount should match"
+        );
+        assert_eq!(
+            vault.status,
+            VaultStatus::Claimed,
+            "Status should be Claimed"
+        );
     }
 
     #[test]
@@ -426,8 +479,11 @@ mod tests {
 
         // Try to claim before unlock
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::CliffNotReached), 
-            "Should fail before unlock time");
+        assert_eq!(
+            result,
+            Err(Error::CliffNotReached),
+            "Should fail before unlock time"
+        );
     }
 
     #[test]
@@ -495,8 +551,11 @@ mod tests {
 
         // Second claim should fail
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::InvalidParameters), 
-            "Should fail - vault already claimed");
+        assert_eq!(
+            result,
+            Err(Error::InvalidParameters),
+            "Should fail - vault already claimed"
+        );
     }
 
     #[test]
@@ -528,8 +587,11 @@ mod tests {
 
         // Try to claim with wrong owner
         let result = claim_vault(&env, vault_id, &attacker);
-        assert_eq!(result, Err(Error::Unauthorized), 
-            "Should fail - not the owner");
+        assert_eq!(
+            result,
+            Err(Error::Unauthorized),
+            "Should fail - not the owner"
+        );
     }
 
     proptest! {
@@ -588,8 +650,11 @@ mod tests {
 
         // Try to claim non-existent vault
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::TokenNotFound), 
-            "Should fail - vault doesn't exist");
+        assert_eq!(
+            result,
+            Err(Error::TokenNotFound),
+            "Should fail - vault doesn't exist"
+        );
     }
 
     #[test]
@@ -620,8 +685,11 @@ mod tests {
 
         // Try to claim cancelled vault
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::InvalidParameters), 
-            "Should fail - vault is cancelled");
+        assert_eq!(
+            result,
+            Err(Error::InvalidParameters),
+            "Should fail - vault is cancelled"
+        );
     }
 
     #[test]
@@ -701,7 +769,11 @@ mod tests {
         let last_event = events.get(events.len() - 1).unwrap();
         let (topics, _): (soroban_sdk::Vec<Val>, soroban_sdk::Vec<Val>) = last_event;
         let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
-        assert_eq!(topic.to_string(), "vlt_cl_v1", "Event topic should be vlt_cl_v1");
+        assert_eq!(
+            topic.to_string(),
+            "vlt_cl_v1",
+            "Event topic should be vlt_cl_v1"
+        );
     }
 
     #[test]
@@ -738,12 +810,12 @@ mod tests {
         let events = env.events().all();
         let last_event = events.get(events.len() - 1).unwrap();
         let (_, data): (soroban_sdk::Vec<Val>, soroban_sdk::Vec<Val>) = last_event;
-        
+
         assert_eq!(data.len(), 2, "Event should have 2 data fields");
-        
+
         let event_owner: Address = data.get(0).unwrap().try_into_val(&env).unwrap();
         let event_amount: i128 = data.get(1).unwrap().try_into_val(&env).unwrap();
-        
+
         assert_eq!(event_owner, owner, "Event owner should match");
         assert_eq!(event_amount, claimed, "Event amount should match");
     }
@@ -776,8 +848,11 @@ mod tests {
 
         // Should detect arithmetic error
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::ArithmeticError), 
-            "Should detect arithmetic underflow");
+        assert_eq!(
+            result,
+            Err(Error::ArithmeticError),
+            "Should detect arithmetic underflow"
+        );
     }
 
     #[test]
@@ -809,8 +884,11 @@ mod tests {
 
         // Should fail with nothing to claim
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::NothingToClaim), 
-            "Should fail - nothing left to claim");
+        assert_eq!(
+            result,
+            Err(Error::NothingToClaim),
+            "Should fail - nothing left to claim"
+        );
     }
 
     #[test]
@@ -864,13 +942,15 @@ mod tests {
         let vault_id = 1;
         let owner = Address::generate(&env);
         let funder = Address::generate(&env);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &500_0000000);
         let initial_amount = 1_000_0000000;
         let funded_amount = 500_0000000;
 
         // Create unlocked vault
         let vault = Vault {
             id: vault_id,
-            token: Address::generate(&env),
+            token,
             owner: owner.clone(),
             creator: Address::generate(&env),
             total_amount: initial_amount,
@@ -889,7 +969,10 @@ mod tests {
 
         // Claim should get initial + funded amount
         let claimed = claim_vault(&env, vault_id, &owner).unwrap();
-        assert_eq!(claimed, initial_amount + funded_amount, 
-            "Should claim initial + funded amount");
+        assert_eq!(
+            claimed,
+            initial_amount + funded_amount,
+            "Should claim initial + funded amount"
+        );
     }
 }

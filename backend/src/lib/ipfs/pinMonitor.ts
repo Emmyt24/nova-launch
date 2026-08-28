@@ -22,6 +22,9 @@ export type UnpinnedAlertHandler = (cid: string, error?: string) => void;
 
 /**
  * Check whether a single CID is currently pinned via the Pinata API.
+ *
+ * Performs an exact-match check to avoid false positives from substring matches
+ * where another pinned CID's hash contains the target CID as a substring.
  */
 export async function checkPinStatus(
   cid: string,
@@ -42,8 +45,19 @@ export async function checkPinStatus(
       return { cid, pinned: false, error: `Pinata API error: HTTP ${res.status}` };
     }
 
-    const data = (await res.json()) as { count: number };
-    return { cid, pinned: data.count > 0 };
+    const data = (await res.json()) as {
+      count: number;
+      rows?: Array<{ ipfs_pin_hash: string }>;
+    };
+
+    // Verify exact CID match: the substring query may return false positives,
+    // so check that at least one returned row has an exact match
+    if (data.rows && data.rows.length > 0) {
+      const exactMatch = data.rows.some((row) => row.ipfs_pin_hash === cid);
+      return { cid, pinned: exactMatch };
+    }
+
+    return { cid, pinned: false };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     return { cid, pinned: false, error };

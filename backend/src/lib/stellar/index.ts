@@ -51,7 +51,7 @@ export function getSorobanServer(
 export async function fetchAccountInfo(
   publicKey: string,
   config: StellarNetworkConfig = stellarConfig
-): Promise<StellarSdk.Horizon.AccountResponse> {
+): Promise<StellarSdk.Horizon.ServerApi.AccountRecord> {
   if (!/^G[A-Z0-9]{55}$/.test(publicKey)) {
     throw new Error(`Invalid Stellar public key: ${publicKey}`);
   }
@@ -71,13 +71,15 @@ export async function fetchAccountInfo(
 export async function submitTransaction(
   txXdr: string,
   config: StellarNetworkConfig = stellarConfig
-): Promise<StellarSdk.Horizon.SubmitTransactionResponse> {
+): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> {
   if (!txXdr || typeof txXdr !== "string") {
     throw new Error("Invalid transaction XDR");
   }
 
   const horizon = getHorizonServer(config);
-  return horizon.submitTransaction(txXdr);
+  const networkPassphrase = getNetworkPassphrase(config);
+  const tx = StellarSdk.TransactionBuilder.fromXDR(txXdr, networkPassphrase);
+  return horizon.submitTransaction(tx);
 }
 
 /**
@@ -91,9 +93,9 @@ export function getNetworkPassphrase(
 ): string {
   switch (config.network) {
     case "mainnet":
-      return StellarSdk.Networks.PUBLIC_NETWORK_PASSPHRASE;
+      return StellarSdk.Networks.PUBLIC;
     case "testnet":
-      return StellarSdk.Networks.TESTNET_NETWORK_PASSPHRASE;
+      return StellarSdk.Networks.TESTNET;
     default:
       throw new Error(`Unknown network: ${config.network}`);
   }
@@ -114,7 +116,6 @@ export function createTransactionBuilder(
   return new StellarSdk.TransactionBuilder(sourceAccount, {
     fee: StellarSdk.BASE_FEE,
     networkPassphrase: passphrase,
-    v1: true,
   });
 }
 
@@ -127,17 +128,15 @@ export function createTransactionBuilder(
 export async function getCurrentBaseFee(
   config: StellarNetworkConfig = stellarConfig
 ): Promise<number> {
-  const horizon = getHorizonServer(config);
-  const server = new StellarSdk.Horizon.Server(config.horizonUrl);
+  const server = getHorizonServer(config);
   try {
-    const ledger = await server.ledgers().limit(1).order("desc").call();
-    const feeStats = await server.feeStats().call();
+    const feeStats = await server.feeStats();
     return Math.max(
-      StellarSdk.BASE_FEE,
-      parseInt(feeStats.max_fee.mode as string)
+      Number(StellarSdk.BASE_FEE),
+      parseInt(feeStats.max_fee.mode, 10)
     );
   } catch (error) {
-    return StellarSdk.BASE_FEE;
+    return Number(StellarSdk.BASE_FEE);
   }
 }
 
@@ -173,7 +172,7 @@ export async function addressExists(
 export async function getAccountBalances(
   publicKey: string,
   config: StellarNetworkConfig = stellarConfig
-): Promise<StellarSdk.Horizon.BalanceLineAsset[]> {
+): Promise<StellarSdk.Horizon.HorizonApi.BalanceLine[]> {
   const account = await fetchAccountInfo(publicKey, config);
   return account.balances;
 }

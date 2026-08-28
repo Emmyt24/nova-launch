@@ -143,6 +143,7 @@ terraform apply destroy.tfplan
 - ALB enforces HTTPS with TLS 1.2+ and redirects HTTP → HTTPS
 - Terraform state is encrypted at rest in S3 with versioning enabled
 - State locking via DynamoDB prevents concurrent modifications
+- CloudWatch alarm notifications can be sent to multiple email subscribers via the `alarm_emails` list in the monitoring module
 
 ## Required GitHub Actions Secrets
 

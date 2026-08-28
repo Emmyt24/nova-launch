@@ -410,12 +410,20 @@ router.post(
 
       // Re-deliver the webhook
       const payload = JSON.parse(deadLetter.payload);
-      await webhookDeliveryService.deliverWebhook(
+      const deliveryResult = await webhookDeliveryService.deliverWebhook(
         subscription,
         deadLetter.event,
         payload.data || payload,
         `retry_${id}`
       );
+
+      if (!deliveryResult.success) {
+        res.status(502).json({
+          success: false,
+          error: "Dead-letter delivery failed; entry remains unresolved",
+        });
+        return;
+      }
 
       // Mark as resolved
       await webhookDeadLetterService.markResolved(id, "retried");

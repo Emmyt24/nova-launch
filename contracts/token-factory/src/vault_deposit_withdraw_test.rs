@@ -104,7 +104,10 @@ mod concurrent_interleaving {
 
         // Verify vault balance invariant: claimed_amount <= total_amount
         let vault = client.get_vault(&vault_id);
-        assert!(vault.claimed_amount <= vault.total_amount, "balance invariant violated");
+        assert!(
+            vault.claimed_amount <= vault.total_amount,
+            "balance invariant violated"
+        );
         assert!(vault.claimed_amount >= 0, "balance must never go negative");
     }
 
@@ -148,7 +151,8 @@ mod concurrent_interleaving {
         let err = result_b.unwrap_err().unwrap();
         assert!(
             err == Error::InvalidParameters || err == Error::NothingToClaim,
-            "unexpected error variant: {:?}", err
+            "unexpected error variant: {:?}",
+            err
         );
 
         // Balance invariant holds.
@@ -298,11 +302,15 @@ mod concurrent_interleaving {
                 let v = client.get_vault(&vault_ids[j]);
                 assert!(
                     v.claimed_amount >= 0,
-                    "vault {} balance went negative after withdrawing vault {}", j, i
+                    "vault {} balance went negative after withdrawing vault {}",
+                    j,
+                    i
                 );
                 assert!(
                     v.claimed_amount <= v.total_amount,
-                    "vault {} claimed_amount exceeds total_amount after withdrawing vault {}", j, i
+                    "vault {} claimed_amount exceeds total_amount after withdrawing vault {}",
+                    j,
+                    i
                 );
             }
         }
@@ -354,7 +362,10 @@ mod vault_edge_cases {
 
         // Second claim must fail — nothing left.
         let result = client.try_claim_vault(&owner, &vault_id, &None);
-        assert!(result.is_err(), "second claim must fail with nothing to claim");
+        assert!(
+            result.is_err(),
+            "second claim must fail with nothing to claim"
+        );
     }
 
     // The full deposited amount is returned on a successful claim.

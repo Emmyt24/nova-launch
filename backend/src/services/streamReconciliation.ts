@@ -1,5 +1,7 @@
 import { PrismaClient, StreamStatus } from "@prisma/client";
+import axios from "axios";
 import { logger } from "../lib/logger";
+import { stellarConfig } from "../lib/stellar";
 import { eventBus } from "./eventBus";
 
 export interface StreamDivergence {
@@ -36,15 +38,26 @@ export class StreamReconciliationService {
   private prisma: PrismaClient;
   private reconciliationIntervalMs: number;
   private lastReconciliation?: Date;
+  private horizonUrl: string;
+  private factoryContractId: string;
 
   constructor(
     prisma: PrismaClient,
     reconciliationIntervalMs: number = parseInt(
       process.env.STREAM_RECONCILIATION_INTERVAL_MS || "300000"
-    ) // 5 minutes default
+    ), // 5 minutes default
+    config: { horizonUrl?: string; factoryContractId?: string } = {}
   ) {
     this.prisma = prisma;
     this.reconciliationIntervalMs = reconciliationIntervalMs;
+    this.horizonUrl =
+      config.horizonUrl ||
+      process.env.STELLAR_HORIZON_URL ||
+      stellarConfig.horizonUrl;
+    this.factoryContractId =
+      config.factoryContractId ||
+      process.env.FACTORY_CONTRACT_ID ||
+      stellarConfig.factoryContractId;
   }
 
   async reconcile(): Promise<StreamReconciliationResult> {
@@ -151,14 +164,82 @@ export class StreamReconciliationService {
 
   private async fetchOnChainBalance(streamId: number): Promise<bigint | null> {
     try {
-      // This would call the on-chain contract via Web3/blockchain API
-      // For now, this is a placeholder that would be implemented with actual chain integration
-      // In production, this would call a blockchain RPC or contract query
-      return BigInt(0);
+      if (!this.factoryContractId) {
+        return null;
+      }
+
+      const response = await axios.get(
+        `${this.horizonUrl}/contracts/${this.factoryContractId}/events`,
+        {
+          params: {
+            topic: `vlt_cr_v1,${streamId}`,
+            limit: 10,
+            order: "desc",
+          },
+          timeout: 10000,
+        }
+      );
+
+      const records = response.data?._embedded?.records || [];
+      if (records.length === 0) {
+        // Fallback query across recent contract events to locate this stream
+        const fallbackResponse = await axios.get(
+          `${this.horizonUrl}/contracts/${this.factoryContractId}/events`,
+          {
+            params: {
+              limit: 50,
+              order: "desc",
+            },
+            timeout: 10000,
+          }
+        );
+        const fallbackRecords = fallbackResponse.data?._embedded?.records || [];
+        const matching = fallbackRecords.find(
+          (r: any) =>
+            r.topic?.[1] === String(streamId) ||
+            r.value?.stream_id === streamId ||
+            r.value?.streamId === streamId
+        );
+        if (matching) {
+          return this.parseStreamBalanceFromEvent(matching);
+        }
+        return null;
+      }
+
+      return this.parseStreamBalanceFromEvent(records[0]);
     } catch (err) {
-      logger.warn(`Failed to fetch on-chain balance for stream ${streamId}`);
+      logger.warn(
+        `Failed to fetch on-chain balance for stream ${streamId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
       return null;
     }
+  }
+
+  private parseStreamBalanceFromEvent(event: any): bigint {
+    const topic = event?.topic?.[0];
+    if (
+      topic === "vlt_cl_v1" ||
+      topic === "vlt_cn_v1" ||
+      topic === "strm_cl_v1" ||
+      topic === "strm_cn_v1"
+    ) {
+      return BigInt(0);
+    }
+    const value = event?.value;
+    if (value === undefined || value === null) {
+      return BigInt(0);
+    }
+    if (typeof value === "object") {
+      if (value.amount !== undefined) {
+        return BigInt(value.amount);
+      }
+      if (Array.isArray(value) && value.length >= 3) {
+        return BigInt(value[2]);
+      }
+    }
+    return BigInt(value.toString());
   }
 
   getLastReconciliationTime(): Date | undefined {

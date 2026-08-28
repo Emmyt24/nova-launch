@@ -304,6 +304,12 @@ export function alertHighApiErrorRate(
     dedupKey: "nova-api-high-error-rate",
     source: "backend-api",
     customDetails: { errorRate, ...details },
+    links: [
+      {
+        href: "https://github.com/Emmyt24/Nova-launch/blob/main/docs/PRODUCTION_INTEGRATION_RUNBOOK.md#high-api-error-rate",
+        text: "Runbook: High API Error Rate",
+      },
+    ],
   });
 }
 
@@ -315,6 +321,12 @@ export function alertDatabasePoolExhausted(details?: Record<string, unknown>) {
     dedupKey: "nova-db-pool-exhausted",
     source: "prisma",
     customDetails: details,
+    links: [
+      {
+        href: "https://github.com/Emmyt24/Nova-launch/blob/main/docs/PRODUCTION_INTEGRATION_RUNBOOK.md#database-connection-pool-exhausted",
+        text: "Runbook: Database Connection Pool Exhausted",
+      },
+    ],
   });
 }
 

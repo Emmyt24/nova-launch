@@ -52,34 +52,34 @@ export class NonceService implements OnModuleDestroy {
     // Safety-net cleanup: scan for any nonce keys whose TTL has already fired
     // but whose entries were somehow not evicted (e.g., Redis maxmemory policy
     // set to noeviction). In normal operation Redis TTL handles eviction.
-    this.cleanupInterval = setInterval(
-      () => this.cleanupUsedNonces(),
-      60_000
-    );
+    this.cleanupInterval = setInterval(() => this.cleanupUsedNonces(), 60_000);
   }
 
   /**
    * Generates a one-time nonce for the given public key and stores it in
    * Redis with a TTL equal to NONCE_EXPIRY_MS.  The key format is
    * `nonce:<uuid>` and the value is a JSON-encoded NonceEntry.
+   *
+   * Throws on Redis write failure to prevent dead-on-arrival nonces.
    */
-  generateNonce(publicKey: string): NonceResponseDto {
+  async generateNonce(publicKey: string): Promise<NonceResponseDto> {
     const nonce = uuidv4();
     const expiresAt = Date.now() + AUTH_CONSTANTS.NONCE_EXPIRY_MS;
     const entry: NonceEntry = { publicKey, expiresAt, used: false };
 
-    // Fire-and-forget; we return the dto synchronously.  The SET is atomic
-    // and the TTL ensures automatic expiry even if the process crashes.
-    this.redis
-      .set(
+    try {
+      await this.redis.set(
         `${NONCE_KEY_PREFIX}${nonce}`,
         JSON.stringify(entry),
         "EX",
         NONCE_TTL_SECONDS
-      )
-      .catch((err) =>
-        this.logger.error(`Failed to store nonce in Redis: ${err.message}`)
       );
+    } catch (err) {
+      this.logger.error(
+        `Failed to store nonce in Redis: ${(err as Error).message}`
+      );
+      throw new Error("Failed to generate nonce: Redis write failed");
+    }
 
     const message = `${AUTH_CONSTANTS.STELLAR_MESSAGE_PREFIX}${nonce}`;
     return { nonce, expiresAt, message };
@@ -165,9 +165,7 @@ export class NonceService implements OnModuleDestroy {
         this.logger.debug(`Cleanup removed ${cleaned} used nonce key(s)`);
       }
     } catch (err) {
-      this.logger.error(
-        `Nonce cleanup error: ${(err as Error).message}`
-      );
+      this.logger.error(`Nonce cleanup error: ${(err as Error).message}`);
     }
   }
 

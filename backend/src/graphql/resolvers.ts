@@ -5,6 +5,17 @@
  * converted to strings before returning so JSON serialisation is lossless.
  *
  * Pagination: `limit` is capped at 100; `offset` defaults to 0.
+ *
+ * Error-sanitization convention
+ * -----------------------------
+ * Every resolver in this file that touches `prisma` wraps its body in
+ * `try { ... } catch (err) { handleDbError(<name>, err) }`. `handleDbError`
+ * logs the real error server-side and re-throws a generic
+ * `GraphQLError("Internal server error")`, so raw Prisma / driver errors
+ * (which can disclose schema, table and connection details) never reach a
+ * GraphQL client. New Query / field resolvers that read from the database are
+ * expected to follow the same pattern — see `handleDbError` below for the
+ * rationale and the one deliberate exception (Subscription resolvers).
  */
 
 import { GraphQLError } from "graphql";
@@ -25,7 +36,34 @@ function paginate(args: { limit?: number | null; offset?: number | null }) {
   };
 }
 
-/** Log the real error server-side and throw a sanitized client-facing error. */
+/**
+ * Log the real error server-side and throw a sanitized client-facing error.
+ *
+ * Convention (enforced by review, covered by resolvers.test.ts):
+ *   EVERY resolver that calls `prisma` MUST catch and route through this helper:
+ *
+ *       async myResolver(_, args) {
+ *         try {
+ *           return await prisma.thing.findMany(...);
+ *         } catch (err) {
+ *           handleDbError("myResolver", err);
+ *         }
+ *       }
+ *
+ * Why: Prisma / pg errors embed internal detail — table and column names,
+ * constraint names, connection strings, and full stack traces. Throwing them
+ * straight out of a resolver leaks that detail to every GraphQL client. This
+ * helper records the real error (message + stack) via the server logger and
+ * replaces it with an opaque `GraphQLError("Internal server error")` that
+ * carries no internal information. Never `throw err` (or a `new GraphQLError`
+ * built from `err.message`) directly from a resolver.
+ *
+ * Deliberate exception: the `Subscription` resolvers below do NOT wrap through
+ * here — their `subscribe`/`resolve` functions only bridge the in-process
+ * `eventBus` and map payload shapes; they never touch `prisma`, so there is no
+ * database error to sanitize. Any subscription resolver that starts querying
+ * the database must adopt the same try/catch + `handleDbError` pattern.
+ */
 function handleDbError(resolver: string, err: unknown): never {
   logger.error(`GraphQL resolver error in ${resolver}`, {
     error: err instanceof Error ? err.message : String(err),
@@ -73,6 +111,15 @@ export const SUBSCRIPTION_TOPICS = {
  * connection JWT during the graphql-ws `connection_init` handshake (see
  * graphql/index.ts). It is undefined only for unauthenticated connections,
  * which never receive any events.
+ *
+ * The full handshake contract — where the JWT is read from in the
+ * `connection_init` payload, that `tenantId` / `tenant_id` populates
+ * `tenant.id`, how a missing/invalid/expired token is rejected (4403 close,
+ * zero events), and the requirement that this path stay compatible with
+ * `TokenService.generateTokenPair` — is documented on
+ * `resolveTenantFromConnectionParams` in graphql/index.ts. Keep the two in
+ * sync; the executable spec is
+ * src/graphql/__tests__/subscriptions.integration.test.ts.
  */
 export interface SubscriptionContext {
   tenant?: { id: string; name?: string };

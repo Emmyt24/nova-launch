@@ -92,14 +92,20 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
         let old_power = storage::get_vote_power(env, &old_delegatee);
         let new_old_power = old_power
             .checked_sub(delegator_balance)
-            .ok_or(Error::ArithmeticError)?;
+            .ok_or_else(|| {
+                events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, old_power);
+                Error::ArithmeticError
+            })?;
         storage::set_vote_power(env, &old_delegatee, new_old_power.max(0));
 
         // Add power to new delegatee
         let new_power = storage::get_vote_power(env, &delegatee);
         let updated_power = new_power
             .checked_add(delegator_balance)
-            .ok_or(Error::ArithmeticError)?;
+            .ok_or_else(|| {
+                events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, new_power);
+                Error::ArithmeticError
+            })?;
         storage::set_vote_power(env, &delegatee, updated_power);
 
         // Update delegation record
@@ -121,14 +127,20 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
         let delegator_power = storage::get_vote_power(env, &delegator);
         let new_delegator_power = delegator_power
             .checked_sub(delegator_balance)
-            .ok_or(Error::ArithmeticError)?;
+            .ok_or_else(|| {
+                events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegator_power);
+                Error::ArithmeticError
+            })?;
         storage::set_vote_power(env, &delegator, new_delegator_power.max(0));
 
         // Add to delegatee
         let delegatee_power = storage::get_vote_power(env, &delegatee);
         let new_delegatee_power = delegatee_power
             .checked_add(delegator_balance)
-            .ok_or(Error::ArithmeticError)?;
+            .ok_or_else(|| {
+                events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegatee_power);
+                Error::ArithmeticError
+            })?;
         storage::set_vote_power(env, &delegatee, new_delegatee_power);
 
         // Store delegation record
@@ -173,14 +185,20 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
     let delegatee_power = storage::get_vote_power(env, &delegatee);
     let new_delegatee_power = delegatee_power
         .checked_sub(delegator_balance)
-        .ok_or(Error::ArithmeticError)?;
+        .ok_or_else(|| {
+            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegatee_power);
+            Error::ArithmeticError
+        })?;
     storage::set_vote_power(env, &delegatee, new_delegatee_power.max(0));
 
     // Restore power to delegator
     let delegator_power = storage::get_vote_power(env, &delegator);
     let new_delegator_power = delegator_power
         .checked_add(delegator_balance)
-        .ok_or(Error::ArithmeticError)?;
+        .ok_or_else(|| {
+            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegator_power);
+            Error::ArithmeticError
+        })?;
     storage::set_vote_power(env, &delegator, new_delegator_power);
 
     // Remove delegation record

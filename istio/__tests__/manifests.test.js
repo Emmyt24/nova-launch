@@ -245,7 +245,27 @@ describe('virtual-services.yaml', () => {
       r.match?.some((m) => m.uri?.prefix === '/api')
     );
     expect(apiRoute.retries).toBeDefined();
-    expect(apiRoute.retries.attempts).toBeGreaterThan(0);
+    expect(apiRoute.retries.attempts).toBe(3);
+    expect(apiRoute.retries.perTryTimeout).toBe('10s');
+    expect(apiRoute.retries.retryOn).toBe('gateway-error,connect-failure,retriable-4xx');
+  });
+
+  it('backend-internal VS has retry policy', () => {
+    const vs = find(virtualServices, 'VirtualService', 'backend-internal');
+    const route = vs.spec.http[0];
+    expect(route.retries).toBeDefined();
+    expect(route.retries.attempts).toBe(3);
+    expect(route.retries.perTryTimeout).toBe('5s');
+    expect(route.retries.retryOn).toBe('gateway-error,connect-failure,reset');
+  });
+
+  it('ingress VS /health route does not have retry semantics', () => {
+    const vs = find(virtualServices, 'VirtualService', 'nova-launch-ingress');
+    const healthRoute = vs.spec.http.find((r) =>
+      r.match?.some((m) => m.uri?.prefix === '/health')
+    );
+    expect(healthRoute).toBeDefined();
+    expect(healthRoute.retries).toBeUndefined();
   });
 
   it('backend-internal VS has timeout', () => {
@@ -270,7 +290,7 @@ describe('destination-rules.yaml', () => {
     expect(dr.spec.trafficPolicy.tls.mode).toBe('DISABLE');
   });
 
-  it.each(['backend', 'gateway'])('%s has outlier detection (circuit breaker)', (name) => {
+  it.each(['backend', 'gateway', 'frontend'])('%s has outlier detection (circuit breaker)', (name) => {
     const dr = find(destRules, 'DestinationRule', name);
     expect(dr.spec.trafficPolicy.outlierDetection).toBeDefined();
     expect(dr.spec.trafficPolicy.outlierDetection.consecutive5xxErrors).toBeGreaterThan(0);

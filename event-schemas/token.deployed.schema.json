@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nova-launch.dev/event-schemas/token.deployed.schema.json",
   "title": "TokenDeployedEvent",
-  "description": "Published when a token deployment is confirmed. NOTE: two distinct payload shapes are currently published under this event type — backend/src/services/batchTokenDeployService.ts publishes {tokenId, address, creator, decimals, initialSupply, metadataUri, ...}, while the GraphQL `tokenDeployed` subscription (backend/src/graphql/resolvers.ts, TokenDeployedPayload / SUBSCRIPTION_TOPICS.tokenDeployed) expects {tokenAddress, creatorAddress, totalSupply, txHash, timestamp, ...}. This is pre-existing schema drift this registry is intended to surface; both shapes are accepted here (via anyOf) until they are reconciled onto a single shape in a follow-up.",
+  "description": "Published when a token deployment is confirmed. Unified schema matching GraphQL `tokenDeployed` subscription payload expectations for proper tenant scoping and filtering.",
   "type": "object",
   "schemaVersion": 1,
   "eventType": "token.deployed",
@@ -40,5 +40,6 @@
       },
       "required": ["schemaVersion", "tokenAddress", "creatorAddress", "name", "symbol", "totalSupply", "txHash", "timestamp"]
     }
-  ]
+  },
+  "required": ["tokenAddress", "creatorAddress", "name", "symbol", "totalSupply", "txHash", "timestamp"]
 }

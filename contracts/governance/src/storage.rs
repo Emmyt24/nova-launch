@@ -151,15 +151,23 @@ pub fn get_snapshot(env: &Env, address: &Address, ledger: u32) -> Option<VotePow
 }
 
 // ─── Token address (proposal system) ──────────────────────────────────────
+//
+// WARNING: This section defines accessors for DataKey::TokenAddress, which is currently
+// UNUSED by any contract entry point. For cross-contract settlement in proposal execution,
+// use the TokenFactory accessors below instead (set_token_factory/get_token_factory).
+// Do not confuse these two keys — they serve different historical purposes and must remain
+// distinct. See DataKey::TokenAddress in types.rs for additional context.
 
 pub fn has_token_address(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::TokenAddress)
 }
 
+/// Unused: See has_token_address comment above. Use get_token_factory for settlement.
 pub fn set_token_address(env: &Env, address: &Address) {
     env.storage().instance().set(&DataKey::TokenAddress, address);
 }
 
+/// Unused: See has_token_address comment above. Use get_token_factory for settlement.
 pub fn get_token_address(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::TokenAddress)
 }

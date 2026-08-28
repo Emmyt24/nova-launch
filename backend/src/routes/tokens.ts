@@ -470,13 +470,7 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
     // Look for token created within last 5 minutes with this txHash
     const token = await prisma.token.findFirst({
       where: {
-        // Note: Assuming burn records track deployment txHash
-        // If tokens table doesn't have txHash, this would need adaptation
-        burnRecords: {
-          some: {
-            txHash: txHash,
-          },
-        },
+        deployTxHash: txHash,
       },
       select: {
         id: true,

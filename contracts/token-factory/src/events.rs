@@ -46,7 +46,6 @@
 /// - Data types for all parameters must remain unchanged
 ///
 /// Any schema changes require creating a new version (e.g., init_v2).
-
 use soroban_sdk::{symbol_short, Address, BytesN, Env, String, Symbol};
 
 /// Emit initialized event (v1)
@@ -179,8 +178,10 @@ pub fn emit_admin_transfer(env: &Env, old_admin: &Address, new_admin: &Address) 
 ///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_proposed(env: &Env, current_admin: &Address, proposed_admin: &Address) {
-    env.events()
-        .publish((symbol_short!("adprp_v1"),), (current_admin, proposed_admin));
+    env.events().publish(
+        (symbol_short!("adprp_v1"),),
+        (current_admin, proposed_admin),
+    );
 }
 
 /// Emit pause event (v1)
@@ -249,8 +250,10 @@ pub fn emit_fees_updated(env: &Env, base_fee: i128, metadata_fee: i128) {
 ///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_fees_updated_v2(env: &Env, admin: &Address, base_fee: i128, metadata_fee: i128) {
-    env.events()
-        .publish((symbol_short!("fee_up_v2"),), (admin.clone(), base_fee, metadata_fee));
+    env.events().publish(
+        (symbol_short!("fee_up_v2"),),
+        (admin.clone(), base_fee, metadata_fee),
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -516,17 +519,9 @@ pub fn emit_mint(env: &Env, token_index: u32, to: &Address, amount: i128) {
 ///
 /// Topic `mnt_ok` corresponds to a `MintSucceeded` outcome. `index` is the
 /// item's position in the input batch.
-pub fn emit_mint_succeeded(
-    env: &Env,
-    token_index: u32,
-    index: u32,
-    to: &Address,
-    amount: i128,
-) {
-    env.events().publish(
-        (symbol_short!("mnt_ok"), token_index),
-        (index, to, amount),
-    );
+pub fn emit_mint_succeeded(env: &Env, token_index: u32, index: u32, to: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("mnt_ok"), token_index), (index, to, amount));
 }
 
 /// Emit a per-item failure event for an isolated batch mint (#1360).
@@ -617,10 +612,8 @@ pub fn emit_governance_updated(env: &Env, quorum_percent: u32, approval_percent:
 ///
 /// Emitted when a specific token is paused via `pause_token`
 pub fn emit_token_paused(env: &Env, token_index: u32, admin: &Address) {
-    env.events().publish(
-        (symbol_short!("tok_paus"), token_index),
-        (admin,),
-    );
+    env.events()
+        .publish((symbol_short!("tok_paus"), token_index), (admin,));
 }
 
 /// Emit token unpaused event (v1)
@@ -639,10 +632,8 @@ pub fn emit_token_paused(env: &Env, token_index: u32, admin: &Address) {
 ///
 /// Emitted when a specific token is unpaused via `unpause_token`
 pub fn emit_token_unpaused(env: &Env, token_index: u32, admin: &Address) {
-    env.events().publish(
-        (symbol_short!("tok_unpas"), token_index),
-        (admin,),
-    );
+    env.events()
+        .publish((symbol_short!("tok_unpas"), token_index), (admin,));
 }
 
 /// Emit dynamic quorum adjusted event
@@ -740,22 +731,22 @@ pub fn emit_batch_streams_created(env: &Env, creator: &Address, count: u32) {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Emit vault/stream created event (v1)
-/// 
+///
 /// **Schema Version**: 1
 /// **Event Name**: vlt_cr_v1
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "vlt_cr_v1"
 /// - stream_id: u32 - The unique identifier for the created stream
-/// 
+///
 /// **Payload** (non-indexed):
 /// - creator: Address - The address that created the stream
 /// - recipient: Address - The address that will receive the vested tokens
 /// - amount: i128 - Total amount of tokens to be vested
 /// - has_metadata: bool - Whether metadata was provided
-/// 
+///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
-/// 
+///
 /// Emitted when a new vesting stream is created
 pub fn emit_stream_created(
     env: &Env,
@@ -772,76 +763,62 @@ pub fn emit_stream_created(
 }
 
 /// Emit vault/stream funded event (v1)
-/// 
+///
 /// **Schema Version**: 1
 /// **Event Name**: vlt_fd_v1
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "vlt_fd_v1"
 /// - stream_id: u32 - The stream identifier
-/// 
+///
 /// **Payload** (non-indexed):
 /// - funder: Address - The address that funded the stream
 /// - amount: i128 - Amount of tokens funded
-/// 
+///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
-/// 
+///
 /// Emitted when a stream is funded with tokens
-pub fn emit_stream_funded(
-    env: &Env,
-    stream_id: u32,
-    funder: &Address,
-    amount: i128,
-) {
-    env.events().publish(
-        (symbol_short!("vlt_fd_v1"), stream_id),
-        (funder, amount),
-    );
+pub fn emit_stream_funded(env: &Env, stream_id: u32, funder: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("vlt_fd_v1"), stream_id), (funder, amount));
 }
 
 /// Emit vault/stream claimed event (v1)
-/// 
+///
 /// **Schema Version**: 1
 /// **Event Name**: vlt_cl_v1
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "vlt_cl_v1"
 /// - stream_id: u32 - The stream identifier
-/// 
+///
 /// **Payload** (non-indexed):
 /// - recipient: Address - The address that claimed tokens
 /// - amount: i128 - Amount of tokens claimed
-/// 
+///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
-/// 
+///
 /// Emitted when tokens are claimed from a stream
-pub fn emit_stream_claimed(
-    env: &Env,
-    stream_id: u32,
-    recipient: &Address,
-    amount: i128,
-) {
-    env.events().publish(
-        (symbol_short!("vlt_cl_v1"), stream_id),
-        (recipient, amount),
-    );
+pub fn emit_stream_claimed(env: &Env, stream_id: u32, recipient: &Address, amount: i128) {
+    env.events()
+        .publish((symbol_short!("vlt_cl_v1"), stream_id), (recipient, amount));
 }
 
 /// Emit vault/stream cancelled event (v1)
-/// 
+///
 /// **Schema Version**: 1
 /// **Event Name**: vlt_cn_v1
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "vlt_cn_v1"
 /// - stream_id: u32 - The stream identifier
-/// 
+///
 /// **Payload** (non-indexed):
 /// - canceller: Address - The address that cancelled the stream
 /// - remaining_amount: i128 - Amount of unvested tokens returned
-/// 
+///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
-/// 
+///
 /// Emitted when a stream is cancelled before completion
 pub fn emit_stream_cancelled(
     env: &Env,
@@ -873,35 +850,31 @@ pub fn emit_stream_cancelled_with_settlement(
 
 /// Emit stream dispute raised event
 pub fn emit_stream_dispute_raised(env: &Env, stream_id: u32, caller: &Address) {
-    env.events().publish(
-        (symbol_short!("strm_disp"), stream_id),
-        (caller,),
-    );
+    env.events()
+        .publish((symbol_short!("strm_disp"), stream_id), (caller,));
 }
 
 /// Emit stream dispute resolved event
 pub fn emit_stream_dispute_resolved(env: &Env, stream_id: u32, admin: &Address) {
-    env.events().publish(
-        (symbol_short!("strm_rslv"), stream_id),
-        (admin,),
-    );
+    env.events()
+        .publish((symbol_short!("strm_rslv"), stream_id), (admin,));
 }
 
 /// Emit stream metadata updated event (v1)
-/// 
+///
 /// **Schema Version**: 1
 /// **Event Name**: vlt_md_v1
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "vlt_md_v1"
 /// - stream_id: u32 - The stream identifier
-/// 
+///
 /// **Payload** (non-indexed):
 /// - updater: Address - The address that updated the metadata
 /// - has_metadata: bool - Whether metadata is now present
-/// 
+///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
-/// 
+///
 /// Emitted when stream metadata is updated
 pub fn emit_stream_metadata_updated(
     env: &Env,
@@ -993,35 +966,22 @@ pub fn emit_proposal_voted(
     voter: &Address,
     support: crate::types::VoteChoice,
 ) {
-    env.events().publish(
-        (symbol_short!("prop_vote"), proposal_id),
-        (voter, support),
-    );
+    env.events()
+        .publish((symbol_short!("prop_vote"), proposal_id), (voter, support));
 }
 
 /// Emit proposal queued event
 ///
 /// Published when a proposal is queued for execution
-pub fn emit_proposal_queued(
-    env: &Env,
-    proposal_id: u64,
-    eta: u64,
-) {
-    env.events().publish(
-        (symbol_short!("prop_que"), proposal_id),
-        (eta,),
-    );
+pub fn emit_proposal_queued(env: &Env, proposal_id: u64, eta: u64) {
+    env.events()
+        .publish((symbol_short!("prop_que"), proposal_id), (eta,));
 }
 
 /// Emit proposal executed event
 ///
 /// Published when a proposal is executed
-pub fn emit_proposal_executed(
-    env: &Env,
-    proposal_id: u64,
-    executor: &Address,
-    success: bool,
-) {
+pub fn emit_proposal_executed(env: &Env, proposal_id: u64, executor: &Address, success: bool) {
     env.events().publish(
         (symbol_short!("prop_exec"), proposal_id),
         (executor, success),
@@ -1033,18 +993,14 @@ pub fn emit_proposal_executed(
 /// Published when a proposal's timelock delay has elapsed and it is ready to execute.
 /// Topics: ("prp_rdy1", proposal_id). Payload: (eta,).
 pub fn emit_proposal_executable(env: &Env, proposal_id: u64, eta: u64) {
-    env.events().publish(
-        (symbol_short!("prp_rdy1"), proposal_id),
-        (eta,),
-    );
+    env.events()
+        .publish((symbol_short!("prp_rdy1"), proposal_id), (eta,));
 }
 
 /// Emit proposal cancelled event
 pub fn emit_proposal_cancelled(env: &Env, proposal_id: u64, cancelled_by: &Address) {
-    env.events().publish(
-        (symbol_short!("prop_cncl"), proposal_id),
-        (cancelled_by,),
-    );
+    env.events()
+        .publish((symbol_short!("prop_cncl"), proposal_id), (cancelled_by,));
 }
 
 /// Emit a governance proposal state snapshot event (#1383).
@@ -1110,10 +1066,8 @@ pub fn emit_queue_entry_removed(
     proposal_id: u64,
     priority: crate::types::ProposalPriority,
 ) {
-    env.events().publish(
-        (symbol_short!("q_rem"), proposal_id),
-        (priority as u32,),
-    );
+    env.events()
+        .publish((symbol_short!("q_rem"), proposal_id), (priority as u32,));
 }
 
 /// Emit a per-type FIFO queue entry-added event (#1366).
@@ -1142,29 +1096,25 @@ pub fn emit_type_queue_entry_removed(
     proposal_id: u64,
     action_type: crate::types::ActionType,
 ) {
-    env.events().publish(
-        (symbol_short!("tq_rem"), proposal_id),
-        (action_type,),
-    );
+    env.events()
+        .publish((symbol_short!("tq_rem"), proposal_id), (action_type,));
 }
 
 /// Emit enriched error detail event
 ///
 /// **Event Name**: err_det
-/// 
+///
 /// **Topics** (indexed):
 /// - Event name: "err_det"
 /// - error_code: u32 - Numerical representation of the error
-/// 
+///
 /// **Payload** (non-indexed):
 /// - context: i128 - Additional context (e.g. token index, amount)
-/// 
+///
 /// Emitted when a high-value data path fails to provide structured diagnostic data.
 pub fn emit_error_detail(env: &Env, error_code: u32, context: i128) {
-    env.events().publish(
-        (symbol_short!("err_det"), error_code),
-        (context,),
-    );
+    env.events()
+        .publish((symbol_short!("err_det"), error_code), (context,));
 }
 
 /// Emit vault created event
@@ -1306,10 +1256,8 @@ pub fn emit_campaign_created(
 ///
 /// Emitted when a campaign is paused
 pub fn emit_campaign_paused(env: &Env, campaign_id: u64, paused_by: &Address) {
-    env.events().publish(
-        (symbol_short!("cmp_ps_v1"), campaign_id),
-        (paused_by,),
-    );
+    env.events()
+        .publish((symbol_short!("cmp_ps_v1"), campaign_id), (paused_by,));
 }
 
 /// Emit campaign resumed event (v1)
@@ -1328,10 +1276,8 @@ pub fn emit_campaign_paused(env: &Env, campaign_id: u64, paused_by: &Address) {
 ///
 /// Emitted when a campaign is resumed from paused state
 pub fn emit_campaign_resumed(env: &Env, campaign_id: u64, resumed_by: &Address) {
-    env.events().publish(
-        (symbol_short!("cmp_rs_v1"), campaign_id),
-        (resumed_by,),
-    );
+    env.events()
+        .publish((symbol_short!("cmp_rs_v1"), campaign_id), (resumed_by,));
 }
 
 /// Emit campaign completed event
@@ -1347,7 +1293,12 @@ pub fn emit_campaign_resumed(env: &Env, campaign_id: u64, resumed_by: &Address) 
 /// - budget_spent: i128 - Total budget spent
 ///
 /// Emitted when a campaign completes successfully
-pub fn emit_campaign_completed(env: &Env, campaign_id: u64, tokens_burned: i128, budget_spent: i128) {
+pub fn emit_campaign_completed(
+    env: &Env,
+    campaign_id: u64,
+    tokens_burned: i128,
+    budget_spent: i128,
+) {
     env.events().publish(
         (symbol_short!("cmp_cmp"), campaign_id),
         (tokens_burned, budget_spent),
@@ -1356,10 +1307,8 @@ pub fn emit_campaign_completed(env: &Env, campaign_id: u64, tokens_burned: i128,
 
 /// Emit campaign finalized event (admin/owner-triggered finalization)
 pub fn emit_campaign_finalized(env: &Env, campaign_id: u64, caller: &Address) {
-    env.events().publish(
-        (symbol_short!("cmp_fin"), campaign_id),
-        (caller,),
-    );
+    env.events()
+        .publish((symbol_short!("cmp_fin"), campaign_id), (caller,));
 }
 
 /// Emit campaign cancelled event
@@ -1438,13 +1387,13 @@ pub fn emit_asset_fractionalized(
         asset_id.clone(),
         owner.clone(),
     );
-    
+
     let data = (
         asset_contract.clone(),
         fractional_token.clone(),
         total_supply,
     );
-    
+
     env.events().publish(topics, data);
 }
 
@@ -1463,12 +1412,24 @@ pub fn emit_asset_redeemed(
         asset_id.clone(),
         redeemer.clone(),
     );
-    
-    let data = (
-        asset_contract.clone(),
-        total_supply,
-    );
-    
+
+    let data = (asset_contract.clone(), total_supply);
+
+    env.events().publish(topics, data);
+}
+
+/// Emit fractional shares transferred event
+pub fn emit_shares_transferred(
+    env: &Env,
+    vault_id: u64,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    let topics = (symbol_short!("frac_xfr"), vault_id, from.clone());
+
+    let data = (to.clone(), amount);
+
     env.events().publish(topics, data);
 }
 
@@ -1515,8 +1476,10 @@ pub fn emit_referral_registered(env: &Env, referee: &Address, referrer: &Address
 
 /// Emit referral commission paid event.
 pub fn emit_commission_paid(env: &Env, referrer: &Address, token_index: u32, amount: i128) {
-    env.events()
-        .publish((symbol_short!("com_paid"),), (referrer, token_index, amount));
+    env.events().publish(
+        (symbol_short!("com_paid"),),
+        (referrer, token_index, amount),
+    );
 }
 
 /// Emit role granted event (v1)
@@ -1635,14 +1598,21 @@ pub fn emit_dynamic_quorum_configured(
 ) {
     env.events().publish(
         (symbol_short!("dq_cfg_v1"),),
-        (admin.clone(), enabled, min_quorum_percent, max_quorum_percent),
+        (
+            admin.clone(),
+            enabled,
+            min_quorum_percent,
+            max_quorum_percent,
+        ),
     );
 }
 
 /// Emit admin transfer cancelled event
 pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Address) {
-    env.events()
-        .publish((symbol_short!("adm_cxl"),), (admin.clone(), cancelled_pending.clone()));
+    env.events().publish(
+        (symbol_short!("adm_cxl"),),
+        (admin.clone(), cancelled_pending.clone()),
+    );
 }
 
 /// Emit AdminTransferProposed event (two-step transfer - step 1)
@@ -1659,8 +1629,10 @@ pub fn emit_admin_cancelled(env: &Env, admin: &Address, cancelled_pending: &Addr
 ///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admin: &Address) {
-    env.events()
-        .publish((symbol_short!("adm_prp1"),), (current_admin.clone(), new_admin.clone()));
+    env.events().publish(
+        (symbol_short!("adm_prp1"),),
+        (current_admin.clone(), new_admin.clone()),
+    );
 }
 
 /// Emit AdminTransferAccepted event (two-step transfer - step 2)
@@ -1677,8 +1649,10 @@ pub fn emit_admin_transfer_proposed(env: &Env, current_admin: &Address, new_admi
 ///
 /// **Schema Stability**: This schema is immutable. Any changes require a new version.
 pub fn emit_admin_transfer_accepted(env: &Env, old_admin: &Address, new_admin: &Address) {
-    env.events()
-        .publish((symbol_short!("adm_acc1"),), (old_admin.clone(), new_admin.clone()));
+    env.events().publish(
+        (symbol_short!("adm_acc1"),),
+        (old_admin.clone(), new_admin.clone()),
+    );
 }
 
 /// Emit trusted caller registered event
@@ -1717,11 +1691,7 @@ pub fn emit_metadata_hash_set(
 // ── Issue #1133: Milestone verification events ────────────────────────────
 
 /// Emitted when a milestone is verified by an authorized verifier.
-pub fn emit_milestone_verified(
-    env: &Env,
-    vault_id: u64,
-    verifier: &soroban_sdk::Address,
-) {
+pub fn emit_milestone_verified(env: &Env, vault_id: u64, verifier: &soroban_sdk::Address) {
     env.events().publish(
         (soroban_sdk::symbol_short!("ms_vrfd"), vault_id),
         (verifier.clone(),),
@@ -1744,11 +1714,7 @@ pub fn emit_vault_owner_change_proposed(
 }
 
 /// Emitted when a vault-owner change is approved by one party.
-pub fn emit_vault_owner_change_approved(
-    env: &Env,
-    vault_id: u64,
-    approver: &soroban_sdk::Address,
-) {
+pub fn emit_vault_owner_change_approved(env: &Env, vault_id: u64, approver: &soroban_sdk::Address) {
     env.events().publish(
         (soroban_sdk::symbol_short!("vlt_apr"), vault_id),
         (approver.clone(),),
@@ -1797,7 +1763,14 @@ pub fn emit_distribution_initiated(
 ) {
     env.events().publish(
         (symbol_short!("div_ini1"), distribution_id),
-        (admin, token_index, asset, total_amount, snapshot_ledger, claim_deadline_ledger),
+        (
+            admin,
+            token_index,
+            asset,
+            total_amount,
+            snapshot_ledger,
+            claim_deadline_ledger,
+        ),
     );
 }
 
@@ -1812,12 +1785,7 @@ pub fn emit_distribution_initiated(
 /// **Payload**:
 /// - holder: Address
 /// - amount: i128
-pub fn emit_dividend_claimed(
-    env: &Env,
-    distribution_id: u32,
-    holder: &Address,
-    amount: i128,
-) {
+pub fn emit_dividend_claimed(env: &Env, distribution_id: u32, holder: &Address, amount: i128) {
     env.events().publish(
         (symbol_short!("div_clm1"), distribution_id),
         (holder, amount),
@@ -1909,7 +1877,12 @@ pub fn emit_multisig_executed(env: &Env, proposal_id: u64, executor: &Address) {
 ///
 /// **Schema Version**: 1
 /// **Event Name**: bch_sch1
-pub fn emit_batch_scheduled(env: &Env, tenant: &Address, executed_count: u32, remaining_count: u32) {
+pub fn emit_batch_scheduled(
+    env: &Env,
+    tenant: &Address,
+    executed_count: u32,
+    remaining_count: u32,
+) {
     env.events().publish(
         (symbol_short!("bch_sch1"), tenant.clone()),
         (executed_count, remaining_count),
@@ -2022,4 +1995,93 @@ pub fn emit_unstaked(env: &Env, pool_id: u64, user: &Address, amount: i128) {
 pub fn emit_reward_claimed(env: &Env, pool_id: u64, user: &Address, amount: i128) {
     env.events()
         .publish((symbol_short!("stk_clm1"), pool_id), (user.clone(), amount));
+}
+
+// ── AMM constant-product pool events ─────────────────────────────────────────
+
+/// Emitted when a new AMM pool is created.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_crt1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), creator (Address)
+pub fn emit_amm_pool_created(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    creator: &Address,
+) {
+    env.events().publish(
+        (symbol_short!("amm_crt1"), token_index_a),
+        (token_index_b, creator.clone()),
+    );
+}
+
+/// Emitted when liquidity is added to a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_add1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), provider (Address), amount_a (i128),
+///              amount_b (i128), shares_minted (i128)
+pub fn emit_amm_liquidity_added(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    provider: &Address,
+    amount_a: i128,
+    amount_b: i128,
+    shares_minted: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_add1"), token_index_a),
+        (token_index_b, provider.clone(), amount_a, amount_b, shares_minted),
+    );
+}
+
+/// Emitted when liquidity is removed from a pool.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_rem1
+///
+/// **Topics**: event name, token_index_a (u32)
+/// **Payload**: token_index_b (u32), provider (Address), amount_a (i128),
+///              amount_b (i128), shares_burned (i128)
+pub fn emit_amm_liquidity_removed(
+    env: &Env,
+    token_index_a: u32,
+    token_index_b: u32,
+    provider: &Address,
+    amount_a: i128,
+    amount_b: i128,
+    shares_burned: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_rem1"), token_index_a),
+        (token_index_b, provider.clone(), amount_a, amount_b, shares_burned),
+    );
+}
+
+/// Emitted when a swap is executed.
+///
+/// **Schema Version**: 1
+/// **Event Name**: amm_swp1
+///
+/// **Topics**: event name, token_index_in (u32)
+/// **Payload**: token_index_out (u32), caller (Address), amount_in (i128),
+///              amount_out (i128)
+pub fn emit_amm_swap(
+    env: &Env,
+    token_index_in: u32,
+    token_index_out: u32,
+    caller: &Address,
+    amount_in: i128,
+    amount_out: i128,
+) {
+    env.events().publish(
+        (symbol_short!("amm_swp1"), token_index_in),
+        (token_index_out, caller.clone(), amount_in, amount_out),
+    );
 }

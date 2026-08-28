@@ -103,22 +103,19 @@ export interface TokenDeployedEventPayloadVariant1 {
 /** Shape expected by the GraphQL tokenDeployed subscription (TokenDeployedPayload). */
 export interface TokenDeployedEventPayloadVariant2 {
   tokenAddress: string;
-  /** Used for tenant scoping (TenantScopedPayload). */
+  /** Stellar/Soroban address of the token creator. Used for tenant scoping in subscriptions. */
   creatorAddress: string;
+  /** Human-readable token name. */
   name: string;
+  /** Token ticker symbol. */
   symbol: string;
-  /** Stringified bigint (string) or raw bigint — see TokenDeployedPayload. */
+  /** Total supply of the token. Stringified bigint (string) or raw bigint depending on the publisher. */
   totalSupply: unknown;
+  /** Transaction hash or batch deployment identifier for traceability. */
   txHash: string;
+  /** ISO 8601 timestamp of when the event was published. */
   timestamp: string;
 }
-
-/**
- * Published when a token deployment is confirmed. NOTE: two distinct payload shapes are currently published under this event type — backend/src/services/batchTokenDeployService.ts publishes {tokenId, address, creator, decimals, initialSupply, metadataUri, ...}, while the GraphQL `tokenDeployed` subscription (backend/src/graphql/resolvers.ts, TokenDeployedPayload / SUBSCRIPTION_TOPICS.tokenDeployed) expects {tokenAddress, creatorAddress, totalSupply, txHash, timestamp, ...}. This is pre-existing schema drift this registry is intended to surface; both shapes are accepted here (via anyOf) until they are reconciled onto a single shape in a follow-up.
- *
- * Event type: `token.deployed`
- */
-export type TokenDeployedEventPayload = TokenDeployedEventPayloadVariant1 | TokenDeployedEventPayloadVariant2;
 
 /**
  * Published when a vesting/locking vault reaches maturity and is released. Consumed by the GraphQL `vaultMatured` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.vaultMatured).

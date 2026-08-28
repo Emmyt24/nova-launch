@@ -107,6 +107,22 @@ pub fn mint(env: &Env, token_index: u32, to: &Address, amount: i128) -> Result<(
     // Get token info
     let mut token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
+    // Compliance gate (#1853): reject the mint if a registered rule (e.g.
+    // TransfersSuspended) rejects it for this token's jurisdiction. The
+    // jurisdiction is derived from contract storage, never supplied by the
+    // caller.
+    let jurisdiction = storage::get_token_jurisdiction(env, &token_info.address);
+    crate::compliance_reporting::check_compliance(
+        env,
+        jurisdiction,
+        crate::compliance_reporting::TransferParams {
+            token_address: token_info.address.clone(),
+            from: to.clone(),
+            to: to.clone(),
+            amount,
+        },
+    )?;
+
     // Validate max supply constraint
     validate_max_supply(token_info.total_supply, amount, token_info.max_supply)?;
 
@@ -157,8 +173,7 @@ pub fn batch_mint(
         return Err(Error::InvalidParameters);
     }
 
-    let mut token_info = storage::get_token_info(env, token_index)
-        .ok_or(Error::TokenNotFound)?;
+    let mut token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
     // Validate upfront to preserve atomic/event-noise guarantees.
     let mut total_mint: i128 = 0;
@@ -183,7 +198,8 @@ pub fn batch_mint(
         crate::events::emit_mint(env, token_index, &to, amount);
     }
 
-    token_info.total_supply = token_info.total_supply
+    token_info.total_supply = token_info
+        .total_supply
         .checked_add(total_mint)
         .ok_or(Error::ArithmeticError)?;
     storage::set_token_info(env, token_index, &token_info);
@@ -228,7 +244,7 @@ mod tests {
     fn install_contract(env: &Env) -> Address {
         env.register_contract(None, crate::TokenFactory)
     }
-    
+
     #[test]
     fn test_validate_max_supply_unlimited() {
         // No max supply - should always pass
@@ -305,7 +321,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -344,7 +360,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -383,7 +399,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -422,7 +438,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -456,7 +472,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -490,7 +506,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -523,7 +539,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -555,7 +571,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -587,7 +603,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -622,7 +638,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -660,7 +676,7 @@ mod tests {
             total_burned: 0,
             burn_count: 0,
             metadata_uri: None,
-        metadata_version: 0,
+            metadata_version: 0,
             created_at: env.ledger().timestamp(),
             clawback_enabled: false,
             freeze_enabled: false,
@@ -671,8 +687,9 @@ mod tests {
         });
 
         let events_before = env.events().all().events().len();
-        let supply_before =
-            env.as_contract(&contract_id, || storage::get_token_info(&env, 0).unwrap().total_supply);
+        let supply_before = env.as_contract(&contract_id, || {
+            storage::get_token_info(&env, 0).unwrap().total_supply
+        });
 
         // Second entry is invalid => entire batch must fail without success events.
         let mints = soroban_sdk::vec![&env, (recipient1.clone(), 100_000), (recipient2.clone(), 0)];
@@ -683,7 +700,9 @@ mod tests {
         assert!(events_after <= events_before);
         let b1 = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &recipient1));
         let b2 = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &recipient2));
-        let s = env.as_contract(&contract_id, || storage::get_token_info(&env, 0).unwrap().total_supply);
+        let s = env.as_contract(&contract_id, || {
+            storage::get_token_info(&env, 0).unwrap().total_supply
+        });
         assert_eq!(b1, 0);
         assert_eq!(b2, 0);
         assert_eq!(s, supply_before);

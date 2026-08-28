@@ -7,8 +7,7 @@
  *     exported to the configured endpoint (OTLP/HTTP by default).
  *   - When the SDK is absent or disabled, every call falls back to a no-op
  *     implementation so the rest of the codebase compiles and runs without
- *     any OTel dependency installed.  This mirrors the noop pattern already
- *     used in `backend/src/monitoring/metrics/prometheus-config.ts`.
+ *     any OTel dependency installed.
  *
  * Environment variables:
  *   OTEL_ENABLED          - Set to "true" to activate real tracing (default: false)

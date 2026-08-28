@@ -212,17 +212,33 @@ describe('Property 65-F: boundary values 0 and 100 are accepted', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Property 65-G: Pair validation accepts two valid percentages
+// Property 65-G: Pair validation accepts reachable valid percentages
 // ---------------------------------------------------------------------------
-describe('Property 65-G: pair validation accepts two valid percentages', () => {
-  it('accepts any pair of valid percentages', () => {
+describe('Property 65-G: pair validation accepts reachable valid percentages', () => {
+  it('accepts thresholds no greater than quorum, or any threshold with no quorum', () => {
     fc.assert(
       fc.property(validPctArb, validPctArb, (quorum, threshold) => {
         const result = validateGovernancePercentagePair(quorum, threshold);
-        return result.valid === true;
+        return result.valid === (quorum === 0 || threshold <= quorum);
       }),
       { numRuns: 100 },
     );
+  });
+
+  it('rejects a threshold above a positive quorum', () => {
+    expect(validateGovernancePercentagePair(10, 90)).toEqual({
+      valid: false,
+      reason: 'thresholdPct must not exceed quorumPct when quorumPct > 0',
+    });
+  });
+
+  it('accepts equal and lower thresholds', () => {
+    expect(validateGovernancePercentagePair(50, 50).valid).toBe(true);
+    expect(validateGovernancePercentagePair(50, 25).valid).toBe(true);
+  });
+
+  it('accepts any valid threshold when quorum is zero', () => {
+    expect(validateGovernancePercentagePair(0, 100).valid).toBe(true);
   });
 });
 

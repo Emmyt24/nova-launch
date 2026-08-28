@@ -28,6 +28,33 @@ export interface BackendEnv {
   FACTORY_CONTRACT_ID: string;
   DATABASE_URL: string;
   JWT_SECRET: string;
+  ADMIN_JWT_SECRET: string;
+}
+
+/**
+ * Secret values that are publicly known — placeholder strings and the fallback
+ * literals committed in `docker-compose.yml`
+ * (`JWT_SECRET: ${JWT_SECRET:-change-me-in-production}` /
+ * `ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me-admin-in-production}`).
+ * Any of these reaching a `NODE_ENV=production` process means anyone can forge a
+ * token, so `validateEnv()` fails fast on them.
+ */
+const INSECURE_SECRET_VALUES = new Set([
+  'your-secret-key-change-in-production',
+  'change-me-in-production',
+  'change-me-admin-in-production',
+  'dev-secret-key-change-me',
+  'dev-admin-secret-key-change-me',
+]);
+
+function assertSecureProductionSecret(name: string, value: string): void {
+  if (!value || INSECURE_SECRET_VALUES.has(value)) {
+    throw new Error(
+      `${name} must be set to a secure value in production` +
+      (value ? ` — the committed default "${value}" is publicly known` : '') +
+      '. Override it via .env / your environment (see .env.example).'
+    );
+  }
 }
 
 export function validateEnv(): BackendEnv {
@@ -67,9 +94,13 @@ export function validateEnv(): BackendEnv {
   const jwtSecret =
     process.env.JWT_SECRET ||
     (isProduction ? '' : 'dev-secret-key-change-me');
+  // Guard against the dev-mode default above ever reaching production —
+  // whether JWT_SECRET was left unset (falls through to the dev default)
+  // or someone copied that literal string into a real .env believing it
+  // was just a placeholder.
   if (
     isProduction &&
-    (!jwtSecret || jwtSecret === 'your-secret-key-change-in-production')
+    (!jwtSecret || jwtSecret === 'dev-secret-key-change-me')
   ) {
     throw new Error('JWT_SECRET must be set to a secure value in production.');
   }
@@ -84,5 +115,6 @@ export function validateEnv(): BackendEnv {
     FACTORY_CONTRACT_ID: factoryContractId,
     DATABASE_URL: databaseUrl,
     JWT_SECRET: jwtSecret,
+    ADMIN_JWT_SECRET: adminJwtSecret,
   };
 }

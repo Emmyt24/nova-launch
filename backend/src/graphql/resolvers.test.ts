@@ -404,6 +404,91 @@ describe("Query.campaigns", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Query.governanceQueue
+// ---------------------------------------------------------------------------
+
+describe("Query.governanceQueue", () => {
+  it("orders the queue by createdAt ascending and scopes to QUEUED status", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.findMany).mockResolvedValue([]);
+
+    await resolvers.Query.governanceQueue(undefined, {});
+
+    expect(p.proposal.findMany).toHaveBeenCalledWith({
+      where: { status: "QUEUED" },
+      orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("filters by proposalType when provided", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.findMany).mockResolvedValue([]);
+
+    await resolvers.Query.governanceQueue(undefined, { proposalType: "CUSTOM" });
+
+    expect(p.proposal.findMany).toHaveBeenCalledWith({
+      where: { status: "QUEUED", proposalType: "CUSTOM" },
+      orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("returns proposals across multiple types when unfiltered, in createdAt order", async () => {
+    const p = await getPrisma();
+    const rows = [
+      makeProposal({
+        proposalId: 1,
+        proposalType: "CUSTOM",
+        status: "QUEUED",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+      makeProposal({
+        proposalId: 2,
+        proposalType: "MINT",
+        status: "QUEUED",
+        createdAt: new Date("2026-01-01T00:00:05Z"),
+      }),
+      makeProposal({
+        proposalId: 3,
+        proposalType: "CUSTOM",
+        status: "QUEUED",
+        createdAt: new Date("2026-01-01T00:00:10Z"),
+      }),
+    ];
+    vi.mocked(p.proposal.findMany).mockResolvedValue(rows as any);
+
+    const result = (await resolvers.Query.governanceQueue(undefined, {})) as any[];
+
+    expect(result.map((r) => r.proposalId)).toEqual([1, 2, 3]);
+  });
+
+  it("returns only same-type proposals when filtered by proposalType", async () => {
+    const p = await getPrisma();
+    const rows = [
+      makeProposal({
+        proposalId: 1,
+        proposalType: "CUSTOM",
+        status: "QUEUED",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+      makeProposal({
+        proposalId: 3,
+        proposalType: "CUSTOM",
+        status: "QUEUED",
+        createdAt: new Date("2026-01-01T00:00:10Z"),
+      }),
+    ];
+    vi.mocked(p.proposal.findMany).mockResolvedValue(rows as any);
+
+    const result = (await resolvers.Query.governanceQueue(undefined, {
+      proposalType: "CUSTOM",
+    })) as any[];
+
+    expect(result.map((r) => r.proposalId)).toEqual([1, 3]);
+    expect(result.every((r) => r.proposalType === "CUSTOM")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Field resolvers
 // ---------------------------------------------------------------------------
 
@@ -452,6 +537,59 @@ describe("Proposal.votes", () => {
     )) as any[];
     expect(result).toHaveLength(1);
     expect(result[0].weight).toBe("50");
+  });
+});
+
+describe("Proposal.queuePosition", () => {
+  it("returns null when the proposal is not QUEUED", async () => {
+    const p = await getPrisma();
+
+    const result = await resolvers.Proposal.queuePosition({
+      status: "ACTIVE",
+      proposalType: "CUSTOM",
+      createdAt: new Date("2026-01-01"),
+    });
+
+    expect(result).toBeNull();
+    expect(p.proposal.count).not.toHaveBeenCalled();
+  });
+
+  it("returns the 0-based count of same-type QUEUED proposals created before it", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.count).mockResolvedValue(2);
+
+    const createdAt = new Date("2026-01-01T00:00:10Z");
+    const result = await resolvers.Proposal.queuePosition({
+      status: "QUEUED",
+      proposalType: "CUSTOM",
+      createdAt,
+    });
+
+    expect(result).toBe(2);
+    expect(p.proposal.count).toHaveBeenCalledWith({
+      where: {
+        status: "QUEUED",
+        proposalType: "CUSTOM",
+        createdAt: { lt: createdAt },
+      },
+    });
+  });
+
+  it("only counts proposals of the same proposalType, not all queued proposals", async () => {
+    const p = await getPrisma();
+    vi.mocked(p.proposal.count).mockResolvedValue(0);
+
+    await resolvers.Proposal.queuePosition({
+      status: "QUEUED",
+      proposalType: "MINT",
+      createdAt: new Date("2026-01-01T00:00:10Z"),
+    });
+
+    expect(p.proposal.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ proposalType: "MINT" }),
+      })
+    );
   });
 });
 

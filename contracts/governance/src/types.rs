@@ -39,7 +39,11 @@ pub enum DataKey {
     Snapshot(Address, u32),
 
     // ── Proposal/voting system keys ─────────────────────────────────────
-    /// Address of the associated token contract
+    /// Address of the associated token contract (UNUSED — do not confuse with TokenFactory)
+    ///
+    /// This key is currently unused by any contract entry point.
+    /// For cross-contract settlement via execute_proposal, use `TokenFactory` instead.
+    /// See storage::set_token_factory and storage::get_token_factory.
     TokenAddress,
     /// Total number of proposals created
     ProposalCount,

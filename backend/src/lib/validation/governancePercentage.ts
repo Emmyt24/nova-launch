@@ -20,6 +20,7 @@
  *
  * Edge cases:
  *   - 0 is valid (e.g. a proposal with no quorum requirement).
+ *   - When quorum is 0, any otherwise-valid threshold is accepted.
  *   - 100 is valid (e.g. unanimous approval required).
  *   - Negative values are always invalid.
  *   - Values > 100 are always invalid.
@@ -87,6 +88,13 @@ export function validateGovernancePercentagePair(
   const thresholdResult = validateGovernancePercentage(thresholdPct);
   if (!thresholdResult.valid) {
     return { valid: false, reason: `thresholdPct: ${thresholdResult.reason}` };
+  }
+
+  if (quorumPct > 0 && thresholdPct > quorumPct) {
+    return {
+      valid: false,
+      reason: 'thresholdPct must not exceed quorumPct when quorumPct > 0',
+    };
   }
 
   return { valid: true };

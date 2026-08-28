@@ -1,6 +1,6 @@
 use crate::storage;
 use crate::types::{Error, TreasuryPolicy, WithdrawalPeriod};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{token, Address, Env};
 
 /// Default daily withdrawal cap (100 XLM in stroops)
 const DEFAULT_DAILY_CAP: i128 = 100_0000000;
@@ -185,6 +185,13 @@ pub fn withdraw_fees(
     // Record withdrawal
     record_withdrawal(env, amount)?;
 
+    // Actually move the funds: fee income is collected in the same
+    // `fee_token` used by `token_creation.rs`, and accumulates in this
+    // contract's own custody, so pay it out from there.
+    let fee_token = storage::get_fee_token(env).ok_or(Error::MissingTreasury)?;
+    let token_client = token::Client::new(env, &fee_token);
+    token_client.transfer(&env.current_contract_address(), recipient, &amount);
+
     // Emit event
     crate::events::emit_treasury_withdrawal(env, recipient, amount);
 
@@ -321,6 +328,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
+        token::StellarAssetClient,
         Env,
     };
 
@@ -362,7 +370,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -371,7 +381,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 150_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 150_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
     }
 
@@ -380,7 +392,9 @@ mod tests {
         let (env, _admin, contract_id) = setup();
         let recipient = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 100_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 100_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -403,7 +417,9 @@ mod tests {
         let recipient = Address::generate(&env);
 
         // Should fail - not in allowlist
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert_eq!(result, Err(Error::RecipientNotAllowed));
 
         // Add to allowlist
@@ -412,7 +428,9 @@ mod tests {
         });
 
         // Should succeed now
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 50_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 50_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -447,7 +465,9 @@ mod tests {
         });
 
         // Try to withdraw 30 more - should fail
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 30_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 30_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
 
         // Advance time by 24 hours + 1 second
@@ -456,7 +476,9 @@ mod tests {
         });
 
         // Should succeed now (new period)
-        let result = env.as_contract(&contract_id, || validate_withdrawal(&env, &recipient, 30_0000000));
+        let result = env.as_contract(&contract_id, || {
+            validate_withdrawal(&env, &recipient, 30_0000000)
+        });
         assert!(result.is_ok());
     }
 
@@ -465,19 +487,28 @@ mod tests {
         let (env, _admin, contract_id) = setup();
 
         // Initially full capacity
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 100_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            100_0000000
+        );
 
         // Withdraw 30 XLM
         env.as_contract(&contract_id, || {
             record_withdrawal(&env, 30_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 70_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            70_0000000
+        );
 
         // Withdraw 50 more
         env.as_contract(&contract_id, || {
             record_withdrawal(&env, 50_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 20_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            20_0000000
+        );
     }
 
     #[test]
@@ -522,27 +553,80 @@ mod tests {
         assert!(policy.allowlist_enabled);
     }
 
+    /// Registers a real Stellar Asset Contract as the treasury's fee token and
+    /// mints `amount` of it into the factory contract's own custody, so
+    /// `withdraw_fees` exercises a genuine token transfer.
+    fn fund_treasury(env: &Env, contract_id: &Address, amount: i128) -> Address {
+        let token_admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        env.as_contract(contract_id, || {
+            storage::set_fee_token(env, &token);
+        });
+        StellarAssetClient::new(env, &token).mint(contract_id, &amount);
+        token
+    }
+
     #[test]
     fn test_withdraw_fees_full_flow() {
         let (env, admin, contract_id) = setup();
         let recipient = Address::generate(&env);
+        let token = fund_treasury(&env, &contract_id, 100_0000000);
+        let token_client = token::Client::new(&env, &token);
 
         // First withdrawal
         env.as_contract(&contract_id, || {
             withdraw_fees(&env, &admin, &recipient, 40_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 60_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            60_0000000
+        );
 
         // Second withdrawal
         env.as_contract(&contract_id, || {
             withdraw_fees(&env, &admin, &recipient, 30_0000000).unwrap();
         });
-        assert_eq!(env.as_contract(&contract_id, || get_remaining_capacity(&env)), 30_0000000);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_remaining_capacity(&env)),
+            30_0000000
+        );
 
         // Third withdrawal should fail (would exceed cap)
-        let result =
-            env.as_contract(&contract_id, || withdraw_fees(&env, &admin, &recipient, 40_0000000));
+        let result = env.as_contract(&contract_id, || {
+            withdraw_fees(&env, &admin, &recipient, 40_0000000)
+        });
         assert_eq!(result, Err(Error::WithdrawalCapExceeded));
+        // Balance must be unaffected by the rejected withdrawal.
+        assert_eq!(token_client.balance(&recipient), 70_0000000);
+    }
+
+    #[test]
+    fn test_withdraw_fees_credits_recipient_balance() {
+        let (env, admin, contract_id) = setup();
+        let recipient = Address::generate(&env);
+        let token = fund_treasury(&env, &contract_id, 50_0000000);
+        let token_client = token::Client::new(&env, &token);
+
+        assert_eq!(token_client.balance(&recipient), 0);
+
+        env.as_contract(&contract_id, || {
+            withdraw_fees(&env, &admin, &recipient, 25_0000000).unwrap();
+        });
+
+        assert_eq!(token_client.balance(&recipient), 25_0000000);
+        assert_eq!(token_client.balance(&contract_id), 25_0000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_fees_without_fee_token_configured_fails() {
+        let (env, admin, contract_id) = setup();
+        let recipient = Address::generate(&env);
+
+        // No fee token has been configured and the contract holds no funds.
+        env.as_contract(&contract_id, || {
+            withdraw_fees(&env, &admin, &recipient, 10_0000000).unwrap();
+        });
     }
 
     #[test]

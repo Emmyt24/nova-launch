@@ -226,16 +226,15 @@ router.get("/tokens", discoveryRateLimiter, async (req: Request, res: Response) 
       // visibility change or delete can't produce an inconsistent page/total.
       const { fetchedTokens, count, ids } = await withTimeoutBudget(
         prisma.$transaction(async (tx) => {
-          const idRows = await tx.$queryRawUnsafe<{ id: string }[]>(
-            `SELECT id FROM "Token"
-             WHERE "isPublic" = true
-               AND to_tsvector('english', name || ' ' || symbol) @@ plainto_tsquery('english', $1)
-               ${category  ? `AND category = '${category}'::"TokenCategory"` : ""}
-               ${network   ? `AND network  = '${network}'` : ""}
-               ${hasMetadata === "true"  ? `AND "metadataUri" IS NOT NULL` : ""}
-               ${hasMetadata === "false" ? `AND "metadataUri" IS NULL` : ""}`,
-            q
-          );
+          const hasMetadataBool = hasMetadata === "true" ? true : hasMetadata === "false" ? false : null;
+          const idRows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+            SELECT id FROM "Token"
+            WHERE "isPublic" = true
+              AND to_tsvector('english', name || ' ' || symbol) @@ plainto_tsquery('english', ${q})
+              AND (${category === undefined ? Prisma.sql`TRUE` : Prisma.sql`category = ${category}::"TokenCategory"`})
+              AND (${network === undefined ? Prisma.sql`TRUE` : Prisma.sql`network = ${network}`})
+              AND (${hasMetadataBool === null ? Prisma.sql`TRUE` : hasMetadataBool === true ? Prisma.sql`"metadataUri" IS NOT NULL` : Prisma.sql`"metadataUri" IS NULL`})
+          `);
           const ids = idRows.map((r) => r.id);
           if (ids.length === 0) {
             return { fetchedTokens: [] as any[], count: 0, ids };

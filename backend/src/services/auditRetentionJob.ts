@@ -56,7 +56,8 @@ export async function runAuditArchival(
 ): Promise<{ warm: number; cold: number }> {
   const now = Date.now();
 
-  const warmCutoff = new Date(now - WARM_DAYS_START * 24 * 60 * 60 * 1000);
+  const warmDays = Math.min(WARM_DAYS_START, retentionDays);
+  const warmCutoff = new Date(now - warmDays * 24 * 60 * 60 * 1000);
   const coldCutoff = new Date(now - COLD_DAYS_START * 24 * 60 * 60 * 1000);
 
   const startedAt = new Date().toISOString();
@@ -141,6 +142,15 @@ export async function runAuditRetention(
 
   // Phase 1: archive before delete.
   await runAuditArchival(retentionDays);
+
+  // Invariant check: ensure archival cutoff encompasses everything to be purged.
+  const warmDays = Math.min(WARM_DAYS_START, retentionDays);
+  const archivalWarmCutoff = new Date(Date.now() - warmDays * 24 * 60 * 60 * 1000);
+  if (archivalWarmCutoff.getTime() < cutoff.getTime()) {
+    throw new Error(
+      `Invariant violation: archival cutoff (${archivalWarmCutoff.toISOString()}) is older than purge cutoff (${cutoff.toISOString()}). Purge aborted to prevent data loss.`
+    );
+  }
 
   // Phase 2: delete from hot store.
   const allLogs = await Database.getAuditLogs();

@@ -15,6 +15,7 @@ import governanceRoutes from "./routes/governance";
 import errorRoutes from "./routes/errors";
 import vaultRoutes from "./routes/vaults";
 import campaignRoutes from "./routes/campaigns";
+import dividendRoutes from "./routes/dividends";
 import versionRoutes from "./routes/version";
 import searchRoutes from "./routes/search";
 import exportRoutes from "./routes/export";
@@ -29,6 +30,7 @@ import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
 import { successResponse, errorResponse } from "./utils/response";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
+import { initTracing, tracingMiddleware, shutdownTracing } from "./monitoring/tracing";
 import { createTimeoutMiddleware } from "./middleware/timeout";
 import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
@@ -53,8 +55,22 @@ const env = validateEnv();
 const app = express();
 const PORT = env.PORT;
 
+// Initialize OpenTelemetry tracing (OTEL_ENABLED=true) before the server
+// accepts any requests. No-op tracer stays active otherwise.
+const tracingActive = initTracing();
+console.log(
+  tracingActive
+    ? "🔭 OpenTelemetry tracing initialized"
+    : "🔭 OpenTelemetry tracing disabled (noop tracer active)"
+);
+
 // Request logging middleware (first to capture all requests)
 app.use(requestLoggingMiddleware);
+
+// Tracing middleware — starts a root span per request and attaches
+// X-Trace-Id/X-Span-Id response headers. Registered early so the span
+// covers the full request lifecycle.
+app.use(tracingMiddleware());
 
 // Request timeout — responds 503 if a handler takes too long
 app.use(createTimeoutMiddleware());
@@ -111,6 +127,7 @@ v1Router.use("/governance", limiter, governanceRoutes);
 v1Router.use("/errors", limiter, errorRoutes);
 v1Router.use("/vaults", limiter, vaultRoutes);
 v1Router.use("/campaigns", limiter, campaignRoutes);
+v1Router.use("/dividends", limiter, dividendRoutes);
 v1Router.use("/version", versionRoutes);
 v1Router.use("/search", searchRoutes);
 v1Router.use("/export", exportRoutes);
@@ -281,5 +298,15 @@ const server = app.listen(PORT, async () => {
     await stellarEventListener.start();
   }
 });
+
+// Graceful shutdown — flush any pending trace spans before exiting.
+const gracefulShutdown = async (signal: string) => {
+  console.log(`${signal} received, shutting down gracefully`);
+  await shutdownTracing();
+  process.exit(0);
+};
+
+process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.once("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 export default app;

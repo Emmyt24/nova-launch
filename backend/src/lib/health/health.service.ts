@@ -395,7 +395,9 @@ export class HealthService {
     try {
       // Prisma doesn't expose pool stats directly, but we can check connection
       const result = await prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT COUNT(*) as count FROM sqlite_master WHERE type='table'
+        SELECT COUNT(*)::bigint AS count
+        FROM pg_stat_activity
+        WHERE datname = current_database()
       `;
       dbPoolStats = {
         poolSize: 1,

@@ -1,6 +1,6 @@
-use soroban_sdk::{Address, Env, String, Vec};
-use crate::types::{Error, TokenCreationParams, TokenInfo};
 use crate::storage;
+use crate::types::{Error, TokenCreationParams, TokenInfo};
+use soroban_sdk::{Address, Env, String, Vec};
 
 /// Validate token creation parameters
 fn validate_token_params(
@@ -41,7 +41,9 @@ fn calculate_creation_fee(env: &Env, has_metadata: bool) -> Result<i128, Error> 
         0
     };
 
-    base_fee.checked_add(metadata_fee).ok_or(Error::ArithmeticError)
+    base_fee
+        .checked_add(metadata_fee)
+        .ok_or(Error::ArithmeticError)
 }
 
 /// Create a single token (internal implementation)
@@ -83,7 +85,7 @@ pub fn create_token_internal(
         burn_count: 0,
         is_paused: false,
         clawback_enabled: params.clawback_enabled,
-        freeze_enabled: false,
+        freeze_enabled: params.freeze_enabled,
     };
 
     // Store token info
@@ -121,7 +123,17 @@ pub fn create_token(
     metadata_uri: Option<String>,
     fee_payment: i128,
 ) -> Result<Address, Error> {
-    create_token_with_options(env, creator, name, symbol, decimals, initial_supply, metadata_uri, fee_payment, false)
+    create_token_with_options(
+        env,
+        creator,
+        name,
+        symbol,
+        decimals,
+        initial_supply,
+        metadata_uri,
+        fee_payment,
+        false,
+    )
 }
 
 /// Create a single token with fee payment and optional clawback
@@ -135,6 +147,37 @@ pub fn create_token_with_options(
     metadata_uri: Option<String>,
     fee_payment: i128,
     clawback_enabled: bool,
+) -> Result<Address, Error> {
+    create_token_with_all_options(
+        env,
+        creator,
+        name,
+        symbol,
+        decimals,
+        initial_supply,
+        metadata_uri,
+        fee_payment,
+        clawback_enabled,
+        false,
+    )
+}
+
+/// Create a single token with fee payment and optional clawback/freeze.
+///
+/// `freeze_enabled` mirrors `clawback_enabled`'s immutability invariant: it
+/// is only ever set here, at creation time, and can never be toggled
+/// afterwards (there is no `set_freeze_enabled` entry point).
+pub fn create_token_with_all_options(
+    env: &Env,
+    creator: Address,
+    name: String,
+    symbol: String,
+    decimals: u32,
+    initial_supply: i128,
+    metadata_uri: Option<String>,
+    fee_payment: i128,
+    clawback_enabled: bool,
+    freeze_enabled: bool,
 ) -> Result<Address, Error> {
     // Check if paused
     if storage::is_paused(env) {
@@ -163,6 +206,7 @@ pub fn create_token_with_options(
         max_supply: None,
         metadata_uri,
         clawback_enabled,
+        freeze_enabled,
     };
 
     // Create token
@@ -186,7 +230,7 @@ pub fn create_token_with_options(
 }
 
 /// Batch create multiple tokens atomically
-/// 
+///
 /// All tokens are created in a single transaction with atomic semantics.
 /// If any token fails validation, the entire batch is rolled back.
 ///
@@ -199,15 +243,15 @@ pub fn create_token_with_options(
 /// 5. `bch_tkn` batch summary
 ///
 /// Failed batches emit none of the above success events.
-/// 
+///
 /// # Arguments
 /// * `creator` - Address creating the tokens (must authorize)
 /// * `tokens` - Vector of token creation parameters
 /// * `total_fee_payment` - Total fee payment for all tokens
-/// 
+///
 /// # Returns
 /// Vector of created token addresses
-/// 
+///
 /// # Errors
 /// * `ContractPaused` - Contract is paused
 /// * `InsufficientFee` - Total fee payment is insufficient
@@ -261,17 +305,19 @@ pub fn batch_create_tokens(
 
     for (i, token) in tokens.iter().enumerate() {
         let token_index = starting_token_count + (i as u32);
-        
+
         // Create token
         let token_address = create_token_internal(env, &creator, &token, token_index)
             .map_err(|_| Error::BatchCreationFailed)?;
-        
+
         created_addresses.push_back(token_address);
     }
 
     // Update token count
     let new_count = starting_token_count + (tokens.len() as u32);
-    env.storage().instance().set(&crate::types::DataKey::TokenCount, &new_count);
+    env.storage()
+        .instance()
+        .set(&crate::types::DataKey::TokenCount, &new_count);
 
     // Emit batch creation event
     crate::events::emit_batch_tokens_created(env, &creator, tokens.len() as u32);
@@ -294,7 +340,11 @@ pub fn batch_create_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::{Address as _, Events}, Env, Val};
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Events},
+        Env, Val,
+    };
 
     fn setup_test_env() -> (Env, Address, Address) {
         let env = Env::default();
@@ -320,7 +370,7 @@ mod tests {
         let env = Env::default();
         let name = String::from_str(&env, "TestToken");
         let symbol = String::from_str(&env, "TEST");
-        
+
         let result = validate_token_params(&name, &symbol, 6, 1_000_000);
         assert!(result.is_ok());
     }
@@ -330,7 +380,7 @@ mod tests {
         let env = Env::default();
         let name = String::from_str(&env, "");
         let symbol = String::from_str(&env, "TEST");
-        
+
         let result = validate_token_params(&name, &symbol, 6, 1_000_000);
         assert_eq!(result, Err(Error::InvalidTokenParams));
     }
@@ -338,9 +388,12 @@ mod tests {
     #[test]
     fn test_validate_token_params_name_too_long() {
         let env = Env::default();
-        let name = String::from_str(&env, "ThisIsAVeryLongTokenNameThatExceedsTheMaximumAllowedLength");
+        let name = String::from_str(
+            &env,
+            "ThisIsAVeryLongTokenNameThatExceedsTheMaximumAllowedLength",
+        );
         let symbol = String::from_str(&env, "TEST");
-        
+
         let result = validate_token_params(&name, &symbol, 6, 1_000_000);
         assert_eq!(result, Err(Error::InvalidTokenParams));
     }
@@ -350,7 +403,7 @@ mod tests {
         let env = Env::default();
         let name = String::from_str(&env, "TestToken");
         let symbol = String::from_str(&env, "TEST");
-        
+
         let result = validate_token_params(&name, &symbol, 19, 1_000_000);
         assert_eq!(result, Err(Error::InvalidTokenParams));
     }
@@ -360,7 +413,7 @@ mod tests {
         let env = Env::default();
         let name = String::from_str(&env, "TestToken");
         let symbol = String::from_str(&env, "TEST");
-        
+
         let result = validate_token_params(&name, &symbol, 6, 0);
         assert_eq!(result, Err(Error::InvalidTokenParams));
     }
@@ -370,15 +423,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, crate::TokenFactory);
-        
+
         env.as_contract(&contract_id, || {
             storage::set_base_fee(&env, 100);
             storage::set_metadata_fee(&env, 50);
         });
-        
-        let fee = env.as_contract(&contract_id, || {
-            storage::get_base_fee(&env)
-        });
+
+        let fee = env.as_contract(&contract_id, || storage::get_base_fee(&env));
         assert_eq!(fee, 100);
     }
 
@@ -414,6 +465,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
             let token_b = TokenCreationParams {
                 name: String::from_str(&env, "Beta"),
@@ -423,6 +475,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
 
             let batch = soroban_sdk::vec![&env, token_a, token_b];
@@ -432,7 +485,11 @@ mod tests {
 
             let all = env.events().all();
             let delta = all.slice(before as u32..);
-            assert!(delta.len() >= 3, "expected 2 create events + 1 batch summary, got {}", delta.len());
+            assert!(
+                delta.len() >= 3,
+                "expected 2 create events + 1 batch summary, got {}",
+                delta.len()
+            );
         });
     }
 
@@ -452,6 +509,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
             let invalid = TokenCreationParams {
                 name: String::from_str(&env, ""), // invalid -> forces rollback path
@@ -461,6 +519,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
 
             let batch = soroban_sdk::vec![&env, valid, invalid];
@@ -469,8 +528,15 @@ mod tests {
             assert_eq!(err, Error::InvalidTokenParams);
 
             let token_count_after = storage::get_token_count(&env);
-            assert_eq!(token_count_after, token_count_before, "token count should not change on rollback");
-            assert_eq!(env.events().all().len(), before, "no partial success event leakage allowed");
+            assert_eq!(
+                token_count_after, token_count_before,
+                "token count should not change on rollback"
+            );
+            assert_eq!(
+                env.events().all().len(),
+                before,
+                "no partial success event leakage allowed"
+            );
         });
     }
 }

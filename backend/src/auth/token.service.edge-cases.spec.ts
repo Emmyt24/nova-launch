@@ -184,7 +184,8 @@ describe("Issue #1066: JWT expiry, clock-skew, and tampering edge cases", () => 
 
       // Tamper with the signature
       const parts = validToken.split(".");
-      const tamperedSignature = Buffer.from("tampered-signature").toString("base64url");
+      const tamperedSignature =
+        Buffer.from("tampered-signature").toString("base64url");
       const tamperedToken = `${parts[0]}.${parts[1]}.${tamperedSignature}`;
 
       expect(() => {

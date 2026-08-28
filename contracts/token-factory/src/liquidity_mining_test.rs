@@ -83,19 +83,34 @@ mod liquidity_mining_test {
         })
     }
 
-    fn call_pause(env: &Env, contract_id: &Address, admin: &Address, pool_id: u64) -> Result<(), Error> {
+    fn call_pause(
+        env: &Env,
+        contract_id: &Address,
+        admin: &Address,
+        pool_id: u64,
+    ) -> Result<(), Error> {
         env.as_contract(contract_id, || {
             liquidity_mining::pause_mining_pool(env, admin, pool_id)
         })
     }
 
-    fn call_resume(env: &Env, contract_id: &Address, admin: &Address, pool_id: u64) -> Result<(), Error> {
+    fn call_resume(
+        env: &Env,
+        contract_id: &Address,
+        admin: &Address,
+        pool_id: u64,
+    ) -> Result<(), Error> {
         env.as_contract(contract_id, || {
             liquidity_mining::resume_mining_pool(env, admin, pool_id)
         })
     }
 
-    fn call_end(env: &Env, contract_id: &Address, admin: &Address, pool_id: u64) -> Result<(), Error> {
+    fn call_end(
+        env: &Env,
+        contract_id: &Address,
+        admin: &Address,
+        pool_id: u64,
+    ) -> Result<(), Error> {
         env.as_contract(contract_id, || {
             liquidity_mining::end_mining_pool(env, admin, pool_id)
         })
@@ -114,7 +129,9 @@ mod liquidity_mining_test {
     }
 
     fn query_pool(env: &Env, contract_id: &Address, pool_id: u64) -> Option<LiquidityMiningPool> {
-        env.as_contract(contract_id, || liquidity_mining::get_mining_pool(env, pool_id))
+        env.as_contract(contract_id, || {
+            liquidity_mining::get_mining_pool(env, pool_id)
+        })
     }
 
     fn query_position(
@@ -215,7 +232,9 @@ mod liquidity_mining_test {
     fn test_create_pool_increments_count() {
         let (env, contract_id, admin, _provider) = setup();
         create_pool(&env, &contract_id, &admin);
-        let count = env.as_contract(&contract_id, || liquidity_mining::get_mining_pool_count(&env));
+        let count = env.as_contract(&contract_id, || {
+            liquidity_mining::get_mining_pool_count(&env)
+        });
         assert_eq!(count, 1);
     }
 
@@ -422,7 +441,10 @@ mod liquidity_mining_test {
         call_deposit(&env, &contract_id, &provider, pool_id, 1_000).unwrap();
         call_end(&env, &contract_id, &admin, pool_id).unwrap();
         let result = call_withdraw(&env, &contract_id, &provider, pool_id, 1_000);
-        assert!(result.is_ok(), "withdrawal must remain possible after pool ends");
+        assert!(
+            result.is_ok(),
+            "withdrawal must remain possible after pool ends"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -509,7 +531,11 @@ mod liquidity_mining_test {
 
         assert!(r1 > r2, "larger depositor should earn more");
         let ratio = r1 / r2.max(1);
-        assert!((2..=4).contains(&ratio), "ratio should be ~3x, got {}", ratio);
+        assert!(
+            (2..=4).contains(&ratio),
+            "ratio should be ~3x, got {}",
+            ratio
+        );
     }
 
     #[test]
@@ -689,7 +715,8 @@ mod liquidity_mining_test {
         let claimable_at_pause = query_claimable(&env, &contract_id, pool_id, &provider).unwrap();
 
         advance_time(&env, 100);
-        let claimable_while_paused = query_claimable(&env, &contract_id, pool_id, &provider).unwrap();
+        let claimable_while_paused =
+            query_claimable(&env, &contract_id, pool_id, &provider).unwrap();
 
         assert_eq!(
             claimable_at_pause, claimable_while_paused,
@@ -713,7 +740,8 @@ mod liquidity_mining_test {
         call_resume(&env, &contract_id, &admin, pool_id).unwrap();
 
         advance_time(&env, 50);
-        let claimable_after_resume = query_claimable(&env, &contract_id, pool_id, &provider).unwrap();
+        let claimable_after_resume =
+            query_claimable(&env, &contract_id, pool_id, &provider).unwrap();
 
         assert!(
             claimable_after_resume > claimable_at_pause,

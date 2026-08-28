@@ -10,6 +10,8 @@ datasource db {
 model Token {
   id            String        @id @default(uuid())
   address       String        @unique
+  /// Stellar transaction hash that registered/deployed this token.
+  deployTxHash  String?       @unique
   creator       String
   name          String
   symbol        String
@@ -42,6 +44,7 @@ model Token {
   governanceRegistration TokenGovernanceRegistration?
 
   @@index([address])
+  @@index([deployTxHash])
   @@index([creator])
   @@index([createdAt])
   @@index([totalSupply])
@@ -167,6 +170,13 @@ model DividendPool {
   id             String             @id @default(uuid())
   tenantId       String?
   tokenId        String
+  /// On-chain distribution id from `initiate_distribution` (#1759) — globally
+  /// unique per token-factory contract instance, used to correlate this
+  /// off-chain projection with the authoritative on-chain DistributionRecord.
+  distributionId Int                @unique
+  /// Stellar address of the payout asset transferred to holders (#1759) —
+  /// distinct from the token whose holders are eligible (`tokenId`)
+  asset          String?
   /// Stellar address of the account that funded this pool
   fundedBy       String
   /// Total amount deposited into this pool (in token's smallest unit)
@@ -177,6 +187,11 @@ model DividendPool {
   supplySnapshot BigInt
   /// Optional per-holder cap (0 = no cap)
   perHolderCap   BigInt             @default(0)
+  /// Ledger sequence at which the holder-balance snapshot was taken (#1759)
+  snapshotLedger Int?
+  /// Ledger sequence after which unclaimed funds can be reclaimed (#1759) —
+  /// authoritative deadline, matches the on-chain `claim_deadline_ledger`
+  claimDeadlineLedger Int?
   /// ISO-8601 deadline after which unclaimed funds can be reclaimed
   expiresAt      DateTime?
   status         DividendPoolStatus @default(ACTIVE)
@@ -464,7 +479,7 @@ enum CampaignStatus {
 /// Audit trail for admin actions performed via the admin dashboard.
 model AdminAuditLog {
   id          String   @id @default(uuid())
-  adminId     String
+  adminId     String?
   action      String
   resource    String
   resourceId  String
@@ -474,7 +489,7 @@ model AdminAuditLog {
   userAgent   String
   timestamp   DateTime @default(now())
 
-  admin User @relation(fields: [adminId], references: [id])
+  admin User? @relation(fields: [adminId], references: [id])
 
   @@index([adminId])
   @@index([action])

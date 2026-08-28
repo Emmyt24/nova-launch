@@ -26,10 +26,15 @@ const exportQuerySchema = z.object({
 /**
  * Escape a single CSV cell value.
  * Wraps in double-quotes and escapes embedded double-quotes per RFC 4180.
+ * Neutralizes formula-injection characters (=, +, -, @) by prefixing with '
+ * so spreadsheet applications treat the value as literal text.
  */
 function csvCell(value: unknown): string {
   if (value === null || value === undefined) return "";
-  const str = String(value);
+  let str = String(value);
+  if (/^\s*[=+\-@]/.test(str)) {
+    str = `'${str}`;
+  }
   if (str.includes(",") || str.includes('"') || str.includes("\n")) {
     return `"${str.replace(/"/g, '""')}"`;
   }

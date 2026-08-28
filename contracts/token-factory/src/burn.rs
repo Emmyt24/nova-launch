@@ -28,6 +28,20 @@ fn burn_inner(env: &Env, caller: &Address, token_index: u32, amount: i128) -> Re
         return Err(Error::TokenPaused);
     }
 
+    // Compliance gate (#1853): jurisdiction is derived from contract storage,
+    // never supplied by the caller.
+    let jurisdiction = storage::get_token_jurisdiction(env, &info.address);
+    crate::compliance_reporting::check_compliance(
+        env,
+        jurisdiction,
+        crate::compliance_reporting::TransferParams {
+            token_address: info.address.clone(),
+            from: caller.clone(),
+            to: caller.clone(),
+            amount,
+        },
+    )?;
+
     let balance = storage::get_balance(env, token_index, caller);
     if balance < amount {
         return Err(Error::InsufficientBalance);
@@ -103,6 +117,20 @@ fn admin_burn_inner(
     if storage::is_token_paused(env, token_index) {
         return Err(Error::TokenPaused);
     }
+
+    // Compliance gate (#1853): jurisdiction is derived from contract storage,
+    // never supplied by the caller.
+    let jurisdiction = storage::get_token_jurisdiction(env, &info.address);
+    crate::compliance_reporting::check_compliance(
+        env,
+        jurisdiction,
+        crate::compliance_reporting::TransferParams {
+            token_address: info.address.clone(),
+            from: holder.clone(),
+            to: holder.clone(),
+            amount,
+        },
+    )?;
 
     let balance = storage::get_balance(env, token_index, holder);
     if balance < amount {
@@ -347,7 +375,10 @@ mod burn_reentrancy_tests {
         assert_eq!(info.total_supply, 1_000_000 - 100);
         assert_eq!(info.total_burned, 100);
         assert_eq!(info.burn_count, 1);
-        assert_eq!(storage::get_balance(&env, token_index, &holder), 1_000_000 - 100);
+        assert_eq!(
+            storage::get_balance(&env, token_index, &holder),
+            1_000_000 - 100
+        );
     }
 
     /// Reentrancy lock is released after a successful burn.
@@ -398,4 +429,3 @@ mod burn_reentrancy_tests {
         );
     }
 }
-

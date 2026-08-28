@@ -201,16 +201,18 @@ export async function batchDeployTokens(
       updatedAt: Date;
     }>) {
       // Fire-and-forget: event failures must not roll back a successful batch.
+      // Emit events matching the GraphQL schema expectation (tokenAddress, creatorAddress, etc.)
+      // to ensure subscription filters (like tenant scoping by creatorAddress) work correctly.
       eventBus
         .publish("token.deployed", {
-          tokenId: token.id,
-          address: token.address,
-          creator: token.creator,
+          tokenAddress: token.address,
+          creatorAddress: token.creator,
           name: token.name,
           symbol: token.symbol,
-          decimals: token.decimals,
-          initialSupply: token.initialSupply.toString(),
-          metadataUri: token.metadataUri,
+          totalSupply: token.totalSupply.toString(),
+          // TODO: once on-chain integration is complete, capture the actual txHash from Stellar
+          txHash: `batch-deploy-${token.id}`,
+          timestamp: token.createdAt.toISOString(),
         })
         .catch((err) =>
           console.error("[batchDeploy] event emission failed:", err)

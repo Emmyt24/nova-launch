@@ -40,10 +40,13 @@ impl TestEnv {
 
     pub fn with_timelock(delay_seconds: u64) -> Self {
         let test_env = Self::new();
-        test_env.env.as_contract(&test_env.env.current_contract_address(), || {
-            timelock::initialize_timelock(&test_env.env, Some(delay_seconds)).unwrap();
-            crate::governance::initialize_governance(&test_env.env, Some(30), Some(51)).unwrap();
-        });
+        test_env
+            .env
+            .as_contract(&test_env.env.current_contract_address(), || {
+                timelock::initialize_timelock(&test_env.env, Some(delay_seconds)).unwrap();
+                crate::governance::initialize_governance(&test_env.env, Some(30), Some(51))
+                    .unwrap();
+            });
         test_env
     }
 }
@@ -136,7 +139,9 @@ impl<'a> ProposalBuilder<'a> {
         self.payload = match action_type {
             ActionType::FeeChange => fee_change_payload(self.env, 2_000_000, 750_000),
             ActionType::PauseContract | ActionType::UnpauseContract => pause_payload(self.env),
-            ActionType::TreasuryChange => treasury_change_payload(self.env, &Address::generate(self.env)),
+            ActionType::TreasuryChange => {
+                treasury_change_payload(self.env, &Address::generate(self.env))
+            }
             ActionType::PolicyUpdate => policy_update_payload(self.env, 100_0000000, true, 86400),
             ActionType::ParameterChange => test_payload(self.env, &[0u8; 32]),
         };

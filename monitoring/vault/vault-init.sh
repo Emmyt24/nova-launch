@@ -9,11 +9,19 @@
 #   3. Enable KV-v2 secrets engine
 #   4. Seed Nova Launch application secrets
 #   5. Create a scoped AppRole for the backend service
+#
+# Environment variables:
+#   VAULT_ADDR              — Vault address (default: http://127.0.0.1:8200)
+#   VAULT_KEYS_FILE         — Path to init keys JSON (default: /vault/init-keys.json)
+#   SECRET_ID_TTL           — AppRole SecretID TTL (default: 768h)
+#   SECRET_ID_NUM_USES      — Max uses per SecretID (default: 10)
 # =============================================================================
 set -euo pipefail
 
 VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
 VAULT_KEYS_FILE="${VAULT_KEYS_FILE:-/vault/init-keys.json}"
+SECRET_ID_TTL="${SECRET_ID_TTL:-768h}"
+SECRET_ID_NUM_USES="${SECRET_ID_NUM_USES:-10}"
 NOVA_POLICY_NAME="nova-launch-backend"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -163,8 +171,8 @@ create_approle() {
     token_policies="${NOVA_POLICY_NAME}" \
     token_ttl=1h \
     token_max_ttl=4h \
-    secret_id_ttl=0 \
-    secret_id_num_uses=0
+    secret_id_ttl="${SECRET_ID_TTL}" \
+    secret_id_num_uses="${SECRET_ID_NUM_USES}"
 
   local role_id secret_id
   role_id=$(vault read -field=role_id auth/approle/role/nova-backend/role-id)
@@ -173,7 +181,7 @@ create_approle() {
   success "AppRole created"
   log "  VAULT_ROLE_ID=${role_id}"
   log "  VAULT_SECRET_ID=${secret_id}"
-  warn "Store VAULT_ROLE_ID and VAULT_SECRET_ID in your deployment secrets"
+  warn "VAULT_SECRET_ID expires after ${SECRET_ID_TTL} or ${SECRET_ID_NUM_USES} uses — rotate before either limit"
 
   # Save for CI/CD use
   cat > /tmp/nova-approle-credentials.json <<EOF

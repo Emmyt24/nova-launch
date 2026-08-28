@@ -1,3 +1,4 @@
+use crate::storage;
 /// invariants.rs
 ///
 /// Internal correctness assertions for the token-factory contract.
@@ -8,9 +9,7 @@
 ///   1. Supply conservation   — current_supply + total_burned == initial_supply
 ///   2. Monotonic counters    — token_count and stream_counts never decrease
 ///   3. Proposal terminal-state immutability  — (governance placeholder)
-
 use soroban_sdk::Env;
-use crate::storage;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Supply Conservation
@@ -21,32 +20,26 @@ use crate::storage;
 ///
 /// Panics in debug/test builds when the invariant is violated.
 pub fn assert_supply_conservation(env: &Env, token_index: u32, initial_supply: i128) {
-    let info = storage::get_token_info(env, token_index)
-        .expect("invariant: token must exist");
+    let info = storage::get_token_info(env, token_index).expect("invariant: token must exist");
 
     let current_supply = info.total_supply;
-    let total_burned   = storage::get_total_burned(env, token_index);
+    let total_burned = storage::get_total_burned(env, token_index);
 
     let reconstructed = current_supply
         .checked_add(total_burned)
         .expect("invariant: supply + burned overflows i128");
 
     assert_eq!(
-        reconstructed,
-        initial_supply,
+        reconstructed, initial_supply,
         "INVARIANT VIOLATION [supply_conservation]: \
          current_supply({}) + total_burned({}) = {} != initial_supply({})",
-        current_supply,
-        total_burned,
-        reconstructed,
-        initial_supply,
+        current_supply, total_burned, reconstructed, initial_supply,
     );
 }
 
 /// Assert that `current_supply` is non-negative.
 pub fn assert_supply_non_negative(env: &Env, token_index: u32) {
-    let info = storage::get_token_info(env, token_index)
-        .expect("invariant: token must exist");
+    let info = storage::get_token_info(env, token_index).expect("invariant: token must exist");
 
     assert!(
         info.total_supply >= 0,
@@ -95,11 +88,7 @@ pub fn assert_token_count_monotonic(env: &Env, floor: u32) {
 
 /// Assert that the stream count for a beneficiary has not decreased below
 /// `floor`.
-pub fn assert_stream_count_monotonic(
-    env: &Env,
-    beneficiary: &soroban_sdk::Address,
-    floor: u32,
-) {
+pub fn assert_stream_count_monotonic(env: &Env, beneficiary: &soroban_sdk::Address, floor: u32) {
     let current = storage::get_beneficiary_stream_count(env, beneficiary);
     assert!(
         current >= floor,
@@ -152,12 +141,10 @@ impl ProposalStatus {
 pub fn assert_terminal_state_immutable(before: ProposalStatus, after: ProposalStatus) {
     if before.is_terminal() {
         assert_eq!(
-            before,
-            after,
+            before, after,
             "INVARIANT VIOLATION [terminal_state_immutable]: \
              proposal transitioned out of terminal state {:?} → {:?}",
-            before,
-            after,
+            before, after,
         );
     }
 }

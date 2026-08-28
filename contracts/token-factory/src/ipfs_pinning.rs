@@ -98,12 +98,7 @@ pub enum PinKey {
 /// * `Error::Unauthorized`      – Caller is not the token creator or admin.
 /// * `Error::InvalidParameters` – URI is empty, too long, or pin limit reached.
 /// * `Error::ArithmeticError`   – Pin count overflowed.
-pub fn add_pin(
-    env: &Env,
-    caller: &Address,
-    token_index: u32,
-    uri: String,
-) -> Result<u32, Error> {
+pub fn add_pin(env: &Env, caller: &Address, token_index: u32, uri: String) -> Result<u32, Error> {
     // ── Authorization ────────────────────────────────────────────────────────
     caller.require_auth();
 
@@ -303,6 +298,22 @@ fn check_rate_limit_and_queue(env: &Env) -> Result<bool, Error> {
         env.storage()
             .persistent()
             .set(&PinKey::TokenBucketRefillTime, &now);
+
+        // Newly-refilled capacity pays down any existing backlog first
+        // (FIFO), before it's available to grant new requests immediate
+        // processing. This is what makes `QueueDepth` an actual drainable
+        // backlog rather than a counter that only ever grows.
+        let queue_depth = get_pin_queue_depth(env);
+        let drained = queue_depth.min(tokens);
+        for _ in 0..drained {
+            consume_queue_item(env)?;
+        }
+        tokens = tokens.saturating_sub(drained);
+        // Persist even when this leaves 0 tokens, so a later call (which
+        // only reads storage) doesn't see the stale pre-refill value.
+        env.storage()
+            .persistent()
+            .set(&PinKey::TokenBucketTokens, &tokens);
     }
 
     // Check if we have tokens available
@@ -320,16 +331,18 @@ fn check_rate_limit_and_queue(env: &Env) -> Result<bool, Error> {
             .get(&PinKey::QueueDepth)
             .unwrap_or(0);
 
-        let new_depth = queue_depth
-            .checked_add(1)
-            .ok_or(Error::ArithmeticError)?;
+        let new_depth = queue_depth.checked_add(1).ok_or(Error::ArithmeticError)?;
 
         env.storage()
             .persistent()
             .set(&PinKey::QueueDepth, &new_depth);
 
-        // Emit warning if queue depth crosses threshold
-        if new_depth == PIN_QUEUE_WARNING_THRESHOLD {
+        // Emit a warning the moment depth crosses the threshold from below,
+        // not just when it exactly equals it — otherwise a depth that jumps
+        // past the threshold (or keeps climbing past it) never warns again.
+        if queue_depth < PIN_QUEUE_WARNING_THRESHOLD
+            && new_depth >= PIN_QUEUE_WARNING_THRESHOLD
+        {
             emit_pin_queue_warning(env, new_depth);
         }
 
@@ -337,6 +350,11 @@ fn check_rate_limit_and_queue(env: &Env) -> Result<bool, Error> {
     }
 }
 
+/// Drain one pending request from the queue, decrementing `QueueDepth`.
+///
+/// Called once a previously-queued pin request has actually been processed —
+/// mirrors the token-bucket refill path so `QueueDepth` reflects a real,
+/// drainable backlog instead of only ever growing.
 fn consume_queue_item(env: &Env) -> Result<(), Error> {
     let queue_depth: u32 = env
         .storage()
@@ -377,17 +395,12 @@ fn emit_pin_queued(env: &Env, token_index: u32, pin_index: u32, queued_by: &Addr
 }
 
 fn emit_pin_queue_warning(env: &Env, queue_depth: u32) {
-    env.events().publish(
-        (symbol_short!("pin_qw"),),
-        queue_depth,
-    );
+    env.events()
+        .publish((symbol_short!("pin_qw"),), queue_depth);
 }
 
 fn emit_rate_limit_updated(env: &Env, limit: u32) {
-    env.events().publish(
-        (symbol_short!("pin_rl"),),
-        limit,
-    );
+    env.events().publish((symbol_short!("pin_rl"),), limit);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -527,9 +540,7 @@ mod tests {
         // Fill up to MAX_PINS
         for i in 0..MAX_PINS {
             let uri = make_uri(&env, "ipfs://QmPin");
-            env.as_contract(&contract_id, || {
-                add_pin(&env, &creator, 0, uri).unwrap()
-            });
+            env.as_contract(&contract_id, || add_pin(&env, &creator, 0, uri).unwrap());
         }
 
         // One more should fail
@@ -573,7 +584,9 @@ mod tests {
             deactivate_pin(&env, &creator, 0, 0).unwrap()
         });
 
-        let pin = env.as_contract(&contract_id, || get_pin(&env, 0, 0)).unwrap();
+        let pin = env
+            .as_contract(&contract_id, || get_pin(&env, 0, 0))
+            .unwrap();
         assert!(!pin.active);
     }
 
@@ -609,8 +622,7 @@ mod tests {
             add_pin(&env, &creator, 0, make_uri(&env, "ipfs://QmA")).unwrap()
         });
 
-        let result =
-            env.as_contract(&contract_id, || deactivate_pin(&env, &stranger, 0, 0));
+        let result = env.as_contract(&contract_id, || deactivate_pin(&env, &stranger, 0, 0));
         assert_eq!(result, Err(Error::Unauthorized));
     }
 
@@ -629,7 +641,9 @@ mod tests {
             add_pin(&env, &creator, 0, uri.clone()).unwrap()
         });
 
-        let pin = env.as_contract(&contract_id, || get_pin(&env, 0, 0)).unwrap();
+        let pin = env
+            .as_contract(&contract_id, || get_pin(&env, 0, 0))
+            .unwrap();
         assert_eq!(pin.uri, uri);
         assert_eq!(pin.pinned_by, creator);
         assert!(pin.active);
@@ -649,10 +663,7 @@ mod tests {
             });
         }
 
-        assert_eq!(
-            env.as_contract(&contract_id, || get_pin_count(&env, 0)),
-            3
-        );
+        assert_eq!(env.as_contract(&contract_id, || get_pin_count(&env, 0)), 3);
     }
 
     #[test]
@@ -736,13 +747,17 @@ mod tests {
 
         assert_eq!(p0, 0);
         assert_eq!(p1, 1);
-        assert_eq!(env.as_contract(&contract_id, || get_active_pin_count(&env, 0)), 2);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_active_pin_count(&env, 0)),
+            2
+        );
 
         // Deactivate the redundant pin
-        env.as_contract(&contract_id, || {
-            deactivate_pin(&env, &admin, 0, 1).unwrap()
-        });
-        assert_eq!(env.as_contract(&contract_id, || get_active_pin_count(&env, 0)), 1);
+        env.as_contract(&contract_id, || deactivate_pin(&env, &admin, 0, 1).unwrap());
+        assert_eq!(
+            env.as_contract(&contract_id, || get_active_pin_count(&env, 0)),
+            1
+        );
 
         // Total count still 2 (audit trail preserved)
         assert_eq!(env.as_contract(&contract_id, || get_pin_count(&env, 0)), 2);
@@ -765,9 +780,7 @@ mod tests {
 
         // Admin can actually set the rate limit
         let admin = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            set_pin_rate_limit(&env, &admin, 2).ok()
-        });
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 2).ok());
 
         // Add pins until we exceed the rate limit
         let mut all_succeeded = true;
@@ -812,9 +825,7 @@ mod tests {
         let (_, _, contract_id) = setup(&env);
         let non_admin = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || {
-            set_pin_rate_limit(&env, &non_admin, 5)
-        });
+        let result = env.as_contract(&contract_id, || set_pin_rate_limit(&env, &non_admin, 5));
         assert_eq!(result, Err(Error::Unauthorized));
     }
 
@@ -842,5 +853,144 @@ mod tests {
 
         // Should have emitted warning event when queue hit threshold
         assert!(after_events > before_events, "Events should be emitted");
+    }
+}
+
+// Kept as its own always-on module (rather than folded into the disabled
+// `tests` module above) so the queue-depth-drain and threshold-crossing
+// regressions are still caught while that module is temporarily disabled.
+#[cfg(test)]
+mod queue_drain_tests {
+    use super::*;
+    use crate::{storage, types::TokenInfo, TokenFactory, TokenFactoryClient};
+    use soroban_sdk::{
+        testutils::{Address as _, Events, Ledger as _},
+        Address, Env, String,
+    };
+
+    fn seed_token(env: &Env, contract_id: &Address, token_index: u32, creator: &Address) {
+        let info = TokenInfo {
+            address: Address::generate(env),
+            creator: creator.clone(),
+            name: String::from_str(env, "Test"),
+            symbol: String::from_str(env, "TST"),
+            decimals: 7,
+            total_supply: 1_000_000,
+            initial_supply: 1_000_000,
+            max_supply: None,
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: 0,
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        };
+        env.as_contract(contract_id, || {
+            storage::set_token_info(env, token_index, &info);
+        });
+    }
+
+    fn setup(env: &Env) -> (Address, Address) {
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        let treasury = Address::generate(env);
+        client.initialize(&admin, &treasury, &1_000_000, &500_000);
+        (admin, contract_id)
+    }
+
+    /// Spread pins across `num_tokens` pre-seeded tokens so no single
+    /// token's `MAX_PINS` cap gets in the way of pushing the *global*
+    /// queue depth up.
+    fn add_pin_cycling_tokens(
+        env: &Env,
+        contract_id: &Address,
+        creator: &Address,
+        count: u32,
+        num_tokens: u32,
+    ) {
+        for i in 0..count {
+            let token_index = i % num_tokens;
+            let uri = String::from_str(env, "ipfs://QmTest");
+            env.as_contract(contract_id, || {
+                add_pin(env, creator, token_index, uri).unwrap();
+            });
+        }
+    }
+
+    #[test]
+    fn queue_depth_drains_after_bucket_refill() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, contract_id) = setup(&env);
+        let creator = Address::generate(&env);
+        for t in 0..6 {
+            seed_token(&env, &contract_id, t, &creator);
+        }
+
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 1).unwrap());
+
+        // 1 immediate + 5 queued.
+        add_pin_cycling_tokens(&env, &contract_id, &creator, 6, 6);
+        let depth_before = env.as_contract(&contract_id, || get_pin_queue_depth(&env));
+        assert_eq!(depth_before, 5);
+
+        // Raise capacity and advance past the 60s window so the refill has
+        // enough tokens to pay down the whole backlog — this is what makes
+        // `QueueDepth` an actual drainable backlog instead of a counter
+        // that only ever grows (nothing ever called `consume_queue_item`
+        // before this fix).
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 10).unwrap());
+        env.ledger().with_mut(|li| li.timestamp = 61);
+        env.as_contract(&contract_id, || {
+            add_pin(&env, &creator, 0, String::from_str(&env, "ipfs://QmRefill")).unwrap();
+        });
+
+        let depth_after = env.as_contract(&contract_id, || get_pin_queue_depth(&env));
+        assert_eq!(depth_after, 0, "refill should fully drain the backlog");
+    }
+
+    #[test]
+    fn warning_refires_after_crossing_threshold_again() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, contract_id) = setup(&env);
+        let creator = Address::generate(&env);
+        for t in 0..8 {
+            seed_token(&env, &contract_id, t, &creator);
+        }
+
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 1).unwrap());
+
+        // Cross the threshold once: 1 immediate + PIN_QUEUE_WARNING_THRESHOLD queued.
+        add_pin_cycling_tokens(&env, &contract_id, &creator, PIN_QUEUE_WARNING_THRESHOLD + 1, 8);
+        let depth = env.as_contract(&contract_id, || get_pin_queue_depth(&env));
+        assert_eq!(depth, PIN_QUEUE_WARNING_THRESHOLD);
+
+        // Refill with plenty of capacity, fully draining the backlog back
+        // under the threshold.
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 10).unwrap());
+        env.ledger().with_mut(|li| li.timestamp = 61);
+        env.as_contract(&contract_id, || {
+            add_pin(&env, &creator, 0, String::from_str(&env, "ipfs://QmRefill")).unwrap();
+        });
+        let depth_after_refill = env.as_contract(&contract_id, || get_pin_queue_depth(&env));
+        assert!(depth_after_refill < PIN_QUEUE_WARNING_THRESHOLD);
+
+        // Drop the rate limit back down and climb past the threshold again
+        // in the next window — the old equality-only check could never
+        // fire a second time once the counter had already passed
+        // `PIN_QUEUE_WARNING_THRESHOLD` once.
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 1).unwrap());
+        env.ledger().with_mut(|li| li.timestamp = 122);
+        let events_before = env.events().all().len();
+        add_pin_cycling_tokens(&env, &contract_id, &creator, PIN_QUEUE_WARNING_THRESHOLD + 1, 8);
+        let events_after = env.events().all().len();
+        assert!(
+            events_after > events_before,
+            "warning should re-fire on re-crossing threshold"
+        );
     }
 }

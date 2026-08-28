@@ -171,6 +171,10 @@ pub struct TokenCreationParams {
     /// This flag is **immutable after creation** — it cannot be toggled later.
     /// Set `true` only for regulated use-cases (e.g. stablecoins, tokenized securities).
     pub clawback_enabled: bool,
+    /// Whether the creator may freeze individual holder balances via
+    /// `freeze_address`. This flag is **immutable after creation** — it
+    /// cannot be toggled later, matching `clawback_enabled`'s invariant.
+    pub freeze_enabled: bool,
 }
 
 /// Outcome of validating a single item during a batch pre-flight dry-run.
@@ -682,12 +686,16 @@ pub struct TokenStats {
 /// * `price` - Raw price value (must be > 0)
 /// * `decimals` - Number of decimal places in `price` (e.g. 7 means price / 10^7)
 /// * `timestamp` - Ledger timestamp when the price was recorded
+/// * `source` - The oracle address that submitted this price. Used by
+///   `get_price` to reject a price whose source has since been deauthorized,
+///   even if the price has not yet aged out past `max_age_seconds`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriceData {
     pub price: i128,
     pub decimals: u32,
     pub timestamp: u64,
+    pub source: Address,
 }
 
 /// Global oracle configuration stored in instance storage.
@@ -900,6 +908,9 @@ pub enum DataKey {
     // Game / deployment history
     HistoryCount,
     HistoryRecord(u64),
+    /// Index of the oldest unpruned history record. Query functions start
+    /// scanning here instead of 0 so they never rescan pruned indices.
+    HistoryFirstLiveIndex,
     // Referral system
     ReferralInfo(Address),
     ReferralCommissionRate,
@@ -1003,6 +1014,16 @@ pub enum DataKey {
     NextStakingPoolId,
     /// A user's stake within a pool: (pool_id, staker) → StakeInfo
     UserStake(u64, Address),
+    // ── AMM constant-product pools ────────────────────────────────────────
+    /// AMM pool state keyed by (token_index_a, token_index_b) — indices always
+    /// stored in ascending order so the key is canonical regardless of swap direction.
+    AmmPool(u32, u32),
+    /// Total number of AMM pools created (instance counter).
+    AmmPoolCount,
+    /// LP share balance for a provider in a pool: (token_a, token_b, provider).
+    AmmShares(u32, u32, Address),
+    /// Total LP shares outstanding for a pool: (token_a, token_b).
+    AmmTotalShares(u32, u32),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1356,6 +1377,25 @@ impl Error {
     pub const StakingNotActive: Self = Self(134);
     pub const InvalidRewardRate: Self = Self(135);
     pub const InsufficientStake: Self = Self(136);
+    // AMM constant-product pool errors (#AMM)
+    /// Pool for this token pair already exists.
+    pub const PoolAlreadyExists: Self = Self(137);
+    /// No pool found for this token pair.
+    pub const PoolNotFound: Self = Self(138);
+    /// Both token indices in a pair must be distinct.
+    pub const IdenticalTokens: Self = Self(139);
+    /// Liquidity amounts must both be greater than zero.
+    pub const ZeroLiquidity: Self = Self(140);
+    /// Swap input amount must be greater than zero.
+    pub const ZeroAmountIn: Self = Self(141);
+    /// Computed swap output is zero (dust input).
+    pub const ZeroAmountOut: Self = Self(142);
+    /// Caller holds no LP shares in this pool.
+    pub const ZeroShares: Self = Self(143);
+    /// One or both reserves are zero; pool has no liquidity.
+    pub const InsufficientReserves: Self = Self(144);
+    /// LP share burn amount exceeds the caller's balance.
+    pub const SharesExceedBalance: Self = Self(145);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error
@@ -1383,6 +1423,12 @@ impl Error {
             134 => "StakingNotActive",
             135 => "InvalidRewardRate",
             136 => "InsufficientStake",
+            100 => "DistributionNotFound",
+            101 => "DistributionWindowClosed",
+            102 => "DistributionWindowOpen",
+            103 => "DistributionAlreadyClaimed",
+            104 => "DistributionAlreadyReclaimed",
+            105 => "DistributionZeroSupply",
             _ => "UnknownError",
         }
     }
@@ -1841,7 +1887,7 @@ mod tests {
     #[test]
     fn test_campaign_field_ordering_deterministic() {
         let (env, contract_id) = setup();
-        
+
         // Create two identical campaigns
         let campaign1 = super::BuybackCampaign {
             id: 1,
@@ -1886,12 +1932,24 @@ mod tests {
 
         // Verify serialization produces identical results
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(1), &campaign1);
-            env.storage().instance().set(&DataKey::BuybackCampaign(2), &campaign2);
-            
-            let decoded1: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(1)).unwrap();
-            let decoded2: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(2)).unwrap();
-            
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(1), &campaign1);
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(2), &campaign2);
+
+            let decoded1: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(1))
+                .unwrap();
+            let decoded2: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(2))
+                .unwrap();
+
             assert_eq!(decoded1, decoded2);
         });
     }
@@ -1899,7 +1957,7 @@ mod tests {
     #[test]
     fn test_campaign_storage_retrieval_by_id() {
         let (env, contract_id) = setup();
-        
+
         let campaigns = vec![
             super::BuybackCampaign {
                 id: 0,
@@ -1942,13 +2000,18 @@ mod tests {
         env.as_contract(&contract_id, || {
             // Store campaigns
             for campaign in &campaigns {
-                env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), campaign);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::BuybackCampaign(campaign.id), campaign);
             }
 
             // Retrieve and verify each campaign
             for campaign in &campaigns {
-                let retrieved: super::BuybackCampaign = 
-                    env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+                let retrieved: super::BuybackCampaign = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::BuybackCampaign(campaign.id))
+                    .unwrap();
                 assert_eq!(retrieved, *campaign);
             }
         });
@@ -1961,14 +2024,32 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             // Store campaign indexes for creator
-            env.storage().instance().set(&DataKey::CampaignByCreator(creator.clone(), 0), &10u64);
-            env.storage().instance().set(&DataKey::CampaignByCreator(creator.clone(), 1), &20u64);
-            env.storage().instance().set(&DataKey::CreatorCampaignCount(creator.clone()), &2u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByCreator(creator.clone(), 0), &10u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByCreator(creator.clone(), 1), &20u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CreatorCampaignCount(creator.clone()), &2u32);
 
             // Retrieve and verify
-            let campaign_id_0: u64 = env.storage().instance().get(&DataKey::CampaignByCreator(creator.clone(), 0)).unwrap();
-            let campaign_id_1: u64 = env.storage().instance().get(&DataKey::CampaignByCreator(creator.clone(), 1)).unwrap();
-            let count: u32 = env.storage().instance().get(&DataKey::CreatorCampaignCount(creator.clone())).unwrap();
+            let campaign_id_0: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByCreator(creator.clone(), 0))
+                .unwrap();
+            let campaign_id_1: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByCreator(creator.clone(), 1))
+                .unwrap();
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CreatorCampaignCount(creator.clone()))
+                .unwrap();
 
             assert_eq!(campaign_id_0, 10);
             assert_eq!(campaign_id_1, 20);
@@ -1983,14 +2064,32 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             // Store campaign indexes for token
-            env.storage().instance().set(&DataKey::CampaignByToken(token_index, 0), &100u64);
-            env.storage().instance().set(&DataKey::CampaignByToken(token_index, 1), &200u64);
-            env.storage().instance().set(&DataKey::TokenCampaignCount(token_index), &2u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByToken(token_index, 0), &100u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::CampaignByToken(token_index, 1), &200u64);
+            env.storage()
+                .instance()
+                .set(&DataKey::TokenCampaignCount(token_index), &2u32);
 
             // Retrieve and verify
-            let campaign_id_0: u64 = env.storage().instance().get(&DataKey::CampaignByToken(token_index, 0)).unwrap();
-            let campaign_id_1: u64 = env.storage().instance().get(&DataKey::CampaignByToken(token_index, 1)).unwrap();
-            let count: u32 = env.storage().instance().get(&DataKey::TokenCampaignCount(token_index)).unwrap();
+            let campaign_id_0: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByToken(token_index, 0))
+                .unwrap();
+            let campaign_id_1: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CampaignByToken(token_index, 1))
+                .unwrap();
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenCampaignCount(token_index))
+                .unwrap();
 
             assert_eq!(campaign_id_0, 100);
             assert_eq!(campaign_id_1, 200);
@@ -2001,7 +2100,7 @@ mod tests {
     #[test]
     fn test_campaign_status_all_variants() {
         let (env, contract_id) = setup();
-        
+
         let statuses = [
             (super::CampaignStatus::Active, "Active"),
             (super::CampaignStatus::Paused, "Paused"),
@@ -2022,7 +2121,7 @@ mod tests {
     #[test]
     fn test_campaign_with_max_values() {
         let (env, contract_id) = setup();
-        
+
         let campaign = super::BuybackCampaign {
             id: u64::MAX,
             token_index: u32::MAX,
@@ -2043,8 +2142,14 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), &campaign);
-            let decoded: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(campaign.id), &campaign);
+            let decoded: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(campaign.id))
+                .unwrap();
             assert_eq!(decoded, campaign);
         });
     }
@@ -2052,7 +2157,7 @@ mod tests {
     #[test]
     fn test_campaign_with_min_values() {
         let (env, contract_id) = setup();
-        
+
         let campaign = super::BuybackCampaign {
             id: 0,
             token_index: 0,
@@ -2073,8 +2178,14 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::BuybackCampaign(campaign.id), &campaign);
-            let decoded: super::BuybackCampaign = env.storage().instance().get(&DataKey::BuybackCampaign(campaign.id)).unwrap();
+            env.storage()
+                .instance()
+                .set(&DataKey::BuybackCampaign(campaign.id), &campaign);
+            let decoded: super::BuybackCampaign = env
+                .storage()
+                .instance()
+                .get(&DataKey::BuybackCampaign(campaign.id))
+                .unwrap();
             assert_eq!(decoded, campaign);
         });
     }

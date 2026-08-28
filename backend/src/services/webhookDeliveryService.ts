@@ -10,8 +10,8 @@ import {
 } from "../types/webhook";
 import webhookService from "./webhookService";
 import webhookDeadLetterService from "./webhookDeadLetterService";
-import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
 import {
+  IntegrationMetrics,
   webhookDeliveryLatency,
   MetricsCollector,
 } from "../lib/metrics";
@@ -53,6 +53,13 @@ interface DeliveryTask {
   correlationId: string;
 }
 
+export interface WebhookDeliveryResult {
+  success: boolean;
+  statusCode: number | null;
+  attempts: number;
+  error: string | null;
+}
+
 export class WebhookDeliveryService {
   private circuitBreaker: CircuitBreaker;
   // Read at construction time so tests can override via process.env before new WebhookDeliveryService()
@@ -76,13 +83,14 @@ export class WebhookDeliveryService {
     );
     this.pool = new WorkerPool<DeliveryTask>({
       concurrency: WORKER_CONCURRENCY,
-      worker: (task) =>
-        this.deliverWebhook(
+      worker: async (task) => {
+        await this.deliverWebhook(
           task.subscription,
           task.event,
           task.data,
           task.correlationId
-        ),
+        );
+      },
     });
   }
 
@@ -174,7 +182,7 @@ export class WebhookDeliveryService {
     event: WebhookEventType,
     data: WebhookEventData,
     correlationId?: string
-  ): Promise<void> {
+  ): Promise<WebhookDeliveryResult> {
     const cid = correlationId || `whk_${Date.now().toString(36)}`;
 
     // Per-tenant rate limit: the subscription owner (createdBy) is the
@@ -188,7 +196,7 @@ export class WebhookDeliveryService {
         console.warn(
           JSON.stringify({ event: 'webhook.rate_limited', correlationId: cid, subscriptionId: subscription.id, tenantId })
         );
-        return;
+        return { success: false, statusCode: null, attempts: 0, error: "Rate limited" };
       }
     }
 
@@ -212,7 +220,7 @@ export class WebhookDeliveryService {
     // resolves once a token refills (see TenantWebhookRateLimiter).
     await this.rateLimiter.acquire(tenantId);
 
-    return this.circuitBreaker.execute(async () => {
+    return this.circuitBreaker.execute(async (): Promise<WebhookDeliveryResult> => {
       let lastError: string | null = null;
       let statusCode: number | null = null;
       let success = false;
@@ -342,6 +350,8 @@ export class WebhookDeliveryService {
           JSON.stringify({ event: 'webhook.failed', correlationId: cid, subscriptionId: subscription.id, attempts, ...(txHash && { txHash }) })
         );
       }
+
+      return { success, statusCode, attempts, error: lastError };
     });
   }
 

@@ -29,6 +29,7 @@ export class CacheService<T> {
     const isExpired = Date.now() - entry.timestamp > entry.ttl;
     if (isExpired) {
       this.cache.delete(key);
+      this.stats.size = this.cache.size;
       this.stats.misses++;
       return null;
     }

@@ -68,7 +68,10 @@ mod proposal_execution_queue_fifo_test {
             env.ledger().with_mut(|l| l.timestamp = end + 1);
             queue_proposal(env, id).unwrap();
 
-            assert_eq!(storage::get_proposal(env, id).unwrap().state, ProposalState::Queued);
+            assert_eq!(
+                storage::get_proposal(env, id).unwrap().state,
+                ProposalState::Queued
+            );
             id
         })
     }
@@ -86,11 +89,15 @@ mod proposal_execution_queue_fifo_test {
     }
 
     fn queue_ids(env: &Env, contract_id: &Address, action_type: ActionType) -> Vec<u64> {
-        env.as_contract(contract_id, || proposal_type_queue::queue_for(env, action_type))
+        env.as_contract(contract_id, || {
+            proposal_type_queue::queue_for(env, action_type)
+        })
     }
 
     fn state(env: &Env, contract_id: &Address, id: u64) -> ProposalState {
-        env.as_contract(contract_id, || storage::get_proposal(env, id).unwrap().state)
+        env.as_contract(contract_id, || {
+            storage::get_proposal(env, id).unwrap().state
+        })
     }
 
     fn advance_past_etas(env: &Env) {
@@ -131,7 +138,10 @@ mod proposal_execution_queue_fifo_test {
         // Now the second proposal may execute.
         exec(&env, &contract_id, second).unwrap();
         assert_eq!(state(&env, &contract_id, second), ProposalState::Executed);
-        assert_eq!(queue_ids(&env, &contract_id, ActionType::FeeChange).len(), 0);
+        assert_eq!(
+            queue_ids(&env, &contract_id, ActionType::FeeChange).len(),
+            0
+        );
     }
 
     // ── Cross-type proposals are independent ─────────────────────────────
@@ -143,8 +153,13 @@ mod proposal_execution_queue_fifo_test {
         // Two fee proposals (same queue) and one pause proposal (separate queue).
         let fee1 = make_queued(&env, &contract_id, &admin, ActionType::FeeChange, fee(&env));
         let fee2 = make_queued(&env, &contract_id, &admin, ActionType::FeeChange, fee(&env));
-        let pause =
-            make_queued(&env, &contract_id, &admin, ActionType::PauseContract, pause_payload(&env));
+        let pause = make_queued(
+            &env,
+            &contract_id,
+            &admin,
+            ActionType::PauseContract,
+            pause_payload(&env),
+        );
 
         enq(&env, &contract_id, fee1).unwrap();
         enq(&env, &contract_id, fee2).unwrap();

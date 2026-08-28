@@ -3,6 +3,7 @@ import { JwtModule, JwtService } from "@nestjs/jwt";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { UnauthorizedException } from "@nestjs/common";
 import { TokenService } from "../token.service";
+import { AUTH_CONSTANTS } from "../auth.constants";
 
 describe("TokenService", () => {
   let service: TokenService;
@@ -54,6 +55,17 @@ describe("TokenService", () => {
       const r2 = service.generateTokenPair(testWallet);
 
       expect(r1.accessToken).not.toBe(r2.accessToken);
+    });
+
+    it("should derive expiresIn from the access token expiry constant", () => {
+      const originalExpiry = AUTH_CONSTANTS.JWT_ACCESS_EXPIRY;
+      AUTH_CONSTANTS.JWT_ACCESS_EXPIRY = "2h";
+
+      try {
+        expect(service.generateTokenPair(testWallet).expiresIn).toBe(2 * 60 * 60);
+      } finally {
+        AUTH_CONSTANTS.JWT_ACCESS_EXPIRY = originalExpiry;
+      }
     });
   });
 

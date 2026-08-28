@@ -300,6 +300,9 @@ describe("PagerDuty Incident Response", () => {
         const parsed = JSON.parse(capturedBody);
         expect(parsed.payload.severity).toBe("critical");
         expect(parsed.dedup_key).toBe("nova-api-high-error-rate");
+        expect(parsed.links).toBeInstanceOf(Array);
+        expect(parsed.links.length).toBeGreaterThan(0);
+        expect(parsed.links[0].href).toContain("PRODUCTION_INTEGRATION_RUNBOOK.md");
       } finally {
         process.env.PAGERDUTY_ROUTING_KEY = original;
       }
@@ -361,6 +364,9 @@ describe("PagerDuty Incident Response", () => {
         const parsed = JSON.parse(capturedBody);
         expect(parsed.payload.severity).toBe("critical");
         expect(parsed.dedup_key).toBe("nova-db-pool-exhausted");
+        expect(parsed.links).toBeInstanceOf(Array);
+        expect(parsed.links.length).toBeGreaterThan(0);
+        expect(parsed.links[0].href).toContain("PRODUCTION_INTEGRATION_RUNBOOK.md");
       } finally {
         process.env.PAGERDUTY_ROUTING_KEY = original;
       }

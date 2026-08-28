@@ -32,7 +32,7 @@ export class AuthService {
   /**
    * Step 1: Client requests a nonce to sign.
    */
-  requestNonce(publicKey: string): NonceResponseDto {
+  async requestNonce(publicKey: string): Promise<NonceResponseDto> {
     if (!this.stellarSig.isValidPublicKey(publicKey)) {
       throw new BadRequestException("Invalid Stellar public key");
     }
@@ -50,7 +50,7 @@ export class AuthService {
       throw new BadRequestException("Invalid Stellar public key");
     }
 
-    const nonceValid = this.nonceService.consumeNonce(nonce, publicKey);
+    const nonceValid = await this.nonceService.consumeNonce(nonce, publicKey);
     if (!nonceValid) {
       throw new UnauthorizedException("Invalid or expired nonce");
     }
@@ -83,7 +83,9 @@ export class AuthService {
    * Implements family rotation with reuse-detection.
    */
   async refreshTokens(dto: RefreshTokenDto): Promise<AuthResponseDto> {
-    const payload = this.tokenService.verifyRefreshToken(dto.refreshToken);
+    const payload = await this.tokenService.verifyRefreshToken(
+      dto.refreshToken
+    );
 
     // Generate the next pair before rotating so we have the new token string
     const nextPair = this.tokenService.generateTokenPair(payload.walletAddress);
@@ -112,9 +114,9 @@ export class AuthService {
       }
     }
 
-    // Revoke old JTI in the in-memory store (backward-compat with legacy tokens)
+    // Revoke old JTI (backward-compat with legacy tokens)
     if (payload.jti) {
-      this.tokenService.revokeToken(payload.jti);
+      await this.tokenService.revokeToken(payload.jti);
     }
 
     return nextPair;
@@ -123,8 +125,8 @@ export class AuthService {
   /**
    * Revoke a specific token by JTI (e.g., on logout).
    */
-  logout(jti: string): void {
-    this.tokenService.revokeToken(jti);
+  async logout(jti: string): Promise<void> {
+    await this.tokenService.revokeToken(jti);
     this.logger.log(`Token revoked on logout: ${jti}`);
   }
 }

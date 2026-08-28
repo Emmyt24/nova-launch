@@ -7,6 +7,12 @@
 //! and the gas cost of triggering it stay predictable regardless of how long
 //! the schedule has been running.
 //!
+//! Every call to [`trigger_recurring_period`] first prunes tracked child ids
+//! whose stream has already completed (fully claimed or cancelled) from the
+//! list, so an `auto_renew` stream's completed history doesn't permanently
+//! consume its [`MAX_TRACKED_CHILD_STREAMS`] budget — see
+//! `prune_completed_child_streams`.
+//!
 //! Each period's child stream is an "instant vest": `start_time == cliff_time`
 //! and `end_time == start_time + 1`, so it becomes fully claimable a moment
 //! after creation rather than vesting linearly over the period. The period
@@ -150,10 +156,10 @@ pub fn trigger_recurring_period(
     if !within_total && !recurring.auto_renew_enabled {
         return Err(Error::RecurringStreamLimitReached);
     }
-    if recurring.child_streams.len() >= MAX_TRACKED_CHILD_STREAMS {
-        return Err(Error::RecurringStreamLimitReached);
-    }
 
+    // Read the token from the original first child before pruning — the
+    // tracked list always starts non-empty (seeded by `create_recurring_stream`),
+    // so this lookup is safe regardless of what pruning below removes.
     let first_child_id = recurring
         .child_streams
         .get(0)
@@ -161,6 +167,12 @@ pub fn trigger_recurring_period(
     let token_index = storage::get_stream(env, first_child_id)
         .ok_or(Error::RecurringStreamNotFound)?
         .token_index;
+
+    prune_completed_child_streams(env, &mut recurring);
+
+    if recurring.child_streams.len() >= MAX_TRACKED_CHILD_STREAMS {
+        return Err(Error::RecurringStreamLimitReached);
+    }
 
     let now_ts = env.ledger().timestamp();
     let child_params = StreamParams {
@@ -190,6 +202,28 @@ pub fn trigger_recurring_period(
     );
 
     Ok(child_id)
+}
+
+/// Drop tracked child-stream ids whose underlying stream has completed —
+/// fully claimed or cancelled — from `recurring.child_streams`.
+///
+/// This is what lets an `auto_renew` stream keep triggering indefinitely
+/// instead of permanently stalling once it accumulates
+/// [`MAX_TRACKED_CHILD_STREAMS`] entries: completed entries are pruned from
+/// the tracking list to free capacity for new periods. The underlying
+/// `StreamInfo` record is untouched and stays independently claimable by
+/// id — only this recurring stream's own bookkeeping list shrinks.
+fn prune_completed_child_streams(env: &Env, recurring: &mut crate::types::RecurringStream) {
+    let mut retained = Vec::new(env);
+    for child_id in recurring.child_streams.iter() {
+        let is_completed = storage::get_stream(env, child_id)
+            .map(|stream| stream.cancelled || stream.claimed_amount >= stream.total_amount)
+            .unwrap_or(false);
+        if !is_completed {
+            retained.push_back(child_id);
+        }
+    }
+    recurring.child_streams = retained;
 }
 
 /// Cancel a recurring stream. Already-created child streams are unaffected —
@@ -398,6 +432,83 @@ mod tests {
             trigger_recurring_period(&env, &creator, id)
         });
         assert_eq!(result, Err(Error::RecurringStreamLimitReached));
+    }
+
+    #[test]
+    fn trigger_prunes_completed_children_freeing_capacity_for_auto_renew() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        env.ledger().with_mut(|li| li.sequence_number = 0);
+        let (creator, id, token_index) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let mut p = recurring_params(&recipient);
+            p.auto_renew = true;
+            p.total_periods = 0;
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+            (creator, id, token_index)
+        });
+
+        // Seed the tracked child list up to MAX_TRACKED_CHILD_STREAMS with
+        // synthetic, already-fully-claimed child streams. Prior to pruning,
+        // this permanently stalls the auto-renewing stream — every future
+        // `trigger_recurring_period` call hits `RecurringStreamLimitReached`
+        // forever, even though every one of those child streams is done.
+        env.as_contract(&contract_id, || {
+            let mut recurring = storage::get_recurring_stream(&env, id).unwrap();
+            while recurring.child_streams.len() < MAX_TRACKED_CHILD_STREAMS {
+                let stream_id_u32 = storage::increment_stream_count(&env).unwrap();
+                let completed_stream = crate::types::StreamInfo {
+                    id: stream_id_u32 as u64,
+                    creator: creator.clone(),
+                    recipient: recurring.recipient.clone(),
+                    token_index,
+                    total_amount: 100,
+                    claimed_amount: 100,
+                    start_time: 0,
+                    end_time: 1,
+                    cliff_time: 0,
+                    metadata: None,
+                    cancelled: false,
+                    paused: false,
+                    disputed: false,
+                    milestones: Vec::new(&env),
+                };
+                storage::set_stream(&env, stream_id_u32 as u64, &completed_stream);
+                recurring.child_streams.push_back(stream_id_u32 as u64);
+            }
+            storage::set_recurring_stream(&env, &recurring);
+        });
+
+        env.as_contract(&contract_id, || {
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.child_streams.len(), MAX_TRACKED_CHILD_STREAMS);
+        });
+
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        let child_id = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        });
+        assert!(child_id > 0);
+
+        env.as_contract(&contract_id, || {
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            // Every fully-claimed synthetic child was pruned — only the
+            // original (unclaimed) first child and the freshly-minted one
+            // from this trigger remain.
+            assert_eq!(recurring.child_streams.len(), 2);
+            assert_eq!(recurring.periods_created, 2);
+        });
+
+        // Trigger a second period to prove it keeps working beyond the point
+        // where it used to stall permanently.
+        env.ledger().with_mut(|li| li.sequence_number = 20);
+        let child_id_2 = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        });
+        assert!(child_id_2 > child_id);
     }
 
     #[test]

@@ -59,7 +59,10 @@ mod tests {
         let (env, contract_id, creator) = setup_env();
         let client = crate::TokenFactoryClient::new(&env, &contract_id);
 
-        assert!(client.try_get_token_info(&0_u32).is_err(), "no tokens should exist yet");
+        assert!(
+            client.try_get_token_info(&0_u32).is_err(),
+            "no tokens should exist yet"
+        );
 
         // Create batch with invalid element in the middle
         let mut tokens = Vec::new(&env);
@@ -282,7 +285,10 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(results.get(0).unwrap().error_code, 0);
-        assert_eq!(results.get(1).unwrap().error_code, Error::InvalidTokenParams.0);
+        assert_eq!(
+            results.get(1).unwrap().error_code,
+            Error::InvalidTokenParams.0
+        );
 
         // The dry-run must not have created anything.
         assert!(client.try_get_token_info(&0_u32).is_err());

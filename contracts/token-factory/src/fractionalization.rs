@@ -181,3 +181,56 @@ pub fn is_fractionalized(env: &Env, vault_id: u64) -> bool {
         None => false,
     }
 }
+
+/// Transfer `amount` fractional shares of `vault_id` from `from` to `to`.
+///
+/// This is the only way `FractionalShareBalance` entries move between
+/// addresses. Without it, shares minted entirely to `fractionalize`'s
+/// `owner` could never be split across multiple holders, making the
+/// 100%-accumulation redemption model in `redeem` unreachable beyond the
+/// trivial single-owner case.
+///
+/// # Errors
+/// * `Error::ContractPaused` - Contract is paused
+/// * `Error::FractionalVaultNotFound` - No active vault exists for `vault_id`
+/// * `Error::InvalidShareAmount` - `amount` is zero or negative
+/// * `Error::InsufficientShareBalance` - `from` holds fewer shares than `amount`
+/// * `Error::ArithmeticError` - Overflow crediting `to`'s balance
+pub fn transfer_shares(
+    env: &Env,
+    vault_id: u64,
+    from: Address,
+    to: Address,
+    amount: i128,
+) -> Result<(), Error> {
+    from.require_auth();
+
+    if storage::is_paused(env) {
+        return Err(Error::ContractPaused);
+    }
+
+    let vault = storage::get_fractional_vault(env, vault_id).ok_or(Error::FractionalVaultNotFound)?;
+    if vault.status != FractionalStatus::Active {
+        return Err(Error::FractionalVaultNotFound);
+    }
+
+    if amount <= 0 {
+        return Err(Error::InvalidShareAmount);
+    }
+
+    let from_balance = storage::get_fractional_share_balance(env, vault_id, &from);
+    if from_balance < amount {
+        return Err(Error::InsufficientShareBalance);
+    }
+
+    let to_balance = storage::get_fractional_share_balance(env, vault_id, &to);
+    let new_to_balance = to_balance.checked_add(amount).ok_or(Error::ArithmeticError)?;
+    let new_from_balance = from_balance.checked_sub(amount).ok_or(Error::ArithmeticError)?;
+
+    storage::set_fractional_share_balance(env, vault_id, &from, new_from_balance);
+    storage::set_fractional_share_balance(env, vault_id, &to, new_to_balance);
+
+    crate::events::emit_shares_transferred(env, vault_id, &from, &to, amount);
+
+    Ok(())
+}

@@ -140,6 +140,21 @@ impl GovernanceContract {
         storage::get_balance(&env, &holder)
     }
 
+    /// Return the total token supply recorded at [`initialize`].
+    ///
+    /// This value is set once during initialization and is **not**
+    /// recalculated from live balances — it reflects the canonical supply
+    /// figure provided by the deployer.  Unlike `get_balance` / `get_vote_power`,
+    /// no on-chain arithmetic depends on this figure; it exists so off-chain
+    /// observers can verify the supply cap without reading constructor call-data.
+    ///
+    /// - No authorization required.
+    /// - Works while the contract is paused.
+    /// - Returns `0` if called before `initialize` (storage default).
+    pub fn get_total_supply(env: Env) -> i128 {
+        storage::get_total_supply(&env)
+    }
+
     /// Record a vote-power snapshot for `address` at the current ledger.
     ///
     /// Snapshots are used to determine an address's vote power at a fixed
@@ -212,20 +227,29 @@ impl GovernanceContract {
         let old_balance = storage::get_balance(&env, &holder);
         let delta = new_balance
             .checked_sub(old_balance)
-            .ok_or(Error::ArithmeticError)?;
+            .ok_or_else(|| {
+                events::emit_error_detail(&env, Error::ArithmeticError as u32, old_balance);
+                Error::ArithmeticError
+            })?;
         storage::set_balance(&env, &holder, new_balance);
         if let Some(ref record) = storage::get_delegation(&env, &holder) {
             let delegatee = record.delegatee.clone();
             let current_power = storage::get_vote_power(&env, &delegatee);
             let new_power = current_power
                 .checked_add(delta)
-                .ok_or(Error::ArithmeticError)?;
+                .ok_or_else(|| {
+                    events::emit_error_detail(&env, Error::ArithmeticError as u32, current_power);
+                    Error::ArithmeticError
+                })?;
             storage::set_vote_power(&env, &delegatee, new_power.max(0));
         } else {
             let current_power = storage::get_vote_power(&env, &holder);
             let new_power = current_power
                 .checked_add(delta)
-                .ok_or(Error::ArithmeticError)?;
+                .ok_or_else(|| {
+                    events::emit_error_detail(&env, Error::ArithmeticError as u32, current_power);
+                    Error::ArithmeticError
+                })?;
             storage::set_vote_power(&env, &holder, new_power.max(0));
         }
         Ok(())
@@ -341,6 +365,14 @@ impl GovernanceContract {
         storage::is_paused(&env)
     }
 
+    /// Get the current contract administrator address.
+    ///
+    /// # Returns
+    /// The [`Address`] of the current administrator.
+    pub fn get_admin(env: Env) -> Address {
+        storage::get_admin(&env)
+    }
+
     // ── Proposals ───────────────────────────────────────────────────────────
 
     /// Create a new governance proposal.
@@ -442,10 +474,7 @@ impl GovernanceContract {
         storage::set_proposal(&env, proposal_id, &proposal);
 
         // Emit execution event (actual side effects would be triggered here or by caller)
-        env.events().publish(
-            (soroban_sdk::symbol_short!("exec_prop"), proposal_id),
-            proposal.description,
-        );
+        events::emit_proposal_executed(&env, proposal_id, &proposal.description);
 
         Ok(())
     }

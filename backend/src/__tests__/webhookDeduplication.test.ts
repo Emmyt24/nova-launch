@@ -96,6 +96,50 @@ describe("WebhookDeduplicationService — Stripe retry deduplication", () => {
       expect(second.processed).toBe(false);
     });
 
+    it("returns the actual handler result on duplicate, not a boolean", async () => {
+      const { service } = makeService();
+      const eventId = stripeEventId();
+      const expectedResult = { id: 123, status: "processed", data: { x: 42 } };
+
+      // First delivery calls handler and caches result
+      const first = await service.process(eventId, async () => expectedResult);
+
+      // Second delivery (duplicate) should return exact cached result
+      const second = await service.process(eventId, async () => ({
+        id: 999,
+        status: "should_not_run",
+      }));
+
+      expect(second.result).toEqual(expectedResult);
+      expect(second.result).not.toBe(true);
+      expect(second.result).not.toBe(false);
+      expect(typeof second.result).toBe("object");
+    });
+
+    it("preserves complex object results on duplicate delivery", async () => {
+      const { service } = makeService();
+      const eventId = stripeEventId();
+      const complexResult = {
+        subscriptionId: "sub_abc123",
+        status: "active",
+        billingCycle: {
+          start: new Date("2024-01-01"),
+          end: new Date("2024-02-01"),
+        },
+        metadata: {
+          tier: "premium",
+          seats: 5,
+        },
+      };
+
+      const first = await service.process(eventId, async () => complexResult);
+      const second = await service.process(eventId, async () => ({}));
+
+      expect(second.result).toEqual(complexResult);
+      expect(second.result.subscriptionId).toBe("sub_abc123");
+      expect(second.result.metadata.seats).toBe(5);
+    });
+
     it("subscription state is unchanged after duplicate delivery (1× then 2×)", async () => {
       const { service } = makeService();
       const eventId = stripeEventId();

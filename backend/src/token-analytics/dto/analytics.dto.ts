@@ -1,4 +1,9 @@
-import { IsEnum, IsOptional, IsEthereumAddress } from "class-validator";
+import {
+  IsEnum,
+  IsOptional,
+  IsEthereumAddress,
+  IsDateString,
+} from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 export enum TimePeriod {
@@ -37,6 +42,53 @@ export class PeriodStats {
   @ApiProperty() volume: string;
   @ApiProperty() count: number;
   @ApiProperty() uniqueBurners: number;
+}
+
+export class GetAggregateBurnQueryDto {
+  @ApiPropertyOptional({ description: "ISO date string for range start" })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ description: "ISO date string for range end" })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+}
+
+export class TokenBurnSummaryDto {
+  @ApiProperty() tokenAddress: string;
+  @ApiProperty() totalBurned: string;
+  @ApiProperty() burnCount: number;
+  @ApiProperty() uniqueBurners: number;
+}
+
+export class TopBurnerDto {
+  @ApiProperty() walletAddress: string;
+  @ApiProperty() totalBurned: string;
+  @ApiProperty() burnCount: number;
+}
+
+export class BurnRateTrendPointDto {
+  @ApiProperty() date: string;
+  @ApiProperty() volume: string;
+  @ApiProperty() count: number;
+}
+
+export class AggregateBurnResponseDto {
+  @ApiProperty() generatedAt: string;
+  @ApiProperty() startDate: string;
+  @ApiProperty() endDate: string;
+  @ApiProperty() totalBurnedAllTokens: string;
+  @ApiProperty() totalBurnCount: number;
+  @ApiProperty() totalUniqueTokens: number;
+  @ApiProperty() totalUniqueBurners: number;
+  @ApiProperty({ type: [BurnRateTrendPointDto] })
+  burnRateTrend: BurnRateTrendPointDto[];
+  @ApiProperty({ type: [TopBurnerDto] })
+  top5Burners: TopBurnerDto[];
+  @ApiProperty({ type: [TokenBurnSummaryDto] })
+  tokenSummaries: TokenBurnSummaryDto[];
 }
 
 export class TokenAnalyticsResponseDto {

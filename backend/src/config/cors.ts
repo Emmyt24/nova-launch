@@ -1,7 +1,13 @@
 import { CorsOptions } from "cors";
+import { isOriginAllowed } from "./allowedOrigins";
 
 /**
- * CORS configuration options for Nova Launch Backend
+ * CORS configuration options for Nova Launch Backend's Express API bootstrap
+ * (src/index.ts). This governs the Express process only — the NestJS auth
+ * service bootstrap (src/auth/main.ts) has its own, separately-configured CORS
+ * policy sourced from ALLOWED_ORIGINS; see ../auth/cors.config.ts. The two are
+ * intentionally separate, but share their origin-matching logic via
+ * ./allowedOrigins so it can't silently diverge between them.
  */
 export const corsOptions: CorsOptions = {
   /**
@@ -15,10 +21,7 @@ export const corsOptions: CorsOptions = {
       // Add other production URLs here
     ];
 
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (isOriginAllowed(origin, allowedOrigins)) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));

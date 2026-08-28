@@ -103,6 +103,21 @@ npm test backend/src/__tests__/chaos.db-pool.test.ts
 This spec covers concurrent query saturation, client acquisition failures,
 and safe shutdown behavior for the pg pool wrapper.
 
+## CORS Configuration
+
+The backend runs two separate server processes, each with its own CORS policy:
+
+| Process | Bootstrap | CORS config | Allowed-origin source |
+|---|---|---|---|
+| Main API (Express) | `src/index.ts` | `src/config/cors.ts` (`corsOptions`) | `FRONTEND_URL` — a single fixed origin |
+| Auth service (NestJS) | `src/auth/main.ts` | `src/auth/cors.config.ts` (`buildCorsOptions`) | `ALLOWED_ORIGINS` — a comma-separated list, `*` supported |
+
+These are intentionally separate: the two processes are bootstrapped independently
+(Express vs. NestJS) and are configured through different env vars. They share the
+origin-matching logic in `src/config/allowedOrigins.ts` (`isOriginAllowed`) so that
+logic can't silently diverge between the two, but each bootstrap still supplies its
+own allowed-origin list from its own env var.
+
 ## Rate Limiting
 
 The API uses a **Redis-backed sliding-window rate limiter** (`src/middleware/rateLimiter.ts`).

@@ -25,6 +25,9 @@ use types::{
     VoteError, FinalizationError,
 };
 
+/// Maximum allowed voting period in seconds (approximately 10 years)
+const MAX_VOTING_PERIOD: u64 = 315_360_000;
+
 #[contract]
 /// The governance contract struct.
 pub struct GovernanceContract;
@@ -38,7 +41,7 @@ impl GovernanceContract {
     /// calculations.
     ///
     /// # Arguments
-    /// * `admin`        – Address that will have admin privileges.
+    /// * `admin`        – Address that will have admin privileges (must authorize).
     /// * `total_supply` – Total token supply (must be positive).
     ///
     /// # Returns
@@ -47,7 +50,9 @@ impl GovernanceContract {
     /// # Errors
     /// * [`Error::AlreadyInitialized`] – Contract has already been initialized.
     /// * [`Error::InvalidParameters`] – `total_supply` is zero or negative.
+    /// * [`Error::Unauthorized`] – `admin` address did not authorize this call.
     pub fn initialize(env: Env, admin: Address, total_supply: i128) -> Result<(), Error> {
+        admin.require_auth();
         if storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
         }
@@ -413,9 +418,18 @@ impl GovernanceContract {
         if voting_period == 0 {
             return Err(Error::InvalidParameters);
         }
+        if voting_period > MAX_VOTING_PERIOD {
+            return Err(Error::InvalidParameters);
+        }
 
         let proposal_id = storage::get_proposal_count(&env);
-        let voting_end = env.ledger().timestamp() + voting_period;
+        let current_timestamp = env.ledger().timestamp();
+        let voting_end = current_timestamp
+            .checked_add(voting_period)
+            .ok_or_else(|| {
+                events::emit_error_detail(&env, Error::ArithmeticError as u32, current_timestamp);
+                Error::ArithmeticError
+            })?;
         let proposal = GovernanceProposal {
             id: proposal_id,
             creator: creator.clone(),

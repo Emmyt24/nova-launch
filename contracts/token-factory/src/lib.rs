@@ -231,6 +231,9 @@ impl TokenFactory {
         base_fee: i128,
         metadata_fee: i128,
     ) -> Result<(), Error> {
+        // Verify admin authorization before any state mutation
+        admin.require_auth();
+
         // Early return if already initialized
         if storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
@@ -5114,5 +5117,41 @@ mod verifier_injection_test {
 
         let claimed = client.claim_vault(&owner, &vault_id, &None);
         assert_eq!(claimed, 500_000i128);
+    }
+
+    // ─── [ISSUE #1909] TokenFactory::initialize authorization regression tests ──
+
+    #[test]
+    #[should_panic]
+    fn test_initialize_requires_admin_authorization() {
+        let env = Env::default();
+        // Do NOT mock all auths — this test verifies that initialize checks auth
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        // This should fail because admin.require_auth() is called but admin hasn't authorized
+        client.initialize(&admin, &treasury, &100, &50);
+    }
+
+    #[test]
+    fn test_initialize_succeeds_with_admin_authorization() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        // This should succeed because env.mock_all_auths() authorizes all calls
+        client.initialize(&admin, &treasury, &100, &50);
+
+        // Verify initialization succeeded by checking that we can call admin-only functions
+        let result = client.set_milestone_verifier(&admin);
+        assert!(result.is_ok());
     }
 }

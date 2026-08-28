@@ -51,6 +51,11 @@ export function createApp({ env, redis: injectedRedis }: GatewayDeps) {
   );
 
   // ── Health (no auth, no rate limit) ─────────────────────────────────────────
+  // IMPORTANT: Health endpoints are registered DIRECTLY on the app (not through
+  // middleware), so they bypass all authentication and rate limiting checks.
+  // This is intentional: health checks must be reachable by monitoring systems
+  // without credentials. The auth middleware (lines ~93) is only applied per-route
+  // to protected API endpoints, NOT globally.
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", service: "api-gateway", uptime: process.uptime() });
   });
@@ -58,6 +63,8 @@ export function createApp({ env, redis: injectedRedis }: GatewayDeps) {
   app.get("/health/ready", (_req, res) => res.json({ status: "ok" }));
 
   // ── Authentication (applied per-route based on requiresAuth flag) ───────────
+  // NOTE: Auth middleware is only attached to specific route prefixes (see lines ~93).
+  // It does not intercept the health endpoints registered above.
   const authMiddleware = createAuthMiddleware(env.JWT_SECRET);
 
   // ── Idempotency key propagation ──────────────────────────────────────────────

@@ -447,6 +447,41 @@ describe("Gateway-to-Backend Auth Propagation Integration", () => {
       expect(statusCode).toBe(200);
       expect(called).toBe(true);
     });
+
+    it("health endpoints never reach middleware when registered before middleware (issue #1897)", async () => {
+      // This test demonstrates that in app.ts, health endpoints are registered
+      // BEFORE the auth middleware is attached, so they bypass the middleware entirely.
+      // The PUBLIC_PATHS check in createAuthMiddleware is thus unreachable dead code.
+      const testApp = createMockApp();
+
+      // Simulate app.ts wiring: health endpoints registered FIRST
+      let authMiddlewareCalled = false;
+      let healthEndpointCalled = false;
+
+      testApp.get("/health", (req, res) => {
+        healthEndpointCalled = true;
+        res.json({ status: "ok" });
+      });
+
+      // Auth middleware installed AFTER health endpoints
+      const authMiddleware = createAuthMiddleware(JWT_SECRET);
+      const trackedAuthMiddleware = (req: any, res: any, next: any) => {
+        authMiddlewareCalled = true;
+        authMiddleware(req, res, next);
+      };
+      testApp.use(trackedAuthMiddleware);
+
+      // Simulate a request to /health
+      const { statusCode } = await testApp.simulateRequest("GET", "/health", {
+        headers: {}, // No auth
+      });
+
+      // Health endpoint should respond without going through auth middleware
+      expect(statusCode).toBe(200);
+      expect(healthEndpointCalled).toBe(true);
+      // This demonstrates the dead code: auth middleware is never called for /health
+      expect(authMiddlewareCalled).toBe(false);
+    });
   });
 
   describe("identity attachment correctness", () => {

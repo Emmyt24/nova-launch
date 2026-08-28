@@ -13,7 +13,19 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-/** Routes that do not require authentication. */
+/**
+ * Routes that do not require authentication.
+ *
+ * NOTE: This check is currently unreachable dead code. The health endpoints
+ * (/health, /health/live, /health/ready) are registered directly in app.ts
+ * (lines 54-58) BEFORE the auth middleware is attached to any routes (lines 91-97).
+ *
+ * This middleware is only applied per route via app.use(route.prefix, authMiddleware, ...)
+ * in the ROUTES configuration loop, so it never receives requests to the health endpoints.
+ *
+ * The check is retained as defensive-in-depth logic and for clarity, but can be safely
+ * removed if the middleware is refactored to be applied globally in the future.
+ */
 const PUBLIC_PATHS = new Set(["/health", "/health/live", "/health/ready"]);
 
 export interface JwtPayload {
@@ -35,10 +47,14 @@ declare global {
  * Creates JWT authentication middleware.
  *
  * @param jwtSecret  Secret used to verify tokens (from env).
+ *
+ * NOTE: This middleware is applied per-route in app.ts (not globally), so the
+ * PUBLIC_PATHS check is currently unreachable. It remains as a defensive measure
+ * in case the middleware wiring is changed in the future.
  */
 export function createAuthMiddleware(jwtSecret: string) {
   return function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-    // Skip auth for public paths
+    // Skip auth for public paths (currently unreachable, see comment above)
     if (PUBLIC_PATHS.has(req.path)) {
       next();
       return;

@@ -16,6 +16,9 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=true
+      # ⚠️  WARNING: Default password "changeme" is for LOCAL DEVELOPMENT ONLY!
+      # This default must be overridden with ELASTICSEARCH_PASSWORD environment variable
+      # BEFORE deploying to production. Using the default password in production is a security risk.
       - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:-changeme}
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
       - xpack.security.http.ssl.enabled=false

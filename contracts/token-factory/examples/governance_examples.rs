@@ -3,6 +3,7 @@
 /// This example demonstrates how to use the governance configuration
 /// system in a real-world DAO voting scenario.
 use soroban_sdk::{Address, Env};
+use token_factory::{governance, timelock, types::Error};
 
 /// Example 1: Initialize governance for a standard DAO
 pub fn example_standard_dao_setup(env: &Env, admin: &Address) {

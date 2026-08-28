@@ -156,7 +156,7 @@ export class GatewayRouter {
    * - If all gateways fail, throws an error.
    */
   async fetch(cid: string): Promise<unknown> {
-    let lastError: unknown;
+    const errors: Array<{ gateway: string; error: unknown }> = [];
 
     for (let i = 0; i < this.gateways.length; i++) {
       const gateway = this.gateways[i];
@@ -173,15 +173,18 @@ export class GatewayRouter {
 
         return content;
       } catch (err) {
-        lastError = err;
+        errors.push({ gateway: gateway.name, error: err });
       }
     }
 
-    throw new Error(
-      `All IPFS gateways failed for CID ${cid}: ${
-        lastError instanceof Error ? lastError.message : String(lastError)
-      }`
-    );
+    const errorDetails = errors
+      .map(
+        ({ gateway, error }) =>
+          `${gateway}: ${error instanceof Error ? error.message : String(error)}`
+      )
+      .join("; ");
+
+    throw new Error(`All IPFS gateways failed for CID ${cid}: ${errorDetails}`);
   }
 
   /** Re-pin a CID to the primary (index 0) gateway in the background. */

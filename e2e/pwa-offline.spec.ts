@@ -48,12 +48,27 @@ test.describe("PWA offline mode — cached transaction state persistence", () =>
     await page.waitForLoadState("networkidle");
 
     // Allow the service worker to install and activate before stressing the
-    // network condition. Skip if SW not supported in this browser context.
+    // network condition. Distinguish between genuine SW unsupport vs. activation failure.
     try {
       await waitForServiceWorker(page);
-    } catch {
-      // Service worker may not activate in the first load; the test still runs
-      // since cached assets from the SW's install step cover navigation requests.
+    } catch (error) {
+      // Check if service workers are supported in this browser context
+      const isSWSupported = await page.evaluate(() => "serviceWorker" in navigator);
+
+      if (!isSWSupported) {
+        // Service workers not supported — this is acceptable in some contexts
+        console.log("Service workers not supported in this browser context");
+      } else {
+        // Service workers are supported but activation failed — log a warning
+        const message = `Service worker activation failed: ${error instanceof Error ? error.message : String(error)}`;
+        page.context().on("console", () => {});  // Ensure console exists
+        console.warn(message);
+        // Also annotate the test for visibility in reports
+        test.info().annotations.push({
+          type: "warning",
+          description: message,
+        });
+      }
     }
   });
 

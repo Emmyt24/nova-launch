@@ -88,17 +88,20 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
             return Ok(());
         }
 
-        // Re-delegation: remove power from old delegatee
+        // Re-delegation: use the stored delegated_amount from the old record
+        let old_delegated_amount = old_record.delegated_amount;
+
+        // Remove power from old delegatee using the stored amount
         let old_power = storage::get_vote_power(env, &old_delegatee);
         let new_old_power = old_power
-            .checked_sub(delegator_balance)
+            .checked_sub(old_delegated_amount)
             .ok_or_else(|| {
                 events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, old_power);
                 Error::ArithmeticError
             })?;
         storage::set_vote_power(env, &old_delegatee, new_old_power.max(0));
 
-        // Add power to new delegatee
+        // Add power to new delegatee with the current balance
         let new_power = storage::get_vote_power(env, &delegatee);
         let updated_power = new_power
             .checked_add(delegator_balance)
@@ -108,11 +111,12 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
             })?;
         storage::set_vote_power(env, &delegatee, updated_power);
 
-        // Update delegation record
+        // Update delegation record with new delegated_amount
         let record = DelegationRecord {
             delegator: delegator.clone(),
             delegatee: delegatee.clone(),
             since_ledger: current_ledger,
+            delegated_amount: delegator_balance,
         };
         storage::set_delegation(env, &delegator, &record);
 
@@ -143,11 +147,12 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
             })?;
         storage::set_vote_power(env, &delegatee, new_delegatee_power);
 
-        // Store delegation record
+        // Store delegation record with the delegated amount
         let record = DelegationRecord {
             delegator: delegator.clone(),
             delegatee: delegatee.clone(),
             since_ledger: current_ledger,
+            delegated_amount: delegator_balance,
         };
         storage::set_delegation(env, &delegator, &record);
 
@@ -177,24 +182,25 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
 
     let record = storage::get_delegation(env, &delegator).ok_or(Error::NotFound)?;
     let delegatee = record.delegatee.clone();
-    let delegator_balance = storage::get_balance(env, &delegator);
+    // Use the stored delegated_amount instead of current balance
+    let delegated_amount = record.delegated_amount;
 
     let current_ledger = env.ledger().sequence();
 
-    // Remove power from delegatee
+    // Remove power from delegatee using the stored delegated_amount
     let delegatee_power = storage::get_vote_power(env, &delegatee);
     let new_delegatee_power = delegatee_power
-        .checked_sub(delegator_balance)
+        .checked_sub(delegated_amount)
         .ok_or_else(|| {
             events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegatee_power);
             Error::ArithmeticError
         })?;
     storage::set_vote_power(env, &delegatee, new_delegatee_power.max(0));
 
-    // Restore power to delegator
+    // Restore power to delegator using the stored delegated_amount
     let delegator_power = storage::get_vote_power(env, &delegator);
     let new_delegator_power = delegator_power
-        .checked_add(delegator_balance)
+        .checked_add(delegated_amount)
         .ok_or_else(|| {
             events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegator_power);
             Error::ArithmeticError
@@ -208,7 +214,7 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
     snapshot_and_emit(env, &delegatee, new_delegatee_power.max(0), current_ledger);
     snapshot_and_emit(env, &delegator, new_delegator_power, current_ledger);
 
-    events::emit_undelegated(env, &delegator, &delegatee, delegator_balance);
+    events::emit_undelegated(env, &delegator, &delegatee, delegated_amount);
 
     Ok(())
 }

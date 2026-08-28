@@ -72,6 +72,8 @@ pub struct DelegationRecord {
     pub delegatee: Address,
     /// Ledger sequence number when the delegation was created/updated
     pub since_ledger: u32,
+    /// The amount of vote power delegated at the time of delegation
+    pub delegated_amount: i128,
 }
 
 /// A historical vote-power snapshot for a given address at a ledger.

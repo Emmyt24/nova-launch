@@ -1157,3 +1157,83 @@ fn create_proposal_rejects_overflow_scenario() {
 
     assert!(result.is_err(), "Expected error when voting_end calculation overflows");
 }
+
+// ─── [ISSUE #1907] Delegation amount tracking regression tests ──────────────
+
+#[test]
+fn delegation_uses_stored_amount_after_balance_change() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+
+    let delegator = Address::generate(&env);
+    let delegatee = Address::generate(&env);
+
+    // Fund delegator with 1000 tokens
+    fund(&env, &contract_id, &admin, &delegator, 1000);
+    assert_eq!(c.get_balance(&delegator), 1000);
+    assert_eq!(c.get_vote_power(&delegator), 1000);
+
+    // Delegate all 1000 tokens
+    c.delegate(&delegator, &delegatee);
+
+    // After delegation, delegator's vote power should be 0, delegatee should have 1000
+    assert_eq!(c.get_vote_power(&delegator), 0);
+    assert_eq!(c.get_vote_power(&delegatee), 1000);
+
+    // Change delegator's balance to 500
+    fund(&env, &contract_id, &admin, &delegator, 500);
+    assert_eq!(c.get_balance(&delegator), 500);
+
+    // Vote power should not change (still delegated the original 1000, not 500)
+    assert_eq!(c.get_vote_power(&delegator), 0);
+    assert_eq!(c.get_vote_power(&delegatee), 1000);
+
+    // Undelegate — should restore 1000 (the stored delegated amount), not 500
+    c.undelegate(&delegator);
+
+    // After undelegation, delegator should have restored exactly 1000 (the delegated amount)
+    // delegatee should have 0
+    assert_eq!(c.get_vote_power(&delegator), 1000);
+    assert_eq!(c.get_vote_power(&delegatee), 0);
+
+    // Verify delegation record is cleared
+    assert!(c.get_delegation(&delegator).is_none());
+}
+
+#[test]
+fn redelegation_uses_stored_amount() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+
+    let delegator = Address::generate(&env);
+    let delegatee1 = Address::generate(&env);
+    let delegatee2 = Address::generate(&env);
+
+    // Fund delegator with 1000 tokens
+    fund(&env, &contract_id, &admin, &delegator, 1000);
+
+    // Delegate to delegatee1
+    c.delegate(&delegator, &delegatee1);
+    assert_eq!(c.get_vote_power(&delegator), 0);
+    assert_eq!(c.get_vote_power(&delegatee1), 1000);
+    assert_eq!(c.get_vote_power(&delegatee2), 0);
+
+    // Decrease delegator's balance to 400
+    fund(&env, &contract_id, &admin, &delegator, 400);
+
+    // Re-delegate to delegatee2 — should remove 1000 from delegatee1 (the stored amount)
+    // and add 400 to delegatee2 (the new current balance)
+    c.delegate(&delegator, &delegatee2);
+
+    // delegatee1 should lose the original 1000
+    assert_eq!(c.get_vote_power(&delegatee1), 0);
+    // delegatee2 should gain the new balance 400
+    assert_eq!(c.get_vote_power(&delegatee2), 400);
+    // delegator should still have 0
+    assert_eq!(c.get_vote_power(&delegator), 0);
+
+    // Verify the delegation record stores the new amount
+    let record = c.get_delegation(&delegator);
+    assert!(record.is_some());
+    assert_eq!(record.unwrap().delegated_amount, 400);
+}

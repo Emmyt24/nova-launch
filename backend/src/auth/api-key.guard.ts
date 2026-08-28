@@ -38,7 +38,8 @@ export class ApiKeyGuard implements CanActivate {
       const config = JSON.parse(raw) as ApiKeyConfig[];
       config.forEach((cfg) => {
         if (cfg.key) {
-          this.apiKeys.set(cfg.key, cfg);
+          const digest = this.hashKey(cfg.key);
+          this.apiKeys.set(digest, cfg);
         }
       });
     } catch (e) {
@@ -49,7 +50,8 @@ export class ApiKeyGuard implements CanActivate {
         .map((k) => k.trim())
         .filter(Boolean)
         .forEach((key) => {
-          this.apiKeys.set(key, { key, scopes: [] });
+          const digest = this.hashKey(key);
+          this.apiKeys.set(digest, { key, scopes: [] });
         });
     }
   }
@@ -94,17 +96,12 @@ export class ApiKeyGuard implements CanActivate {
   }
 
   private findKeyConfig(apiKey: string): ApiKeyConfig | null {
-    for (const [key, config] of this.apiKeys) {
-      if (this.safeCompare(apiKey, key)) {
-        return config;
-      }
-    }
-    return null;
+    const digest = this.hashKey(apiKey);
+    return this.apiKeys.get(digest) || null;
   }
 
-  private safeCompare(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  private hashKey(apiKey: string): string {
+    return crypto.createHash("sha256").update(apiKey).digest("hex");
   }
 }
 

@@ -33,6 +33,7 @@ const ADMIN_JWT_SECRET = resolveAdminJwtSecret();
 
 export interface AuthRequest extends Request {
   admin?: User;
+  user?: User;
 }
 
 export const authenticateAdmin = async (

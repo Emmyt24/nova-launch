@@ -123,7 +123,8 @@ pub fn is_quorum_met(total_votes: u32, total_eligible: u32, quorum_percent: u32)
         return false;
     }
 
-    let votes_required = (total_eligible as u64 * quorum_percent as u64) / 100;
+    let numerator = total_eligible as u64 * quorum_percent as u64;
+    let votes_required = (numerator + 99) / 100;
     total_votes as u64 >= votes_required
 }
 
@@ -141,7 +142,8 @@ pub fn is_approval_met(yes_votes: u32, total_votes: u32, approval_percent: u32) 
         return false;
     }
 
-    let yes_required = (total_votes as u64 * approval_percent as u64) / 100;
+    let numerator = total_votes as u64 * approval_percent as u64;
+    let yes_required = (numerator + 99) / 100;
     yes_votes as u64 >= yes_required
 }
 
@@ -718,8 +720,29 @@ mod tests {
         assert!(is_quorum_met(33, 100, 33));
         assert!(!is_quorum_met(32, 100, 33));
 
-        // 33% of 99 = 32.67 -> 32 votes required (floor)
-        assert!(is_quorum_met(32, 99, 33));
-        assert!(!is_quorum_met(31, 99, 33));
+        // 33% of 99 = 32.67 -> 33 votes required (ceiling)
+        assert!(is_quorum_met(33, 99, 33));
+        assert!(!is_quorum_met(32, 99, 33));
+    }
+
+    #[test]
+    fn test_rounding_small_vote_counts() {
+        // With 3 total votes and 51% requirement, should require 2 votes (ceiling of 1.53)
+        assert!(is_approval_met(2, 3, 51));
+        assert!(!is_approval_met(1, 3, 51));
+
+        // With 3 eligible voters and 51% quorum, should require 2 votes (ceiling of 1.53)
+        assert!(is_quorum_met(2, 3, 51));
+        assert!(!is_quorum_met(1, 3, 51));
+    }
+
+    #[test]
+    fn test_rounding_half_vote() {
+        // 50% of 3 = 1.5 -> 2 votes required (ceiling)
+        assert!(is_approval_met(2, 3, 50));
+        assert!(!is_approval_met(1, 3, 50));
+
+        assert!(is_quorum_met(2, 3, 50));
+        assert!(!is_quorum_met(1, 3, 50));
     }
 }

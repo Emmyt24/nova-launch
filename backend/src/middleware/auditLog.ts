@@ -24,10 +24,11 @@ export const auditLog = (action: string, resource: string) => {
         afterState = data;
       }
 
-      // Log the action
-      if (req.admin) {
+      // Log the action for both admin and non-admin authenticated users
+      const actor = req.admin || req.user;
+      if (actor) {
         Database.createAuditLog({
-          adminId: req.admin.id,
+          adminId: actor.id,
           action: `${req.method} ${action}`,
           resource,
           resourceId: req.params.id || "N/A",

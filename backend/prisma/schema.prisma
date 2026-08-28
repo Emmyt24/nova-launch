@@ -476,7 +476,7 @@ enum CampaignStatus {
 /// Audit trail for admin actions performed via the admin dashboard.
 model AdminAuditLog {
   id          String   @id @default(uuid())
-  adminId     String
+  adminId     String?
   action      String
   resource    String
   resourceId  String
@@ -486,7 +486,7 @@ model AdminAuditLog {
   userAgent   String
   timestamp   DateTime @default(now())
 
-  admin User @relation(fields: [adminId], references: [id])
+  admin User? @relation(fields: [adminId], references: [id])
 
   @@index([adminId])
   @@index([action])

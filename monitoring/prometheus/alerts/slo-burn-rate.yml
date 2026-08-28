@@ -47,7 +47,7 @@ groups:
           description: >
             Error ratio is {{ $value | humanizePercentage }} (threshold: 1.4%).
             At this rate the 30-day error budget will be exhausted in ~1 hour.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-availability.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-availability.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
 
       # Slow burn: 2× error budget (0.1%) over 1-hour window → P2
@@ -64,7 +64,7 @@ groups:
           description: >
             Error ratio is {{ $value | humanizePercentage }} over the last hour (threshold: 0.2%).
             At this rate the 30-day error budget will be exhausted in ~3 days.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-availability.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-availability.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
 
   # --------------------------------------------------------------------------
@@ -107,7 +107,7 @@ groups:
           description: >
             {{ $value | humanizePercentage }} of requests exceed the 500ms p95 threshold
             (fast-burn limit: 14%). Budget will be exhausted in ~1 hour.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-latency.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-latency.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
 
       # Slow burn: 2× budget (1%) over 1 hour → P2
@@ -124,7 +124,7 @@ groups:
           description: >
             {{ $value | humanizePercentage }} of requests exceed the 500ms p95 threshold
             over the last hour (slow-burn limit: 2%). Budget will be exhausted in ~3 days.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-latency.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-latency.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
 
   # --------------------------------------------------------------------------
@@ -160,7 +160,7 @@ groups:
           description: >
             Webhook failure ratio is {{ $value | humanizePercentage }} (fast-burn limit: 14%).
             At this rate the 30-day error budget will be exhausted in ~1 hour.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-webhooks.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-webhooks.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"
 
       # Slow burn: 2× error budget (1%) over 1 hour → P2
@@ -177,5 +177,5 @@ groups:
           description: >
             Webhook failure ratio is {{ $value | humanizePercentage }} over the last hour
             (slow-burn limit: 2%). Budget will be exhausted in ~3 days.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/slo-webhooks.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/slo-webhooks.md"
           dashboard_url: "https://grafana.example.com/d/nova-slo-burn-rate?viewPanel=1"

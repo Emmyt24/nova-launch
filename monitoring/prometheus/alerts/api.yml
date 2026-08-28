@@ -25,7 +25,7 @@ groups:
           description: >
             Error rate is {{ $value | humanizePercentage }} over the last 5 minutes
             (threshold: 5%). Investigate application logs immediately.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/high-error-rate.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/high-error-rate.md"
           dashboard_url: "https://grafana.example.com/d/nova-api?viewPanel=2"
 
       # -----------------------------------------------------------------------
@@ -101,5 +101,5 @@ groups:
           description: >
             The backend API ({{ $labels.instance }}) has been unreachable for
             more than 1 minute.
-          runbook_url: "https://github.com/Emmyt24/nova-launch/docs/runbooks/backend-down.md"
+          runbook_url: "https://github.com/Emmyt24/nova-launch/blob/main/docs/runbooks/backend-down.md"
           dashboard_url: "https://grafana.example.com/d/nova-overview?viewPanel=1"

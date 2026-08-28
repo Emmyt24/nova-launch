@@ -25,6 +25,9 @@ use types::{
     VoteError, FinalizationError,
 };
 
+/// Maximum allowed voting period in seconds (approximately 10 years)
+const MAX_VOTING_PERIOD: u64 = 315_360_000;
+
 #[contract]
 /// The governance contract struct.
 pub struct GovernanceContract;
@@ -413,9 +416,18 @@ impl GovernanceContract {
         if voting_period == 0 {
             return Err(Error::InvalidParameters);
         }
+        if voting_period > MAX_VOTING_PERIOD {
+            return Err(Error::InvalidParameters);
+        }
 
         let proposal_id = storage::get_proposal_count(&env);
-        let voting_end = env.ledger().timestamp() + voting_period;
+        let current_timestamp = env.ledger().timestamp();
+        let voting_end = current_timestamp
+            .checked_add(voting_period)
+            .ok_or_else(|| {
+                events::emit_error_detail(&env, Error::ArithmeticError as u32, current_timestamp);
+                Error::ArithmeticError
+            })?;
         let proposal = GovernanceProposal {
             id: proposal_id,
             creator: creator.clone(),

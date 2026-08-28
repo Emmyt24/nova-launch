@@ -1078,3 +1078,82 @@ fn execute_proposal_emits_exec_prop_event() {
     let emitted_desc = String::try_from_val(&env, &data).unwrap();
     assert_eq!(emitted_desc, description, "exec_prop data description mismatch");
 }
+
+// ─── [ISSUE #1906] Arithmetic overflow regression tests ──────────────────
+
+#[test]
+fn create_proposal_rejects_voting_period_exceeding_max() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let description = String::from_slice(&env, "test proposal");
+    let payload = soroban_sdk::Bytes::new(&env);
+
+    // MAX_VOTING_PERIOD is 315_360_000; try u64::MAX to overflow
+    let result = c.try_create_proposal(
+        &creator,
+        &description,
+        &payload,
+        &u64::MAX,  // This should be rejected
+        &1_000_i128,
+        &50_u32,
+    );
+
+    assert!(result.is_err(), "Expected error when voting_period exceeds MAX_VOTING_PERIOD");
+}
+
+#[test]
+fn create_proposal_computes_voting_end_safely() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let description = String::from_slice(&env, "test proposal");
+    let payload = soroban_sdk::Bytes::new(&env);
+
+    // Set ledger to near u64::MAX - should still succeed with valid voting_period
+    env.ledger().set_timestamp(u64::MAX - 100_000);
+
+    // A small voting period that won't overflow
+    let voting_period = 1_000_u64;
+    let proposal_id = c.create_proposal(
+        &creator,
+        &description,
+        &payload,
+        &voting_period,
+        &1_000_i128,
+        &50_u32,
+    );
+
+    let proposal = c.get_proposal(&proposal_id);
+    assert!(proposal.is_some());
+    // voting_end should be (u64::MAX - 100_000) + 1_000
+    let expected_voting_end = (u64::MAX - 100_000) + 1_000;
+    assert_eq!(proposal.unwrap().voting_end, expected_voting_end);
+}
+
+#[test]
+fn create_proposal_rejects_overflow_scenario() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let description = String::from_slice(&env, "test proposal");
+    let payload = soroban_sdk::Bytes::new(&env);
+
+    // Set ledger to u64::MAX so timestamp + any period overflows
+    env.ledger().set_timestamp(u64::MAX);
+
+    // Even a small voting period should fail due to overflow
+    let result = c.try_create_proposal(
+        &creator,
+        &description,
+        &payload,
+        &1_u64,  // smallest non-zero period
+        &1_000_i128,
+        &50_u32,
+    );
+
+    assert!(result.is_err(), "Expected error when voting_end calculation overflows");
+}

@@ -447,6 +447,21 @@ fn is_paused_reflects_state() {
 // ─── [EDGE] Edge cases ────────────────────────────────────────────────────
 
 #[test]
+fn get_admin_returns_initial_and_transferred_admin() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+
+    // Verify get_admin returns the address passed to initialize
+    assert_eq!(c.get_admin(), admin);
+
+    let new_admin = Address::generate(&env);
+    c.transfer_admin(&admin, &new_admin);
+
+    // Verify get_admin returns the new address immediately after transfer_admin succeeds
+    assert_eq!(c.get_admin(), new_admin);
+}
+
+#[test]
 fn transfer_admin_succeeds() {
     let (env, contract_id, admin) = setup();
     let c = client(&env, &contract_id);

@@ -238,6 +238,39 @@ describe("runAuditRetention", () => {
 
     expect(mockArchiveAuditRecords).toHaveBeenCalledTimes(2);
   });
+
+  it("honors custom retentionDays below 91 so every purged record is archived first", async () => {
+    const customRetentionDays = 30; // below 91
+    const logs = [
+      makeLog(10),  // 10 days old - keep in hot store
+      makeLog(45),  // 45 days old - within the (30, 91) gap: must be archived before purge
+      makeLog(120), // 120 days old - must be archived before purge
+    ];
+    mockGetAuditLogs.mockResolvedValue(logs);
+    mockArchiveAuditRecords.mockResolvedValue(makeArchiveResult(2, "warm"));
+
+    const purged = await runAuditRetention(customRetentionDays);
+
+    expect(purged).toBe(2);
+    expect(mockArchiveAuditRecords).toHaveBeenCalled();
+
+    // Check that warm archival cutoff was derived from customRetentionDays (30 days ago, not hardcoded 91)
+    const [warmCutoffArg, tier] = mockArchiveAuditRecords.mock.calls[0];
+    expect(tier).toBe("warm");
+    expect(warmCutoffArg).toBeInstanceOf(Date);
+
+    const warmCutoffDays =
+      (Date.now() - warmCutoffArg.getTime()) / (24 * 60 * 60 * 1000);
+    expect(warmCutoffDays).toBeCloseTo(30, 0);
+
+    // Verify all purged records fall within the archival cutoff window
+    const [purgeCutoffArg] = mockPurgeAuditLogs.mock.calls[0];
+    const purgedRecords = logs.filter((l) => l.timestamp < purgeCutoffArg);
+    expect(purgedRecords).toHaveLength(2);
+    for (const record of purgedRecords) {
+      expect(record.timestamp.getTime()).toBeLessThan(warmCutoffArg.getTime());
+    }
+  });
 });
 
 // ── Checkpoint resumability ───────────────────────────────────────────────────

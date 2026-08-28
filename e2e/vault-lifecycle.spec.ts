@@ -55,7 +55,12 @@ async function waitForBalanceUpdate(
   await page.waitForFunction(
     ({ sel, expected }: { sel: string; expected: string }) => {
       const balanceEl = document.querySelector(sel);
-      return balanceEl?.textContent?.includes(expected);
+      const text = balanceEl?.textContent || "";
+      // Extract numeric value by removing currency symbols, commas, and whitespace
+      const cleanText = text.replace(/[$,\s]/g, "");
+      const cleanExpected = expected.replace(/[$,\s]/g, "");
+      // Exact match using word boundaries to avoid substring collisions (e.g., "10" vs "100")
+      return new RegExp(`\\b${cleanExpected}\\b`).test(cleanText);
     },
     { sel: SEL.vaultBalanceDisplay, expected: expectedAmount },
     { timeout: timeoutMs }
@@ -71,7 +76,13 @@ async function waitForTransactionInHistory(
   await page.waitForFunction(
     ({ sel, expected }: { sel: string; expected: string }) => {
       const items = document.querySelectorAll(sel);
-      return Array.from(items).some((item) => item.textContent?.includes(expected));
+      const cleanExpected = expected.replace(/[$,\s]/g, "");
+      return Array.from(items).some((item) => {
+        const text = item.textContent || "";
+        const cleanText = text.replace(/[$,\s]/g, "");
+        // Exact match using word boundaries to avoid substring collisions (e.g., "10" vs "100")
+        return new RegExp(`\\b${cleanExpected}\\b`).test(cleanText);
+      });
     },
     { sel: selector, expected: amount },
     { timeout: timeoutMs }
@@ -142,7 +153,7 @@ test.describe("Vault Deposit-Withdrawal Lifecycle (#1574)", () => {
       parseFloat(initialBalanceText || "0") + parseFloat(depositAmount)
     ).toString();
 
-    await waitForBalanceUpdate(page, depositAmount.substring(0, 1), 15_000);
+    await waitForBalanceUpdate(page, depositAmount, 15_000);
 
     // Deposit should appear in history
     await waitForTransactionInHistory(
@@ -430,5 +441,47 @@ test.describe("Vault Deposit-Withdrawal Lifecycle (#1574)", () => {
     ]);
 
     expect(errorVisible).toBeTruthy();
+  });
+
+  // -- 8. Substring collision test: 10 vs 100 -----------------------------------
+
+  test("balance assertions distinguish between substring values (10 vs 100)", async ({
+    page,
+  }) => {
+    // Open vault
+    const vaultCard = page.locator(SEL.vaultListCard).first();
+    await vaultCard.waitFor({ timeout: 10_000 });
+    await vaultCard.click();
+
+    // Deposit 10 and verify exact balance
+    const firstDeposit = "10";
+    await page.click(SEL.depositBtn);
+    await page.fill(SEL.depositAmountInput, firstDeposit);
+    await page.click(SEL.submitDepositBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Balance should show exactly 10, not match a balance containing "100" or "210"
+    await waitForBalanceUpdate(page, firstDeposit, 15_000);
+
+    // Now deposit 100 and verify the balance updates correctly
+    // This ensures the assertion doesn't incorrectly pass by matching "10" within "100"
+    const secondDeposit = "100";
+    await page.click(SEL.depositBtn);
+    await page.fill(SEL.depositAmountInput, secondDeposit);
+    await page.click(SEL.submitDepositBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Verify the balance is now 110 (10 + 100), not still 10
+    await waitForBalanceUpdate(page, "110", 15_000);
+
+    // Both deposits should appear in history with correct amounts
+    await waitForTransactionInHistory(page, SEL.depositHistoryItem, firstDeposit, 10_000);
+    await waitForTransactionInHistory(page, SEL.depositHistoryItem, secondDeposit, 10_000);
   });
 });

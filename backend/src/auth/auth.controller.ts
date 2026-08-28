@@ -84,7 +84,9 @@ export class AuthController {
     status: 429,
     description: "Too many nonce requests — rate limit exceeded",
   })
-  getNonce(@Query("publicKey") publicKey: string): NonceResponseDto {
+  async getNonce(
+    @Query("publicKey") publicKey: string
+  ): Promise<NonceResponseDto> {
     return this.authService.requestNonce(publicKey);
   }
 
@@ -110,8 +112,7 @@ export class AuthController {
       typical: {
         summary: "Standard wallet login",
         value: {
-          publicKey:
-            "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+          publicKey: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
           signature:
             "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ012=",
           nonce: "3f7e1b2a-9c4d-4e8f-a1b2-c3d4e5f60718",
@@ -126,7 +127,8 @@ export class AuthController {
     content: {
       "application/json": {
         example: {
-          accessToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST...",
+          accessToken:
+            "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST...",
           refreshToken:
             "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaST...",
           expiresIn: 900,
@@ -144,7 +146,10 @@ export class AuthController {
       "application/json": {
         example: {
           statusCode: 400,
-          message: ["publicKey should not be empty", "signature should not be empty"],
+          message: [
+            "publicKey should not be empty",
+            "signature should not be empty",
+          ],
           error: "Bad Request",
         },
       },
@@ -214,7 +219,8 @@ export class AuthController {
     content: {
       "application/json": {
         example: {
-          accessToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaSS...",
+          accessToken:
+            "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaSS...",
           refreshToken:
             "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJHQUFaSS...",
           expiresIn: 900,
@@ -264,7 +270,7 @@ export class AuthController {
       },
     },
   })
-  refresh(@Body() dto: RefreshTokenDto): AuthResponseDto {
+  async refresh(@Body() dto: RefreshTokenDto): Promise<AuthResponseDto> {
     return this.authService.refreshTokens(dto);
   }
 
@@ -314,9 +320,9 @@ export class AuthController {
       },
     },
   })
-  logout(@CurrentUser() user: JwtPayloadDto): void {
+  async logout(@CurrentUser() user: JwtPayloadDto): Promise<void> {
     if (user.jti) {
-      this.authService.logout(user.jti);
+      await this.authService.logout(user.jti);
     }
   }
 

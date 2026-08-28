@@ -24,7 +24,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, "jwt") {
       throw new UnauthorizedException("Invalid token type");
     }
 
-    if (payload.jti && this.tokenService.isRevoked(payload.jti)) {
+    if (payload.jti && (await this.tokenService.isRevoked(payload.jti))) {
       throw new UnauthorizedException("Token has been revoked");
     }
 

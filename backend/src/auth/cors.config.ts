@@ -1,6 +1,14 @@
 import { CorsOptions } from "@nestjs/common/interfaces/external/cors-options.interface";
 
 export function buildCorsOptions(allowedOrigins: string[]): CorsOptions {
+  if (allowedOrigins.includes("*")) {
+    throw new Error(
+      "CORS misconfiguration: wildcard '*' cannot be combined with credentials: true. " +
+        "This would allow any origin to make authenticated cross-origin requests. " +
+        "Use an explicit list of allowed origins instead."
+    );
+  }
+
   return {
     origin: (origin, callback) => {
       // Allow server-to-server calls (no origin header)
@@ -9,7 +17,7 @@ export function buildCorsOptions(allowedOrigins: string[]): CorsOptions {
         return;
       }
 
-      if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`Origin ${origin} not allowed by CORS policy`));

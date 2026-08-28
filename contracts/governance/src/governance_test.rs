@@ -1237,3 +1237,35 @@ fn redelegation_uses_stored_amount() {
     assert!(record.is_some());
     assert_eq!(record.unwrap().delegated_amount, 400);
 }
+
+// ─── [ISSUE #1908] GovernanceContract::initialize authorization regression tests ──
+
+#[test]
+#[should_panic]
+fn initialize_requires_admin_authorization() {
+    let env = Env::default();
+    // Do NOT mock all auths — this test verifies that initialize checks auth
+    let contract_id = env.register_contract(None, GovernanceContract);
+    let c = GovernanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    // This should fail because admin.require_auth() is called but admin hasn't authorized
+    c.initialize(&admin, &1_000_000_i128);
+}
+
+#[test]
+fn initialize_succeeds_with_admin_authorization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, GovernanceContract);
+    let c = GovernanceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    // This should succeed because env.mock_all_auths() authorizes all calls
+    c.initialize(&admin, &1_000_000_i128);
+
+    // Verify initialization succeeded
+    assert_eq!(c.get_admin(), admin);
+    assert_eq!(c.get_total_supply(), 1_000_000_i128);
+}

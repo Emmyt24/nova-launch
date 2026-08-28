@@ -41,7 +41,7 @@ impl GovernanceContract {
     /// calculations.
     ///
     /// # Arguments
-    /// * `admin`        – Address that will have admin privileges.
+    /// * `admin`        – Address that will have admin privileges (must authorize).
     /// * `total_supply` – Total token supply (must be positive).
     ///
     /// # Returns
@@ -50,7 +50,9 @@ impl GovernanceContract {
     /// # Errors
     /// * [`Error::AlreadyInitialized`] – Contract has already been initialized.
     /// * [`Error::InvalidParameters`] – `total_supply` is zero or negative.
+    /// * [`Error::Unauthorized`] – `admin` address did not authorize this call.
     pub fn initialize(env: Env, admin: Address, total_supply: i128) -> Result<(), Error> {
+        admin.require_auth();
         if storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
         }

@@ -5,17 +5,22 @@
 import { Router, Request, Response } from 'express';
 import { authenticateAdmin } from '../../middleware/auth';
 import { successResponse, errorResponse } from '../../utils/response';
+import { prisma } from '../../lib/prisma';
 
 const router = Router();
 
-// In-memory store — replace with DB persistence when ready
-let treasuryPolicy = { dailyCap: '1000000000' }; // stroops as string (bigint-safe)
+const TREASURY_POLICY_KEY = 'treasury_policy_daily_cap';
+const DEFAULT_DAILY_CAP = '1000000000';
 
-router.get('/', authenticateAdmin, (_req: Request, res: Response) => {
-  res.json(successResponse({ ...treasuryPolicy, fetchedAt: new Date().toISOString() }));
+router.get('/', authenticateAdmin, async (_req: Request, res: Response) => {
+  const policy = await prisma.integrationState.findUnique({
+    where: { key: TREASURY_POLICY_KEY },
+  });
+  const dailyCap = policy?.value ?? DEFAULT_DAILY_CAP;
+  res.json(successResponse({ dailyCap, fetchedAt: new Date().toISOString() }));
 });
 
-router.put('/', authenticateAdmin, (req: Request, res: Response) => {
+router.put('/', authenticateAdmin, async (req: Request, res: Response) => {
   const { dailyCap } = req.body;
 
   if (typeof dailyCap !== 'string' || !/^\d+$/.test(dailyCap)) {
@@ -24,8 +29,12 @@ router.put('/', authenticateAdmin, (req: Request, res: Response) => {
     );
   }
 
-  treasuryPolicy = { dailyCap };
-  res.json(successResponse({ ...treasuryPolicy, updatedAt: new Date().toISOString() }));
+  await prisma.integrationState.upsert({
+    where: { key: TREASURY_POLICY_KEY },
+    create: { key: TREASURY_POLICY_KEY, value: dailyCap },
+    update: { value: dailyCap },
+  });
+  res.json(successResponse({ dailyCap, updatedAt: new Date().toISOString() }));
 });
 
 export default router;

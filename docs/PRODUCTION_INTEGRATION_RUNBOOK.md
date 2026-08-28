@@ -201,3 +201,37 @@ After rollback:
 | `scripts/smoke-test.sh` | Contract-level smoke tests |
 | `scripts/fullstack-smoke-test.sh` | Frontend + backend + chain integration |
 | `scripts/verify-deployment.sh` | Post-deploy verification |
+
+---
+
+## High API Error Rate
+
+Triggered by `alertHighApiErrorRate` (PagerDuty event type `api-error-rate-high`, P2/error severity).
+
+Symptoms:
+
+- Backend 5xx rate exceeds the configured threshold (5% in production, 20% in staging).
+- PagerDuty incident fired with dedup key `nova-api-high-error-rate`.
+
+Triage:
+
+1. Check the API CloudWatch dashboard (`module.monitoring.api_dashboard_name`) for the error-rate and latency panels.
+2. Correlate the spike with a recent deploy (`kubectl rollout history` / ECS task revisions) or a downstream dependency outage.
+3. Pull recent structured logs with the same `correlationId` to find the failing endpoints.
+4. If a single endpoint is responsible, throttle or disable the feature flag; otherwise roll back the last deploy.
+
+## Database Connection Pool Exhausted
+
+Triggered by `alertDatabasePoolExhausted` (PagerDuty event type equivalent to `db-connection-loss`, P1/critical severity).
+
+Symptoms:
+
+- Prisma reports no available connections (`TimedOut fetching a new connection` / pool exhausted).
+- PagerDuty incident fired with dedup key `nova-db-pool-exhausted`.
+
+Triage:
+
+1. Check the RDS instance metrics (connections, CPU, freeable memory) and the `backend_log_group_name` for pool-wait timeouts.
+2. Confirm no long-running migration or batch job is holding connections open.
+3. Scale the connection limit or restart the backend service to recycle leaked connections.
+4. If the database itself is unhealthy, follow the DB-connection-loss runbook and fail over to the standby.

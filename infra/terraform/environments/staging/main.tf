@@ -201,6 +201,9 @@ module "waf" {
   log_retention_days               = 7
   blocked_requests_alarm_threshold = 2000
 
+  # Notify on-call when the WAF starts blocking an unusual volume of requests.
+  sns_topic_arn = module.monitoring.sns_topic_arn
+
   tags = local.common_tags
 }
 

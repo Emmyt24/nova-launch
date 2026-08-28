@@ -57,6 +57,12 @@ variable "blocked_requests_alarm_threshold" {
   default     = 1000
 }
 
+variable "sns_topic_arn" {
+  description = "Optional SNS topic ARN to notify when the waf_blocked_requests alarm changes state. Empty string disables notifications (module works standalone)."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

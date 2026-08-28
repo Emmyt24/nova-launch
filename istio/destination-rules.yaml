@@ -61,6 +61,13 @@ spec:
     connectionPool:
       http:
         http1MaxPendingRequests: 100
+    # Same circuit-breaker parity as backend/gateway so a frontend outage
+    # returning 5xx is ejected from the mesh's routing table.
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
 ---
 # ── redis (TCP — no mTLS upgrade, passthrough) ────────────────────────────────
 apiVersion: networking.istio.io/v1beta1

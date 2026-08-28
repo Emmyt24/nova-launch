@@ -270,7 +270,7 @@ describe('destination-rules.yaml', () => {
     expect(dr.spec.trafficPolicy.tls.mode).toBe('DISABLE');
   });
 
-  it.each(['backend', 'gateway'])('%s has outlier detection (circuit breaker)', (name) => {
+  it.each(['backend', 'gateway', 'frontend'])('%s has outlier detection (circuit breaker)', (name) => {
     const dr = find(destRules, 'DestinationRule', name);
     expect(dr.spec.trafficPolicy.outlierDetection).toBeDefined();
     expect(dr.spec.trafficPolicy.outlierDetection.consecutive5xxErrors).toBeGreaterThan(0);

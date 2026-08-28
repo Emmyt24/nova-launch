@@ -28,6 +28,15 @@ function makeApp(timeoutMs: number, handlerDelayMs?: number) {
     // Simulate a second write after headers sent — middleware must not crash
   });
 
+  // A handler that, unaware the timeout already fired, writes to `res` after
+  // the configured timeout has elapsed. Before the post-timeout guard this
+  // would throw "Cannot set headers after they are sent".
+  app.get("/late-write", (_req: Request, res: Response) => {
+    setTimeout(() => {
+      res.json({ ok: true });
+    }, handlerDelayMs ?? timeoutMs * 2);
+  });
+
   return app;
 }
 
@@ -128,5 +137,27 @@ describe("createTimeoutMiddleware()", () => {
 
   it("DEFAULT_TIMEOUT_MS is 30000", () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(30_000);
+  });
+});
+
+// ─── Post-timeout write guard (real timers) ───────────────────────────────
+// Exercises the path where the middleware has already sent the 503 and the
+// still-running downstream handler later attempts to write to `res`. Uses
+// real timers (not vi.useFakeTimers) so the response actually flushes and
+// the late write can be observed.
+describe("createTimeoutMiddleware() post-timeout write guard", () => {
+  it("does not crash when the handler writes after the timeout has fired", async () => {
+    const app = makeApp(30, 60);
+
+    const res = await request(app).get("/late-write");
+
+    expect(res.status).toBe(503);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe("REQUEST_TIMEOUT");
+
+    // Keep the test alive past the handler's delayed write so any thrown
+    // "Cannot set headers after they are sent" surfaces here instead of as an
+    // unhandled rejection after the test completes.
+    await new Promise((r) => setTimeout(r, 120));
   });
 });

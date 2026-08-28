@@ -56,6 +56,18 @@ export function createTimeoutMiddleware(timeoutMs: number = getTimeoutMs()) {
           timestamp: new Date().toISOString(),
         });
       }
+
+      // The downstream handler is still running concurrently. Once we have
+      // sent the timeout response, any later attempt by that handler to write
+      // to `res` (e.g. res.json()/res.send()/res.end()) would throw
+      // "Cannot set headers after they are sent" and surface as an unhandled
+      // rejection. Neutralise those late writes so they become safe no-ops.
+      const noop = function (): Response {
+        return res;
+      };
+      res.json = noop as unknown as Response["json"];
+      res.send = noop as unknown as Response["send"];
+      res.end = (noop as unknown as Response["end"]).bind(res);
     }, timeoutMs);
 
     // Attach the flag so downstream handlers can check it if needed.

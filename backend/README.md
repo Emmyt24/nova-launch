@@ -58,11 +58,9 @@ Copy `.env.example` to `.env` and configure:
 cp .env.example .env
 ```
 
-Required environment variables:
-
-- `PORT` - Server port (default: 3001)
-- `ADMIN_JWT_SECRET` - Secret for admin JWT tokens
-- `DATABASE_URL` - Database connection string
+`.env.example` documents every variable inline. The core set is validated at
+startup — see [Environment Variables](#environment-variables) below for the
+authoritative rules.
 
 ### Development
 

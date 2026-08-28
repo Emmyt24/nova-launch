@@ -57,12 +57,51 @@ export interface GovernanceProposalStatusChangedEventPayload {
 }
 
 /**
- * Published when a token deployment is confirmed. Unified schema matching GraphQL `tokenDeployed` subscription payload expectations for proper tenant scoping and filtering.
+ * Published when a vote is cast on a governance proposal. Consumed by the GraphQL `proposalVoteCast` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.proposalVoteCast).
  *
- * Event type: `token.deployed`
+ * Event type: `governance.proposal.voteCast`
  */
-export interface TokenDeployedEventPayload {
-  /** Deployed contract address (Stellar G-address). */
+export interface GovernanceProposalVoteCastEventPayload {
+  /** Schema version for this event type. Bump on breaking changes. */
+  schemaVersion?: 1;
+  /** Owning token's creator address, used for tenant scoping (TenantScopedPayload). */
+  creatorAddress: string;
+  proposalId: number;
+  tokenAddress: string;
+  /** Address that cast the vote. */
+  voter: string;
+  /** Whether the vote is in support (true) or against (false) the proposal. */
+  support: boolean;
+  /** Voting power of the voter — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive. */
+  weight: unknown;
+  /** Total votes in favor after this vote — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive. */
+  votesFor: unknown;
+  /** Total votes against after this vote — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive. */
+  votesAgainst: unknown;
+  /** Optional reason provided with the vote. */
+  reason?: string | null;
+  txHash: string;
+  timestamp: string;
+}
+
+/** Shape published by batchTokenDeployService.ts. */
+export interface TokenDeployedEventPayloadVariant1 {
+  /** Primary key of the Token record. */
+  tokenId: string;
+  /** Deployed contract address. */
+  address: string;
+  /** Stellar/Soroban address of the token creator. */
+  creator: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  /** Stringified bigint (string) or raw bigint depending on the publisher. */
+  initialSupply: unknown;
+  metadataUri?: string | null;
+}
+
+/** Shape expected by the GraphQL tokenDeployed subscription (TokenDeployedPayload). */
+export interface TokenDeployedEventPayloadVariant2 {
   tokenAddress: string;
   /** Stellar/Soroban address of the token creator. Used for tenant scoping in subscriptions. */
   creatorAddress: string;
@@ -101,6 +140,7 @@ export interface EventPayloadMap {
   "burn.executed": BurnExecutedEventPayload;
   "example.generic": ExampleGenericEventPayload;
   "governance.proposal.statusChanged": GovernanceProposalStatusChangedEventPayload;
+  "governance.proposal.voteCast": GovernanceProposalVoteCastEventPayload;
   "token.deployed": TokenDeployedEventPayload;
   "vault.matured": VaultMaturedEventPayload;
 }
@@ -110,6 +150,7 @@ export const EVENT_SCHEMA_VERSIONS = {
   "burn.executed": 1,
   "example.generic": 1,
   "governance.proposal.statusChanged": 1,
+  "governance.proposal.voteCast": 1,
   "token.deployed": 1,
   "vault.matured": 1,
 } as const;

@@ -7,6 +7,11 @@
  * metadata (`streamMetadataService`) for streams created via the
  * token-factory contract's `streaming` module; it does not ingest on-chain
  * events itself.
+ *
+ * Security: PUT /api/streams/:streamId/metadata requires JWT authentication
+ * (#1901). The authenticated caller's address is extracted from the JWT
+ * and used to authorize updates, replacing the insecure plaintext creator
+ * comparison.
  */
 
 import { Router, Request, Response } from "express";
@@ -20,6 +25,7 @@ import {
   StreamMetadataAuthError,
   type PaymentStreamMetadataDto,
 } from "../services/streamMetadataService";
+import { tenantMiddleware, type TenantRequest } from "../middleware/tenancy";
 
 const router = Router();
 
@@ -44,7 +50,6 @@ function serializeAll(
 }
 
 const upsertMetadataSchema = z.object({
-  creator: z.string().min(1),
   recipient: z.string().min(1),
   title: z.string().max(200).optional(),
   description: z.string().max(2000).optional(),
@@ -82,49 +87,71 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
 /**
  * PUT /api/streams/:streamId/metadata
  *
- * Create or update a stream's off-chain metadata. On first write, `creator`
- * and `recipient` are recorded; subsequent writes must be made with the same
- * `creator` or are rejected with 403.
+ * Create or update a stream's off-chain metadata. Requires JWT authentication.
+ * The authenticated caller's address becomes the creator on first write.
+ * Subsequent writes must be made by the same authenticated caller or are
+ * rejected with 401/403.
+ *
+ * Security (#1901): Caller identity is derived from JWT, not the request body.
+ * This prevents unauthorized updates via plaintext address impersonation.
  */
-router.put("/:streamId/metadata", async (req: Request, res: Response) => {
-  const streamId = parseStreamId(req.params.streamId);
-  if (streamId === null) {
-    return res
-      .status(400)
-      .json(
-        errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
-      );
-  }
-
-  const parsed = upsertMetadataSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json(
-      errorResponse({
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues,
-      })
-    );
-  }
-
-  try {
-    const metadata = await upsertStreamMetadata({ streamId, ...parsed.data });
-    res.json(successResponse(serialize(metadata)));
-  } catch (error) {
-    if (error instanceof StreamMetadataAuthError) {
+router.put(
+  "/:streamId/metadata",
+  tenantMiddleware({ required: true }),
+  async (req: TenantRequest, res: Response) => {
+    const streamId = parseStreamId(req.params.streamId);
+    if (streamId === null) {
       return res
-        .status(403)
-        .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
+        .status(400)
+        .json(
+          errorResponse({ code: "INVALID_INPUT", message: "Invalid stream ID" })
+        );
     }
-    console.error("[streams] PUT /:streamId/metadata error:", error);
-    res.status(500).json(
-      errorResponse({
-        code: "INTERNAL_SERVER_ERROR",
-        message: "Failed to update stream metadata",
-      })
-    );
+
+    // Extract authenticated caller's address from JWT via tenancy middleware
+    if (!req.tenant) {
+      return res.status(401).json(
+        errorResponse({
+          code: "UNAUTHENTICATED",
+          message: "Authentication required",
+        })
+      );
+    }
+
+    const parsed = upsertMetadataSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json(
+        errorResponse({
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        })
+      );
+    }
+
+    try {
+      const metadata = await upsertStreamMetadata({
+        streamId,
+        creator: req.tenant.id, // Use authenticated caller's address from JWT
+        ...parsed.data,
+      });
+      res.json(successResponse(serialize(metadata)));
+    } catch (error) {
+      if (error instanceof StreamMetadataAuthError) {
+        return res
+          .status(403)
+          .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
+      }
+      console.error("[streams] PUT /:streamId/metadata error:", error);
+      res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to update stream metadata",
+        })
+      );
+    }
   }
-});
+);
 
 /**
  * GET /api/streams/creator/:address

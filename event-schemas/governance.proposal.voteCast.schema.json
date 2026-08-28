@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nova-launch.dev/event-schemas/governance.proposal.voteCast.schema.json",
+  "title": "GovernanceProposalVoteCastEvent",
+  "description": "Published when a vote is cast on a governance proposal. Consumed by the GraphQL `proposalVoteCast` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.proposalVoteCast).",
+  "type": "object",
+  "schemaVersion": 1,
+  "eventType": "governance.proposal.voteCast",
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Schema version for this event type. Bump on breaking changes."
+    },
+    "creatorAddress": {
+      "type": "string",
+      "description": "Owning token's creator address, used for tenant scoping (TenantScopedPayload)."
+    },
+    "proposalId": {
+      "type": "integer"
+    },
+    "tokenAddress": {
+      "type": "string"
+    },
+    "voter": {
+      "type": "string",
+      "description": "Address that cast the vote."
+    },
+    "support": {
+      "type": "boolean",
+      "description": "Whether the vote is in support (true) or against (false) the proposal."
+    },
+    "weight": {
+      "description": "Voting power of the voter — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive."
+    },
+    "votesFor": {
+      "description": "Total votes in favor after this vote — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive."
+    },
+    "votesAgainst": {
+      "description": "Total votes against after this vote — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive."
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Optional reason provided with the vote."
+    },
+    "txHash": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "creatorAddress",
+    "proposalId",
+    "tokenAddress",
+    "voter",
+    "support",
+    "weight",
+    "votesFor",
+    "votesAgainst",
+    "txHash",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

@@ -15,11 +15,13 @@
  * @module webhookDeduplication
  */
 
-export interface DeduplicationEntry {
+export interface DeduplicationEntry<T = unknown> {
   /** ISO timestamp when the event was first processed */
   processedAt: string;
   /** Whether the first processing attempt succeeded */
   success: boolean;
+  /** The result returned by the handler */
+  result: T;
   /** Expiry timestamp (ms since epoch) */
   expiresAt: number;
 }
@@ -101,7 +103,7 @@ export class WebhookDeduplicationService {
    * Process an event exactly once.
    *
    * If `eventId` has been seen within the deduplication window, the handler
-   * is NOT called and `duplicate: true` is returned.
+   * is NOT called and `duplicate: true` is returned with the cached result.
    *
    * @param eventId  Stable identifier for the event (e.g. Stripe `evt_…` ID).
    * @param handler  Async function that performs the actual processing.
@@ -112,9 +114,9 @@ export class WebhookDeduplicationService {
   ): Promise<ProcessResult<T>> {
     this.evict();
 
-    const existing = this.store.get(eventId);
+    const existing = this.store.get(eventId) as DeduplicationEntry<T> | undefined;
     if (existing) {
-      return { processed: false, duplicate: true, result: existing.success as unknown as T };
+      return { processed: false, duplicate: true, result: existing.result };
     }
 
     const result = await handler();
@@ -122,6 +124,7 @@ export class WebhookDeduplicationService {
     this.store.set(eventId, {
       processedAt: new Date(this.now()).toISOString(),
       success: true,
+      result,
       expiresAt: this.now() + this.windowMs,
     });
 

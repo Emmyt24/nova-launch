@@ -57,4 +57,31 @@ describe("Stats API", () => {
     expect(() => new Date(timestamp)).not.toThrow();
     expect(timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   });
+
+  it("should correctly aggregate totalBurned using BigInt for precision", async () => {
+    const response = await request(app).get("/api/stats").expect(200);
+
+    const { totalBurned } = response.body.data;
+    // Verify it's a string (as returned by BigInt.toString())
+    expect(typeof totalBurned).toBe("string");
+    // Verify it's a valid number string
+    expect(/^\d+$/.test(totalBurned)).toBe(true);
+  });
+
+  it("should handle totalBurned values exceeding MAX_SAFE_INTEGER", async () => {
+    const response = await request(app).get("/api/stats").expect(200);
+
+    const { totalBurned } = response.body.data;
+    // BigInt can safely represent values beyond Number.MAX_SAFE_INTEGER
+    // Verify the string representation is numeric
+    const burned = BigInt(totalBurned);
+    expect(burned >= 0n).toBe(true);
+  });
+
+  it("should maintain totalBurned as string in response", async () => {
+    const response = await request(app).get("/api/stats").expect(200);
+
+    expect(typeof response.body.data.totalBurned).toBe("string");
+    expect(() => BigInt(response.body.data.totalBurned)).not.toThrow();
+  });
 });

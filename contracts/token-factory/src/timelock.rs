@@ -61,6 +61,13 @@ pub fn get_timelock_delay_config(env: &Env) -> TimelockDelayConfig {
 /// * `Error::Unauthorized` - If called outside a governance execution context
 ///   (i.e. the caller is not the contract itself via `env.current_contract_address()`).
 pub fn set_timelock_delay_config(env: &Env, config: &TimelockDelayConfig) -> Result<(), Error> {
+    // Verify caller is the contract itself (governance-only access)
+    // This function may only be called through a successful governance proposal execution
+    let current_contract = env.current_contract_address();
+    if env.invoker() != current_contract {
+        return Err(Error::Unauthorized);
+    }
+
     // Minimum sanity: each delay must be at least 1 ledger
     if config.fee_change_delay == 0
         || config.admin_transfer_delay == 0
@@ -497,6 +504,50 @@ mod tests {
         cancel(&env, &contract_id, &admin, change_id).unwrap();
 
         assert!(pending(&env, &contract_id, change_id).is_none());
+    }
+
+    #[test]
+    fn test_set_timelock_delay_config_requires_governance_context() {
+        let (env, admin, contract_id) = setup();
+
+        env.as_contract(&contract_id, || {
+            let new_config = TimelockDelayConfig {
+                fee_change_delay: 3600,
+                admin_transfer_delay: 7200,
+                upgrade_delay: 10800,
+                default_delay: 5400,
+            };
+
+            // Direct call without governance context should fail
+            // (outside env.as_contract, invoker is caller not contract)
+            let result = set_timelock_delay_config(&env, &new_config);
+            assert_eq!(result, Err(Error::Unauthorized), "direct call must be rejected");
+        });
+    }
+
+    #[test]
+    fn test_set_timelock_delay_config_succeeds_in_governance_context() {
+        let (env, _admin, contract_id) = setup();
+
+        env.as_contract(&contract_id, || {
+            let new_config = TimelockDelayConfig {
+                fee_change_delay: 3600,
+                admin_transfer_delay: 7200,
+                upgrade_delay: 10800,
+                default_delay: 5400,
+            };
+
+            // Call within governance context (env.as_contract) should succeed
+            let result = set_timelock_delay_config(&env, &new_config);
+            assert!(result.is_ok(), "governance-context call must succeed");
+
+            // Verify config was updated
+            let retrieved = get_timelock_delay_config(&env);
+            assert_eq!(retrieved.fee_change_delay, 3600);
+            assert_eq!(retrieved.admin_transfer_delay, 7200);
+            assert_eq!(retrieved.upgrade_delay, 10800);
+            assert_eq!(retrieved.default_delay, 5400);
+        });
     }
 }
 

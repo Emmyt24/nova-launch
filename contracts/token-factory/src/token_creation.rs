@@ -85,7 +85,7 @@ pub fn create_token_internal(
         burn_count: 0,
         is_paused: false,
         clawback_enabled: params.clawback_enabled,
-        freeze_enabled: false,
+        freeze_enabled: params.freeze_enabled,
     };
 
     // Store token info
@@ -148,6 +148,37 @@ pub fn create_token_with_options(
     fee_payment: i128,
     clawback_enabled: bool,
 ) -> Result<Address, Error> {
+    create_token_with_all_options(
+        env,
+        creator,
+        name,
+        symbol,
+        decimals,
+        initial_supply,
+        metadata_uri,
+        fee_payment,
+        clawback_enabled,
+        false,
+    )
+}
+
+/// Create a single token with fee payment and optional clawback/freeze.
+///
+/// `freeze_enabled` mirrors `clawback_enabled`'s immutability invariant: it
+/// is only ever set here, at creation time, and can never be toggled
+/// afterwards (there is no `set_freeze_enabled` entry point).
+pub fn create_token_with_all_options(
+    env: &Env,
+    creator: Address,
+    name: String,
+    symbol: String,
+    decimals: u32,
+    initial_supply: i128,
+    metadata_uri: Option<String>,
+    fee_payment: i128,
+    clawback_enabled: bool,
+    freeze_enabled: bool,
+) -> Result<Address, Error> {
     // Check if paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
@@ -175,6 +206,7 @@ pub fn create_token_with_options(
         max_supply: None,
         metadata_uri,
         clawback_enabled,
+        freeze_enabled,
     };
 
     // Create token
@@ -433,6 +465,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
             let token_b = TokenCreationParams {
                 name: String::from_str(&env, "Beta"),
@@ -442,6 +475,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
 
             let batch = soroban_sdk::vec![&env, token_a, token_b];
@@ -475,6 +509,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
             let invalid = TokenCreationParams {
                 name: String::from_str(&env, ""), // invalid -> forces rollback path
@@ -484,6 +519,7 @@ mod tests {
                 max_supply: None,
                 metadata_uri: None,
                 clawback_enabled: false,
+                freeze_enabled: false,
             };
 
             let batch = soroban_sdk::vec![&env, valid, invalid];

@@ -201,57 +201,6 @@ pub fn is_frozen(env: &Env, token_address: &Address, address: &Address) -> bool 
     storage::is_address_frozen(env, token_address, address)
 }
 
-/// Toggle freeze capability for a token (creator only)
-///
-/// Allows token creator to enable or disable freeze functionality.
-/// Once disabled, it can be re-enabled by the creator.
-///
-/// # Arguments
-/// * `env` - The contract environment
-/// * `token_address` - The token contract address
-/// * `admin` - The token admin address (must be token creator)
-/// * `enabled` - Whether to enable or disable freeze
-///
-/// # Errors
-/// * `ContractPaused` - If contract is paused
-/// * `Unauthorized` - If caller is not the token creator
-/// * `TokenNotFound` - If token doesn't exist
-pub fn set_freeze_enabled(
-    env: &Env,
-    token_address: &Address,
-    admin: &Address,
-    enabled: bool,
-) -> Result<(), Error> {
-    // Check if contract is paused
-    if storage::is_paused(env) {
-        return Err(Error::ContractPaused);
-    }
-
-    // Require admin authorization
-    admin.require_auth();
-
-    // Get token info
-    let mut token_info =
-        storage::get_token_info_by_address(env, token_address).ok_or(Error::TokenNotFound)?;
-
-    // Verify admin is the token creator
-    if token_info.creator != *admin {
-        return Err(Error::Unauthorized);
-    }
-
-    // Update freeze setting
-    token_info.freeze_enabled = enabled;
-    storage::set_token_info_by_address(env, token_address, &token_info);
-
-    // Emit event
-    env.events().publish(
-        (symbol_short!("frz_set"), token_address.clone()),
-        (admin.clone(), enabled, env.ledger().timestamp()),
-    );
-
-    Ok(())
-}
-
 /// Configure the unfreeze cooldown grace period for a token (creator/admin only)
 pub fn set_freeze_cooldown(
     env: &Env,

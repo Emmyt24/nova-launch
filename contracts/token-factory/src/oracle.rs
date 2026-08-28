@@ -83,6 +83,7 @@ pub fn submit_price(
         price,
         decimals,
         timestamp,
+        source: source.clone(),
     };
     storage::set_oracle_price(env, asset, &data);
     events::emit_price_submitted(env, asset, source, price, decimals, timestamp);
@@ -92,13 +93,24 @@ pub fn submit_price(
 /// Read the latest price for `asset`, enforcing the configured staleness
 /// window and rejecting non-positive values.
 ///
+/// A price whose submitting source has since been deauthorized is treated
+/// as unavailable immediately — it is not served just because it hasn't
+/// yet aged out past `max_age_seconds`. This closes the window where a
+/// source deauthorized specifically for pushing a bad price would
+/// otherwise remain servable until it naturally went stale.
+///
 /// # Errors
-/// * `OraclePriceNotFound` - No price has ever been submitted for `asset`
+/// * `OraclePriceNotFound` - No price has ever been submitted for `asset`,
+///   or the price on record was submitted by a source that is no longer
+///   authorized
 /// * `OracleNotConfigured` - The oracle max-staleness window has not been set
 /// * `OracleInvalidPrice` - The stored price is not strictly positive
 /// * `OraclePriceStale` - The stored price is older than the configured max age
 pub fn get_price(env: &Env, asset: &Address) -> Result<PriceData, Error> {
     let data = storage::get_oracle_price(env, asset).ok_or(Error::OraclePriceNotFound)?;
+    if !storage::is_oracle_source_authorized(env, &data.source) {
+        return Err(Error::OraclePriceNotFound);
+    }
     if data.price <= 0 {
         return Err(Error::OracleInvalidPrice);
     }
@@ -111,4 +123,92 @@ pub fn get_price(env: &Env, asset: &Address) -> Result<PriceData, Error> {
     }
 
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    const MAX_AGE: u64 = 300;
+
+    fn setup(env: &Env, contract_id: &Address) -> Address {
+        let admin = Address::generate(env);
+        env.as_contract(contract_id, || {
+            storage::set_admin(env, &admin);
+            configure_oracle(env, &admin, MAX_AGE).unwrap();
+        });
+        admin
+    }
+
+    #[test]
+    fn deauthorizing_source_invalidates_its_price_immediately() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = Address::generate(&env);
+        let admin = setup(&env, &contract_id);
+        let source = Address::generate(&env);
+        let asset = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_oracle_authorized(&env, &admin, &source, true).unwrap();
+            submit_price(&env, &source, &asset, 1_000, 2).unwrap();
+
+            // Price is servable while the source remains authorized.
+            assert!(get_price(&env, &asset).is_ok());
+
+            // Deauthorize the source — its already-submitted price must be
+            // rejected immediately, well within `max_age_seconds`.
+            set_oracle_authorized(&env, &admin, &source, false).unwrap();
+
+            let result = get_price(&env, &asset);
+            assert_eq!(result, Err(Error::OraclePriceNotFound));
+        });
+    }
+
+    #[test]
+    fn reauthorizing_source_restores_its_price() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = Address::generate(&env);
+        let admin = setup(&env, &contract_id);
+        let source = Address::generate(&env);
+        let asset = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_oracle_authorized(&env, &admin, &source, true).unwrap();
+            submit_price(&env, &source, &asset, 1_000, 2).unwrap();
+            set_oracle_authorized(&env, &admin, &source, false).unwrap();
+            assert_eq!(get_price(&env, &asset), Err(Error::OraclePriceNotFound));
+
+            // Re-authorizing the same source makes its previously-submitted
+            // price servable again (it was never cleared from storage).
+            set_oracle_authorized(&env, &admin, &source, true).unwrap();
+            assert!(get_price(&env, &asset).is_ok());
+        });
+    }
+
+    #[test]
+    fn deauthorizing_unrelated_source_does_not_affect_other_prices() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = Address::generate(&env);
+        let admin = setup(&env, &contract_id);
+        let source_a = Address::generate(&env);
+        let source_b = Address::generate(&env);
+        let asset_a = Address::generate(&env);
+        let asset_b = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_oracle_authorized(&env, &admin, &source_a, true).unwrap();
+            set_oracle_authorized(&env, &admin, &source_b, true).unwrap();
+            submit_price(&env, &source_a, &asset_a, 1_000, 2).unwrap();
+            submit_price(&env, &source_b, &asset_b, 2_000, 2).unwrap();
+
+            set_oracle_authorized(&env, &admin, &source_a, false).unwrap();
+
+            assert_eq!(get_price(&env, &asset_a), Err(Error::OraclePriceNotFound));
+            assert!(get_price(&env, &asset_b).is_ok());
+        });
+    }
 }

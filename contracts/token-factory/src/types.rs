@@ -171,6 +171,10 @@ pub struct TokenCreationParams {
     /// This flag is **immutable after creation** — it cannot be toggled later.
     /// Set `true` only for regulated use-cases (e.g. stablecoins, tokenized securities).
     pub clawback_enabled: bool,
+    /// Whether the creator may freeze individual holder balances via
+    /// `freeze_address`. This flag is **immutable after creation** — it
+    /// cannot be toggled later, matching `clawback_enabled`'s invariant.
+    pub freeze_enabled: bool,
 }
 
 /// Outcome of validating a single item during a batch pre-flight dry-run.
@@ -682,12 +686,16 @@ pub struct TokenStats {
 /// * `price` - Raw price value (must be > 0)
 /// * `decimals` - Number of decimal places in `price` (e.g. 7 means price / 10^7)
 /// * `timestamp` - Ledger timestamp when the price was recorded
+/// * `source` - The oracle address that submitted this price. Used by
+///   `get_price` to reject a price whose source has since been deauthorized,
+///   even if the price has not yet aged out past `max_age_seconds`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriceData {
     pub price: i128,
     pub decimals: u32,
     pub timestamp: u64,
+    pub source: Address,
 }
 
 /// Global oracle configuration stored in instance storage.

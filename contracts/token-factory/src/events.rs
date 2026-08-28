@@ -1418,6 +1418,21 @@ pub fn emit_asset_redeemed(
     env.events().publish(topics, data);
 }
 
+/// Emit fractional shares transferred event
+pub fn emit_shares_transferred(
+    env: &Env,
+    vault_id: u64,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    let topics = (symbol_short!("frac_xfr"), vault_id, from.clone());
+
+    let data = (to.clone(), amount);
+
+    env.events().publish(topics, data);
+}
+
 /// Emit batch settle (batch mint) event.
 ///
 /// Published when `batch_settle` successfully mints tokens to multiple recipients.

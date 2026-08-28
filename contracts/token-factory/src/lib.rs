@@ -1111,30 +1111,12 @@ impl TokenFactory {
     // ═══════════════════════════════════════════════════════════════════════
     // Transfer Restriction Functions (Whitelist / Blacklist via Freeze)
     // ═══════════════════════════════════════════════════════════════════════
-
-    /// Enable or disable freeze (transfer restriction) capability for a token.
-    ///
-    /// When enabled, the token creator can freeze individual addresses, preventing
-    /// them from participating in transfers, burns, or mints (blacklist model).
-    /// When disabled, no new addresses can be frozen, but existing frozen state persists.
-    ///
-    /// # Arguments
-    /// * `token_address` - The token contract address
-    /// * `admin` - Token creator address (must authorize)
-    /// * `enabled` - `true` to enable freeze capability, `false` to disable
-    ///
-    /// # Errors
-    /// * `ContractPaused` - Contract is paused
-    /// * `TokenNotFound` - Token not found
-    /// * `Unauthorized` - Caller is not the token creator
-    pub fn set_freeze_enabled(
-        env: Env,
-        token_address: Address,
-        admin: Address,
-        enabled: bool,
-    ) -> Result<(), Error> {
-        freeze_functions::set_freeze_enabled(&env, &token_address, &admin, enabled)
-    }
+    //
+    // `freeze_enabled` is set once at token creation (see `create_token_with_freeze`
+    // below) and is immutable afterwards — mirroring `clawback_enabled`'s
+    // invariant. There is deliberately no `set_freeze_enabled` entry point:
+    // toggling it post-deployment would let a creator silently add freeze
+    // capability to a token advertised as freeze-free at launch.
 
     /// Freeze (blacklist) an address for a specific token.
     ///
@@ -1983,6 +1965,51 @@ impl TokenFactory {
             metadata_uri,
             fee_payment,
             clawback_enabled,
+        )
+    }
+
+    /// Deploy a token with opt-in freeze capability enabled at creation time.
+    ///
+    /// Identical to `create_token` except the `freeze_enabled` flag is set
+    /// at creation time and **cannot be changed afterwards** (immutability
+    /// invariant, mirroring `clawback_enabled`). A token deployed via plain
+    /// `create_token` always has `freeze_enabled: false` for its lifetime.
+    ///
+    /// # Arguments
+    /// * `creator`        - Address deploying the token (must authorize)
+    /// * `name`           - Token name
+    /// * `symbol`         - Token symbol
+    /// * `decimals`       - Decimal places
+    /// * `initial_supply` - Initial supply minted to `creator`
+    /// * `metadata_uri`   - Optional IPFS URI
+    /// * `fee_payment`    - Fee (>= base_fee + optional metadata_fee)
+    /// * `freeze_enabled` - `true` to allow the creator to freeze holder
+    ///   balances via `freeze_address`; immutable after creation
+    ///
+    /// # Errors
+    /// Same as `create_token`.
+    pub fn create_token_with_freeze(
+        env: Env,
+        creator: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        initial_supply: i128,
+        metadata_uri: Option<String>,
+        fee_payment: i128,
+        freeze_enabled: bool,
+    ) -> Result<Address, Error> {
+        token_creation::create_token_with_all_options(
+            &env,
+            creator,
+            name,
+            symbol,
+            decimals,
+            initial_supply,
+            metadata_uri,
+            fee_payment,
+            false,
+            freeze_enabled,
         )
     }
 

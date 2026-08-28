@@ -209,6 +209,45 @@ describe("batchDeployTokens — via module-level mock of callStellarDeploy", () 
     );
   });
 
+  it("emits token.deployed events with GraphQL subscription schema (creatorAddress for tenant scoping)", async () => {
+    const { batchDeployTokens } = await import("../batchTokenDeployService");
+    const { eventBus } = await import("../eventBus");
+
+    const input = makeInput("SCOPED");
+    const token = makePrismaToken("SCOPED");
+    vi.mocked(prisma.$transaction).mockResolvedValueOnce([token]);
+
+    await batchDeployTokens([input]);
+
+    // Allow microtask queue to flush fire-and-forget publishes
+    await Promise.resolve();
+
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+    // Verify the event payload matches GraphQL subscription expectations
+    expect(eventBus.publish).toHaveBeenCalledWith(
+      "token.deployed",
+      expect.objectContaining({
+        // GraphQL schema field names (not the old internal ones)
+        tokenAddress: token.address,
+        creatorAddress: token.creator,
+        name: token.name,
+        symbol: token.symbol,
+        totalSupply: token.totalSupply.toString(),
+        txHash: expect.stringMatching(/batch-deploy-/),
+        timestamp: token.createdAt.toISOString(),
+      })
+    );
+    // Verify old field names are NOT present (ensuring schema alignment)
+    expect(eventBus.publish).not.toHaveBeenCalledWith(
+      "token.deployed",
+      expect.objectContaining({
+        tokenId: expect.any(String),
+        address: expect.any(String),
+        creator: expect.any(String),
+      })
+    );
+  });
+
   // ── Single-token edge case ────────────────────────────────────────────────
 
   it("handles a single-token batch correctly", async () => {

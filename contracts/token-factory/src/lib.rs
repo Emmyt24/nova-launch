@@ -16,6 +16,7 @@ mod game_history;
 mod governance;
 mod ipfs_pinning;
 
+mod amm;
 mod batch_operations;
 mod batch_scheduler;
 mod bridge;

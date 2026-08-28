@@ -1003,6 +1003,16 @@ pub enum DataKey {
     NextStakingPoolId,
     /// A user's stake within a pool: (pool_id, staker) → StakeInfo
     UserStake(u64, Address),
+    // ── AMM constant-product pools ────────────────────────────────────────
+    /// AMM pool state keyed by (token_index_a, token_index_b) — indices always
+    /// stored in ascending order so the key is canonical regardless of swap direction.
+    AmmPool(u32, u32),
+    /// Total number of AMM pools created (instance counter).
+    AmmPoolCount,
+    /// LP share balance for a provider in a pool: (token_a, token_b, provider).
+    AmmShares(u32, u32, Address),
+    /// Total LP shares outstanding for a pool: (token_a, token_b).
+    AmmTotalShares(u32, u32),
 }
 
 /// A point-in-time record of a token holder's balance.
@@ -1356,6 +1366,25 @@ impl Error {
     pub const StakingNotActive: Self = Self(134);
     pub const InvalidRewardRate: Self = Self(135);
     pub const InsufficientStake: Self = Self(136);
+    // AMM constant-product pool errors (#AMM)
+    /// Pool for this token pair already exists.
+    pub const PoolAlreadyExists: Self = Self(137);
+    /// No pool found for this token pair.
+    pub const PoolNotFound: Self = Self(138);
+    /// Both token indices in a pair must be distinct.
+    pub const IdenticalTokens: Self = Self(139);
+    /// Liquidity amounts must both be greater than zero.
+    pub const ZeroLiquidity: Self = Self(140);
+    /// Swap input amount must be greater than zero.
+    pub const ZeroAmountIn: Self = Self(141);
+    /// Computed swap output is zero (dust input).
+    pub const ZeroAmountOut: Self = Self(142);
+    /// Caller holds no LP shares in this pool.
+    pub const ZeroShares: Self = Self(143);
+    /// One or both reserves are zero; pool has no liquidity.
+    pub const InsufficientReserves: Self = Self(144);
+    /// LP share burn amount exceeds the caller's balance.
+    pub const SharesExceedBalance: Self = Self(145);
 
     /// Stable string name for this error code, for off-chain event payloads
     /// (see `emit_operation_failed`). Covers the vault entry-point error

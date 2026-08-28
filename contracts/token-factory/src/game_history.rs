@@ -48,6 +48,9 @@ pub struct HistorySnapshot {
 /// Storage key for the global history record count.
 const HISTORY_COUNT_KEY: DataKey = DataKey::HistoryCount;
 
+/// Storage key for the oldest unpruned history index.
+const FIRST_LIVE_INDEX_KEY: DataKey = DataKey::HistoryFirstLiveIndex;
+
 fn get_history_count(env: &Env) -> u64 {
     env.storage()
         .persistent()
@@ -57,6 +60,22 @@ fn get_history_count(env: &Env) -> u64 {
 
 fn set_history_count(env: &Env, count: u64) {
     env.storage().persistent().set(&HISTORY_COUNT_KEY, &count);
+}
+
+/// Index of the oldest record that hasn't been pruned yet. Everything below
+/// this index is guaranteed to be pruned (`get_record` returns `None`), so
+/// query functions can safely start scanning here instead of from 0.
+fn get_first_live_index(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&FIRST_LIVE_INDEX_KEY)
+        .unwrap_or(0u64)
+}
+
+fn set_first_live_index(env: &Env, index: u64) {
+    env.storage()
+        .persistent()
+        .set(&FIRST_LIVE_INDEX_KEY, &index);
 }
 
 fn get_record(env: &Env, index: u64) -> Option<DeploymentRecord> {
@@ -128,7 +147,7 @@ pub fn query_by_creator(
     let mut results = Vec::new(env);
     let mut skipped: u64 = 0;
 
-    for i in 0..total {
+    for i in get_first_live_index(env)..total {
         if let Some(record) = get_record(env, i) {
             if record.creator == *creator {
                 if skipped < offset {
@@ -165,7 +184,7 @@ pub fn query_by_time_range(
     let total = get_history_count(env);
     let mut results = Vec::new(env);
 
-    for i in 0..total {
+    for i in get_first_live_index(env)..total {
         if let Some(record) = get_record(env, i) {
             if record.deployed_at >= from && record.deployed_at <= to {
                 results.push_back(record);
@@ -197,7 +216,7 @@ pub fn replay(env: &Env, up_to_index: u64) -> Result<HistorySnapshot, Error> {
     let mut cumulative_supply: i128 = 0;
     let mut as_of: u64 = 0;
 
-    for i in 0..=up_to_index {
+    for i in get_first_live_index(env)..=up_to_index {
         if let Some(record) = get_record(env, i) {
             token_count = token_count.checked_add(1).ok_or(Error::ArithmeticError)?;
             cumulative_supply = cumulative_supply
@@ -246,11 +265,15 @@ pub fn prune_history(env: &Env, admin: &Address, before_index: u64) -> Result<u3
     }
 
     let mut pruned: u32 = 0;
-    for i in 0..before_index {
+    for i in get_first_live_index(env)..before_index {
         if get_record(env, i).is_some() {
             remove_record(env, i);
             pruned = pruned.checked_add(1).ok_or(Error::ArithmeticError)?;
         }
+    }
+
+    if before_index > get_first_live_index(env) {
+        set_first_live_index(env, before_index);
     }
 
     crate::events::emit_history_pruned(env, admin, before_index, pruned);
@@ -261,6 +284,16 @@ pub fn prune_history(env: &Env, admin: &Address, before_index: u64) -> Result<u3
 /// Return the total number of history records (including pruned ones).
 pub fn history_count(env: &Env) -> u64 {
     get_history_count(env)
+}
+
+/// Return the index of the oldest unpruned history record.
+///
+/// Every index below this has been pruned. Query functions
+/// ([`query_by_creator`], [`query_by_time_range`], [`replay`]) already start
+/// scanning here internally; callers doing their own manual index walk can
+/// use this to skip the pruned range too.
+pub fn history_first_live_index(env: &Env) -> u64 {
+    get_first_live_index(env)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -410,5 +443,112 @@ mod tests {
         // Only index 0 exists; requesting index 5 should fail.
         let err = client.try_replay(&5_u64).unwrap_err().unwrap();
         assert_eq!(err, crate::types::Error::InvalidParameters);
+    }
+}
+
+// Kept as its own always-on module (rather than folded into the disabled
+// `tests` module above) so pruning/`first_live_index` regressions are still
+// caught while that module is temporarily disabled.
+#[cfg(test)]
+mod first_live_index_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        client.initialize(&admin, &treasury, &1_000_000_i128, &500_000_i128);
+
+        (env, contract_id, admin)
+    }
+
+    fn deploy_token(env: &Env, client: &crate::TokenFactoryClient, creator: &Address, name: &str) {
+        client.create_token(
+            creator,
+            &String::from_str(env, name),
+            &String::from_str(env, "SYM"),
+            &7_u32,
+            &1_000_000_i128,
+            &None,
+            &1_000_000_i128,
+        );
+    }
+
+    const TOKEN_NAMES: [&str; 5] = ["Tok0", "Tok1", "Tok2", "Tok3", "Tok4"];
+
+    #[test]
+    fn prune_advances_first_live_index() {
+        let (env, contract_id, admin) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        for i in 0..5 {
+            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
+        }
+
+        assert_eq!(client.history_first_live_index(), 0);
+
+        client.prune_history(&admin, &3_u64);
+        assert_eq!(client.history_first_live_index(), 3);
+    }
+
+    #[test]
+    fn queries_still_find_live_records_after_pruning() {
+        let (env, contract_id, admin) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        for i in 0..5 {
+            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
+        }
+        client.prune_history(&admin, &3_u64);
+
+        // Records 0..3 are pruned; 3 and 4 must still be found without
+        // re-scanning the pruned prefix.
+        let by_creator = client.query_by_creator(&admin, &0_u64, &10_u32);
+        assert_eq!(by_creator.len(), 2);
+        assert_eq!(by_creator.get(0).unwrap().history_index, 3);
+        assert_eq!(by_creator.get(1).unwrap().history_index, 4);
+
+        let now = env.ledger().timestamp();
+        let by_time = client.query_by_time_range(&0_u64, &(now + 1_000), &10_u32);
+        assert_eq!(by_time.len(), 2);
+    }
+
+    #[test]
+    fn replay_after_pruning_only_covers_live_range() {
+        let (env, contract_id, admin) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        for i in 0..5 {
+            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
+        }
+        client.prune_history(&admin, &3_u64);
+
+        // Replaying up to index 4 only sees the two live records (3, 4) —
+        // the pruned ones (0..3) contribute nothing, same as before pruning
+        // changed the scan's starting point, just without re-walking them.
+        let snapshot = client.replay(&4_u64);
+        assert_eq!(snapshot.token_count, 2);
+        assert_eq!(snapshot.cumulative_supply, 2_000_000);
+    }
+
+    #[test]
+    fn get_history_record_returns_none_for_pruned_index() {
+        let (env, contract_id, admin) = setup();
+        let client = crate::TokenFactoryClient::new(&env, &contract_id);
+
+        for i in 0..3 {
+            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
+        }
+        client.prune_history(&admin, &2_u64);
+
+        assert!(client.get_history_record(&0_u64).is_none());
+        assert!(client.get_history_record(&1_u64).is_none());
+        assert!(client.get_history_record(&2_u64).is_some());
     }
 }

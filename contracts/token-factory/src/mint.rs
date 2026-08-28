@@ -107,6 +107,22 @@ pub fn mint(env: &Env, token_index: u32, to: &Address, amount: i128) -> Result<(
     // Get token info
     let mut token_info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
+    // Compliance gate (#1853): reject the mint if a registered rule (e.g.
+    // TransfersSuspended) rejects it for this token's jurisdiction. The
+    // jurisdiction is derived from contract storage, never supplied by the
+    // caller.
+    let jurisdiction = storage::get_token_jurisdiction(env, &token_info.address);
+    crate::compliance_reporting::check_compliance(
+        env,
+        jurisdiction,
+        crate::compliance_reporting::TransferParams {
+            token_address: token_info.address.clone(),
+            from: to.clone(),
+            to: to.clone(),
+            amount,
+        },
+    )?;
+
     // Validate max supply constraint
     validate_max_supply(token_info.total_supply, amount, token_info.max_supply)?;
 

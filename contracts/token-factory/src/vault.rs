@@ -6,7 +6,7 @@ use crate::{
     storage,
     types::{Error, VaultStatus},
 };
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, token, Address, Env};
 
 // ── Circuit breaker public API ────────────────────────────────────────────────
 
@@ -97,11 +97,21 @@ pub fn fund_vault(env: &Env, vault_id: u64, funder: &Address, amount: i128) -> R
         return Err(Error::InvalidParameters);
     }
 
-    vault.total_amount = vault
+    let new_total = vault
         .total_amount
         .checked_add(amount)
         .ok_or(Error::ArithmeticError)?;
 
+    // Escrow the funder's tokens into contract custody before persisting the
+    // new total: if the transfer fails (insufficient balance/allowance), the
+    // whole call aborts and `total_amount` is left untouched. This mirrors
+    // the real-value-transfer pattern in `bridge.rs::lock_tokens` and
+    // `fractionalization.rs::fractionalize`, and matches how `claim_vault`
+    // later pays out `vault.token` from contract custody.
+    let token_client = token::Client::new(env, &vault.token);
+    token_client.transfer(funder, &env.current_contract_address(), &amount);
+
+    vault.total_amount = new_total;
     storage::set_vault(env, &vault)?;
     emit_vault_funded(env, vault_id, funder, amount);
 
@@ -225,13 +235,31 @@ mod tests {
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
+        token::StellarAssetClient,
         Address, BytesN, Env, FromVal, Symbol, Val,
     };
 
+    /// Registers a real Stellar Asset Contract token, so `fund_vault` exercises
+    /// a genuine token transfer rather than internal accounting.
+    fn setup_token(env: &Env) -> Address {
+        let token_admin = Address::generate(env);
+        env.register_stellar_asset_contract_v2(token_admin).address()
+    }
+
     fn seed_vault(env: &Env, vault_id: u64, status: VaultStatus, total_amount: i128) {
+        seed_vault_with_token(env, vault_id, status, total_amount, Address::generate(env))
+    }
+
+    fn seed_vault_with_token(
+        env: &Env,
+        vault_id: u64,
+        status: VaultStatus,
+        total_amount: i128,
+        token: Address,
+    ) {
         let vault = Vault {
             id: vault_id,
-            token: Address::generate(env),
+            token,
             owner: Address::generate(env),
             creator: Address::generate(env),
             total_amount,
@@ -318,12 +346,30 @@ mod tests {
 
         let vault_id = 1;
         let funder = Address::generate(&env);
-        seed_vault(&env, vault_id, VaultStatus::Active, i128::MAX - 10);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &10);
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, i128::MAX - 10, token.clone());
 
         fund_vault(&env, vault_id, &funder, 10).unwrap();
 
         let vault = storage::get_vault(&env, vault_id).unwrap();
         assert_eq!(vault.total_amount, i128::MAX);
+        assert_eq!(soroban_sdk::token::Client::new(&env, &token).balance(&funder), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_fund_vault_insufficient_balance_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let vault_id = 1;
+        let funder = Address::generate(&env);
+        let token = setup_token(&env);
+        // Funder has zero balance and no prior deposit — the transfer must panic.
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, 1_000, token);
+
+        let _ = fund_vault(&env, vault_id, &funder, 100);
     }
 
     #[test]
@@ -334,7 +380,9 @@ mod tests {
         let vault_id = 1;
         let funder = Address::generate(&env);
         let amount = 42;
-        seed_vault(&env, vault_id, VaultStatus::Active, 100);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &amount);
+        seed_vault_with_token(&env, vault_id, VaultStatus::Active, 100, token.clone());
 
         let before = env.events().all().len();
         fund_vault(&env, vault_id, &funder, amount).unwrap();
@@ -352,6 +400,7 @@ mod tests {
 
         assert_eq!(event_funder, funder);
         assert_eq!(event_amount, amount);
+        assert_eq!(soroban_sdk::token::Client::new(&env, &token).balance(&funder), 0);
     }
 
     // ============================================================================
@@ -893,13 +942,15 @@ mod tests {
         let vault_id = 1;
         let owner = Address::generate(&env);
         let funder = Address::generate(&env);
+        let token = setup_token(&env);
+        StellarAssetClient::new(&env, &token).mint(&funder, &500_0000000);
         let initial_amount = 1_000_0000000;
         let funded_amount = 500_0000000;
 
         // Create unlocked vault
         let vault = Vault {
             id: vault_id,
-            token: Address::generate(&env),
+            token,
             owner: owner.clone(),
             creator: Address::generate(&env),
             total_amount: initial_amount,

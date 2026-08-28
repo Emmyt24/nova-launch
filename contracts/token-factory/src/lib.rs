@@ -4447,6 +4447,27 @@ impl TokenFactory {
         compliance_reporting::get_jurisdiction_rules(&env, &jurisdiction)
     }
 
+    /// Assign the compliance jurisdiction that `mint`/`burn`/`admin_burn`
+    /// enforce rules against for `token_address` (admin only).
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized`  – Caller is not the admin.
+    /// * `Error::TokenNotFound` – `token_address` is not a registered token.
+    pub fn set_token_jurisdiction(
+        env: Env,
+        admin: Address,
+        token_address: Address,
+        jurisdiction: soroban_sdk::String,
+    ) -> Result<(), Error> {
+        compliance_reporting::set_token_jurisdiction(&env, &admin, token_address, jurisdiction)
+    }
+
+    /// Return the compliance jurisdiction currently assigned to `token_address`
+    /// (the default jurisdiction if none has been explicitly assigned).
+    pub fn get_token_jurisdiction(env: Env, token_address: Address) -> soroban_sdk::String {
+        compliance_reporting::get_token_jurisdiction(&env, &token_address)
+    }
+
     // ═══════════════════════════════════════════════════════
     //  Multi-Signature Admin Operations
     // ═══════════════════════════════════════════════════════

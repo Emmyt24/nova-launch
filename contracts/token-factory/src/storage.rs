@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::commit_reveal::{CommitRecord, CommitRevealSession};
 use crate::types::{
@@ -1679,6 +1679,34 @@ pub fn get_freeze_cooldown(env: &Env, token_address: &Address) -> u64 {
             token_address.clone(),
         ))
         .unwrap_or(0)
+}
+
+// ============================================================
+// Storage Functions - Compliance Jurisdiction (#1853)
+// ============================================================
+
+/// Jurisdiction code assigned to a token that hasn't had one explicitly set.
+pub const DEFAULT_COMPLIANCE_JURISDICTION: &str = "GLOBAL";
+
+/// Return the compliance jurisdiction assigned to `token_address`.
+///
+/// Falls back to [`DEFAULT_COMPLIANCE_JURISDICTION`] when no jurisdiction has
+/// been explicitly assigned, so this always returns a deterministic,
+/// contract-derived value rather than something a caller supplies.
+pub fn get_token_jurisdiction(env: &Env, token_address: &Address) -> String {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenJurisdiction(token_address.clone()))
+        .unwrap_or_else(|| String::from_str(env, DEFAULT_COMPLIANCE_JURISDICTION))
+}
+
+/// Assign a compliance jurisdiction to `token_address` (admin only; see
+/// `compliance_reporting::set_token_jurisdiction` for the authorized entry point).
+pub fn set_token_jurisdiction(env: &Env, token_address: &Address, jurisdiction: &String) {
+    env.storage().persistent().set(
+        &DataKey::TokenJurisdiction(token_address.clone()),
+        jurisdiction,
+    );
 }
 
 // ── Governance storage functions ───────────────────────────

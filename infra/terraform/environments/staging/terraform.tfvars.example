@@ -24,7 +24,9 @@ acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE"
 backend_image_tag  = "latest"
 frontend_image_tag = "latest"
 
-# Stellar
+# Monitoring
+alarm_email   = "REPLACE_WITH_ALERT_EMAIL"
+alarm_emails  = ["REPLACE_WITH_SECONDARY_ALERT_EMAIL"]
 stellar_network     = "testnet"
 stellar_horizon_url = "https://horizon-testnet.stellar.org"
 frontend_url        = "https://staging.nova-launch.io"

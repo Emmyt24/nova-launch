@@ -146,6 +146,33 @@ describe("Per-route requiresAuth flag", () => {
   });
 });
 
+// ── Webhook dead-letter admin recovery route reachability ────────────────────
+
+describe("/api/webhooks-deadletter proxying", () => {
+  const app = createApp({ env: ENV, redis: mockRedis() });
+
+  it("does not fall through to the 404 handler for /api/webhooks-deadletter/anything", async () => {
+    const res = await request(app)
+      .get("/api/webhooks-deadletter/anything")
+      .set("Authorization", `Bearer ${validToken()}`);
+    // Reaches the proxy layer (backend is absent → 502), never the 404 fallback.
+    expect(res.status).not.toBe(404);
+  });
+
+  it("enforces auth on /api/webhooks-deadletter (requiresAuth: true), not a 404", async () => {
+    const res = await request(app).get("/api/webhooks-deadletter/failed");
+    expect(res.status).toBe(401);
+  });
+
+  it("passes auth with a valid token and proxies (may 502 — that's fine)", async () => {
+    const res = await request(app)
+      .post("/api/webhooks-deadletter/retry/123")
+      .set("Authorization", `Bearer ${validToken()}`);
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(404);
+  });
+});
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 
 describe("CORS", () => {

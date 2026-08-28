@@ -44,8 +44,17 @@ services:
       NODE_ENV: development
       PORT: 3001
       DATABASE_URL: postgresql://${POSTGRES_USER:-nova_user}:${POSTGRES_PASSWORD:-nova_password}@postgres:5432/nova_launch
+      # ⚠️ LOCAL DEVELOPMENT ONLY. These fallback secrets are committed to a
+      # public repo, so anyone can forge access/admin tokens against them.
+      # Before ANY non-local deployment you MUST override JWT_SECRET and
+      # ADMIN_JWT_SECRET via .env or the environment — copy .env.example to
+      # .env and set strong random values. A NODE_ENV=production backend
+      # started with either of these defaults fails fast in
+      # backend/src/config/env.ts (validateEnv()).
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
+      # ⚠️ LOCAL DEVELOPMENT ONLY — see the note above JWT_SECRET. Override via
+      # .env / environment (see .env.example) before any non-local deployment.
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me-admin-in-production}
       ADMIN_JWT_EXPIRES_IN: ${ADMIN_JWT_EXPIRES_IN:-8h}
       STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}

@@ -26,8 +26,19 @@ export function validateGatewayEnv(): GatewayEnv {
     .map((o) => o.trim())
     .filter(Boolean);
 
+  // Listening port. Both PORT and GATEWAY_PORT are accepted; PORT wins when
+  // both are set. PORT is the canonical name going forward — it matches the
+  // backend service (backend/src/config/env.ts reads process.env.PORT), so an
+  // operator can set the same, natural variable name across every service.
+  // GATEWAY_PORT stays supported as a fallback so deployments that already
+  // discovered and set it keep working through the migration window.
+  const port = parseInt(
+    process.env.PORT ?? process.env.GATEWAY_PORT ?? "4000",
+    10
+  );
+
   return {
-    PORT: parseInt(process.env.GATEWAY_PORT ?? "4000", 10),
+    PORT: port,
     BACKEND_URL: backendUrl,
     JWT_SECRET: jwtSecret,
     REDIS_URL: process.env.REDIS_URL ?? "redis://localhost:6379",

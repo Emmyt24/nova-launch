@@ -1,0 +1,65 @@
+##############################################################################
+# API Gateway overlay — Nova Launch
+# Issue: #1889
+#
+# The base docker-compose.yml wires the frontend straight to the backend
+# (http://localhost:3001/api), so `docker compose up` never exercises the
+# gateway (rate limiting, JWT auth, idempotency-key propagation). This overlay
+# adds the gateway in front of the backend and repoints the frontend at it.
+#
+# Usage:
+#   With the gateway in the request path:
+#     docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d
+#   Backend-direct (unchanged default):
+#     docker compose -f docker-compose.yml up -d
+##############################################################################
+
+version: '3.8'
+
+services:
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: nova-launch-gateway
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # Canonical port variable, matching the backend service. gateway/src/config.ts
+      # also still honours GATEWAY_PORT as a fallback for older deployments.
+      PORT: 4000
+      # Same backend / Redis / secret the backend service itself uses, so the
+      # gateway proxies to the running backend and shares its rate-limit and
+      # idempotency keyspace in Redis.
+      BACKEND_URL: http://backend:3001
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Repoint the frontend's build-time API URLs at the gateway (port 4000)
+  # instead of the backend (port 3001). Only the overridden args change; the
+  # rest of the frontend build args are inherited from docker-compose.yml.
+  frontend:
+    build:
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4000/api}
+        VITE_TOKEN_INFO_API_URL: ${VITE_TOKEN_INFO_API_URL:-http://localhost:4000/api/token-info}
+        VITE_LEADERBOARD_API_URL: ${VITE_LEADERBOARD_API_URL:-http://localhost:4000/api/leaderboard}
+        VITE_GOVERNANCE_API_URL: ${VITE_GOVERNANCE_API_URL:-http://localhost:4000/api/governance}
+    depends_on:
+      backend:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy

@@ -27,6 +27,14 @@ router.get("/catchup", (req: Request, res: Response) => {
 
   const currentSequence = eventBus.currentSequence;
 
+  // The in-memory event bus resets its sequence after a process restart. A
+  // client cursor ahead of the new sequence is therefore stale and requires
+  // a full resync rather than an empty successful catch-up response.
+  if (since > currentSequence) {
+    res.json({ truncated: true, reason: "cursor_reset", currentSequence });
+    return;
+  }
+
   // Truncation guard — tell client to do a full refresh
   if (currentSequence - since > CATCHUP_LIMIT) {
     res.json({ truncated: true, currentSequence });

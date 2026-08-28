@@ -74,7 +74,7 @@ export class EventBus {
   private history: BusEvent[] = [];
   private deadLetterQueue: DeadLetterEntry[] = [];
 
-  /** Monotonically incrementing sequence counter (#1372). */
+  /** Monotonically incrementing sequence counter (#1372); resets on restart because this bus is in-memory. */
   private _sequence = 0;
 
   /** Maximum events kept in history. 0 = unlimited. */

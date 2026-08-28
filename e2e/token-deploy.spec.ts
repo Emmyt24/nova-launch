@@ -64,9 +64,12 @@ async function waitForTokenInList(
   await page.waitForFunction(
     ({ sel, expected }: { sel: string; expected: string }) => {
       const cards = document.querySelectorAll(sel);
-      return Array.from(cards).some((card) =>
-        card.textContent?.includes(expected)
-      );
+      return Array.from(cards).some((card) => {
+        const text = card.textContent || "";
+        // Use word-boundary regex to match exact symbol, preventing false positives
+        // e.g., "AB" should not match "ABC" or "CAB"
+        return new RegExp(`\\b${expected}\\b`).test(text);
+      });
     },
     { sel: SEL.tokenListCard, expected: symbol },
     { timeout: timeoutMs }
@@ -287,5 +290,83 @@ test.describe("Token Deploy Lifecycle (#1573)", () => {
 
     // Eventually should reach confirmed
     await waitForStatusChip(page, "confirmed", 30_000);
+  });
+
+  // -- 7. Substring collision test: symbol matching (AB vs ABC) ----------------
+
+  test("token list assertions distinguish between substring symbols (AB vs ABC)", async ({
+    page,
+  }) => {
+    const timestamp = Date.now();
+
+    // Deploy first token with symbol that is a substring of another
+    const token1Symbol = `AB${timestamp.toString().slice(-2)}`;
+    const token1Name = `Token AB ${timestamp}`;
+
+    await page.fill(SEL.tokenNameInput, token1Name);
+    await page.fill(SEL.tokenSymbolInput, token1Symbol);
+    await page.fill(SEL.tokenDecimalsInput, "7");
+    await page.fill(SEL.initialSupplyInput, "1000000");
+    await page.click(SEL.submitDeployBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Wait for first deployment to confirm
+    await waitForStatusChip(page, "confirmed", 30_000);
+
+    // Navigate to dashboard
+    await page.goto(DASHBOARD_URL);
+    await page.waitForLoadState("networkidle");
+
+    // Token should appear in the list with the correct symbol
+    await waitForTokenInList(page, token1Symbol, 15_000);
+
+    // Go back and deploy second token with symbol containing the first as substring
+    await page.goto(DEPLOY_PATH);
+    await page.waitForLoadState("networkidle");
+
+    // Clear form and deploy token with symbol that contains the first symbol
+    await page.fill(SEL.tokenNameInput, "");
+    await page.fill(SEL.tokenSymbolInput, "");
+    await page.fill(SEL.tokenDecimalsInput, "");
+    await page.fill(SEL.initialSupplyInput, "");
+
+    const token2Symbol = `ABC${timestamp.toString().slice(-2)}`;
+    const token2Name = `Token ABC ${timestamp}`;
+
+    await page.fill(SEL.tokenNameInput, token2Name);
+    await page.fill(SEL.tokenSymbolInput, token2Symbol);
+    await page.fill(SEL.tokenDecimalsInput, "7");
+    await page.fill(SEL.initialSupplyInput, "2000000");
+    await page.click(SEL.submitDeployBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Wait for second deployment to confirm
+    await waitForStatusChip(page, "confirmed", 30_000);
+
+    // Navigate back to dashboard
+    await page.goto(DASHBOARD_URL);
+    await page.waitForLoadState("networkidle");
+
+    // Both tokens should be visible and distinguishable
+    // This ensures the regex word-boundary match doesn't confuse AB with ABC
+    await waitForTokenInList(page, token1Symbol, 15_000);
+    await waitForTokenInList(page, token2Symbol, 15_000);
+
+    // Verify both cards are present
+    const token1Card = page
+      .locator(SEL.tokenListCard)
+      .filter({ hasText: token1Symbol });
+    const token2Card = page
+      .locator(SEL.tokenListCard)
+      .filter({ hasText: token2Symbol });
+
+    await expect(token1Card).toBeVisible();
+    await expect(token2Card).toBeVisible();
   });
 });

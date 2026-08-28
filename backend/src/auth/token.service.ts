@@ -63,7 +63,7 @@ export class TokenService {
     return {
       accessToken,
       refreshToken,
-      expiresIn: 15 * 60, // 15 minutes in seconds
+      expiresIn: parseExpiryToSeconds(AUTH_CONSTANTS.JWT_ACCESS_EXPIRY),
       tokenType: "Bearer",
       walletAddress,
     };

@@ -17,6 +17,7 @@
 import { PrismaClient } from "@prisma/client";
 import { SagaDefinition, SagaResult } from "../sagaCoordinator";
 import sagaCoordinator from "../sagaCoordinator";
+import { prisma } from "../../lib/prisma";
 import { callStellarDeploy, TokenDeployInput } from "../batchTokenDeployService";
 import { eventBus } from "../eventBus";
 
@@ -124,7 +125,7 @@ export function createBatchDeployGovernanceSaga(
   };
 }
 
-sagaCoordinator.registerSaga(createBatchDeployGovernanceSaga(new PrismaClient()));
+sagaCoordinator.registerSaga(createBatchDeployGovernanceSaga(prisma));
 
 /** Runs the batch-deploy-plus-governance-registration saga for the given token inputs. */
 export async function deployTokensWithGovernanceRegistration(

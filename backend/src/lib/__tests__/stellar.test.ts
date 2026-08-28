@@ -222,16 +222,6 @@ describe("Stellar SDK operations", () => {
 
   describe("base fee operations", () => {
     it("gets current base fee (mocked)", async () => {
-      const mockLedgerResponse = {
-        records: [
-          {
-            sequence: "1000",
-            base_fee_in_stroops: "100",
-            max_tx_set_size: "1000",
-          },
-        ],
-      } as any;
-
       const mockFeeStatsResponse = {
         last_ledger: "1000",
         last_ledger_base_fee: "100",
@@ -240,38 +230,25 @@ describe("Stellar SDK operations", () => {
         max_fee: { mode: "200" },
       } as any;
 
-      const mockLedgers = {
-        limit: vi.fn().mockReturnValue({
-          order: vi.fn().mockReturnValue({
-            call: vi.fn().mockResolvedValue(mockLedgerResponse),
-          }),
-        }),
-      };
-
       const mockFeeStats = {
         call: vi.fn().mockResolvedValue(mockFeeStatsResponse),
       };
 
-      vi.spyOn(StellarSdk.Horizon.Server.prototype, "ledgers").mockReturnValue(
-        mockLedgers as any
-      );
-
+      const ledgers = vi.spyOn(StellarSdk.Horizon.Server.prototype, "ledgers");
       vi.spyOn(StellarSdk.Horizon.Server.prototype, "feeStats").mockReturnValue(
         mockFeeStats as any
       );
 
       const baseFee = await stellarLib.getCurrentBaseFee(testConfig);
 
-      expect(baseFee).toBeGreaterThanOrEqual(StellarSdk.BASE_FEE);
+      expect(baseFee).toBeGreaterThanOrEqual(Number(StellarSdk.BASE_FEE));
+      expect(ledgers).not.toHaveBeenCalled();
+      expect(mockFeeStats.call).toHaveBeenCalledTimes(1);
     });
 
     it("returns default fee on error", async () => {
-      vi.spyOn(StellarSdk.Horizon.Server.prototype, "ledgers").mockReturnValue({
-        limit: vi.fn().mockReturnValue({
-          order: vi.fn().mockReturnValue({
-            call: vi.fn().mockRejectedValue(new Error("Network error")),
-          }),
-        }),
+      vi.spyOn(StellarSdk.Horizon.Server.prototype, "feeStats").mockReturnValue({
+        call: vi.fn().mockRejectedValue(new Error("Network error")),
       } as any);
 
       const baseFee = await stellarLib.getCurrentBaseFee(testConfig);

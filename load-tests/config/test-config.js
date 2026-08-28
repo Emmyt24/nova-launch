@@ -1,7 +1,8 @@
 // Load test configuration
 export const config = {
   // Base URL for API
-  baseUrl: __ENV.BASE_URL || 'http://localhost:3000',
+  // NOTE: Backend runs on port 3001 (see backend configuration). Override with BASE_URL env var if needed.
+  baseUrl: __ENV.BASE_URL || 'http://localhost:3001',
   
   // Test data
   testData: {

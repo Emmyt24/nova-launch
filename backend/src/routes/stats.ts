@@ -37,8 +37,8 @@ router.get("/", async (req: Request, res: Response) => {
     const totalTokens = tokens.length;
     const totalUsers = users.length;
     const totalBurned = tokens.reduce((sum, token) => {
-      return sum + parseFloat(token.burned || "0");
-    }, 0);
+      return sum + BigInt(token.burned || "0");
+    }, BigInt(0));
 
     // Calculate uptime
     const uptimeMs = now - serverStartTime;

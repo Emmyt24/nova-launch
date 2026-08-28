@@ -10,8 +10,8 @@
  *
  * Thresholds breakdown:
  * - NORMAL (< 5s): Expected ingestion latency. Typical Horizon + processing + DB
- * - WARNING (5-30s): Degradation detected. Operators should monitor closely
- * - CRITICAL (> 30s): Severe issue. Indexing falling behind on-chain progress
+ * - WARNING (30-60s): Degradation detected. Operators should monitor closely
+ * - CRITICAL (> 60s): Severe issue. Indexing falling behind on-chain progress
  *
  * Base calculations:
  * - Stellar ledgers close ~5 seconds apart
@@ -22,7 +22,7 @@
  * Design decisions:
  * - Measured in milliseconds for precision
  * - Lag = now() - ledger_close_time
- * - Thresholds prevent false positives from network jitter (5s buffer before warning)
+ * - Thresholds prevent false positives from network jitter (25s buffer before warning)
  * - Critical threshold is deliberately conservative to catch real issues early
  */
 
@@ -65,7 +65,7 @@ export const PROJECTION_LAG_THRESHOLDS: ThresholdSet = {
   /**
    * Warning threshold
    * Indicates potential degradation
-   * Difference from normal = 5000ms (5s buffer)
+   * Difference from normal = 25000ms (25s buffer)
    * Should trigger investigation but not immediate alarm
    */
   WARNING: 30000,
@@ -73,7 +73,7 @@ export const PROJECTION_LAG_THRESHOLDS: ThresholdSet = {
   /**
    * Critical threshold
    * Indicates significant indexing lag
-   * Typically means backend is processing events > 30s after on-chain confirmation
+   * Typically means backend is processing events > 60s after on-chain confirmation
    * Requires immediate operator attention
    */
   CRITICAL: 60000,

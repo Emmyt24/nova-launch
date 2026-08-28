@@ -1,13 +1,10 @@
 /**
- * Metrics re-export shim.
+ * Real Prometheus metrics implementation for the backend.
  *
- * The canonical implementation lives in `monitoring/metrics/prometheus-config.ts`
- * (workspace root). This shim re-exports everything from there so that backend
- * source files can import from a path that stays within `src/` and is therefore
- * compatible with the TypeScript `rootDir: "./src"` constraint.
- *
- * If you ever move the monitoring package to a separate npm workspace, update
- * only this file.
+ * This is the canonical, single source of truth for application metrics.
+ * All services should import from this module — never from a stub or
+ * secondary metrics module — so their metrics actually reach the registry
+ * exposed by `createMetricsMiddleware()` / the `/metrics` endpoint.
  */
 
 // prom-client is a direct dependency of the backend (see package.json).
@@ -407,6 +404,28 @@ export const webhookDeliveryQueueDepth = new Gauge({
   registers: [register],
 });
 
+/**
+ * Deliveries that exhausted all retries and were routed to the
+ * dead-letter store (see `webhookDeadLetterService`).
+ */
+export const webhookDeadLetterTotal = new Counter({
+  name: "webhook_dead_letters_total",
+  help: "Total number of webhook deliveries routed to the dead-letter store after exhausting retries",
+  labelNames: ["event_type"],
+  registers: [register],
+});
+
+// ---------------------------------------------------------------------------
+// Notification Metrics
+// ---------------------------------------------------------------------------
+
+export const notificationDeliveryTotal = new Counter({
+  name: "notification_deliveries_total",
+  help: "Total number of notification delivery attempts",
+  labelNames: ["channel", "status"],
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Background Job Metrics
 // ---------------------------------------------------------------------------
@@ -475,13 +494,22 @@ export class IntegrationMetrics {
     txConfirmationDuration.observe({ network, status }, durationSeconds);
   }
 
-  static recordIngestionLag(eventType: string, lagSeconds: number): void {
+  /**
+   * Accepts either a precomputed lag in seconds, or a ledger close time
+   * (ISO string / anything `Date` can parse), from which the lag is
+   * derived as `now() - ledgerCloseTime`.
+   */
+  static recordIngestionLag(eventType: string, lag: number | string): void {
+    const lagSeconds =
+      typeof lag === "number"
+        ? lag
+        : Math.max(0, (Date.now() - new Date(lag).getTime()) / 1000);
     eventIngestionLag.observe({ event_type: eventType }, lagSeconds);
   }
 
   static recordEventProcessed(
     eventType: string,
-    status: "success" | "failure"
+    status: "success" | "failure" | "error"
   ): void {
     eventsProcessedTotal.inc({ event_type: eventType, status });
   }
@@ -501,17 +529,31 @@ export class IntegrationMetrics {
   }
 
   static recordWebhookDelivery(
-    status: "success" | "failure",
     eventType: string,
-    durationSeconds: number,
-    isRetry = false
+    outcome: "success" | "failed" | "exhausted",
+    durationMs: number,
+    retries = 0
   ): void {
+    const status = outcome === "success" ? "success" : "failure";
     webhookDeliveryTotal.inc({ status, event_type: eventType });
     webhookDeliveryDuration.observe(
       { status, event_type: eventType },
-      durationSeconds
+      durationMs / 1000
     );
-    if (isRetry) webhookRetryTotal.inc({ event_type: eventType });
+    if (retries > 0) {
+      webhookRetryTotal.inc({ event_type: eventType }, retries);
+    }
+  }
+
+  static recordWebhookDeadLetter(eventType: string): void {
+    webhookDeadLetterTotal.inc({ event_type: eventType });
+  }
+
+  static recordNotificationDelivery(
+    channel: string,
+    status: "success" | "failed"
+  ): void {
+    notificationDeliveryTotal.inc({ channel, status });
   }
 }
 

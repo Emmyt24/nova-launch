@@ -20,7 +20,7 @@ import {
   sleep
 } from "../stellar-service-integration/rate-limiter";
 import { ListenerBackoffState, LISTENER_RECONNECT_CONFIG } from "./listenerBackoff";
-import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
+import { IntegrationMetrics } from "../lib/metrics";
 import { OutboundHttpClient } from "../lib/outboundHttpClient";
 import {
   PROJECTION_LAG_THRESHOLDS,

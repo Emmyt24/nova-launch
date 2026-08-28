@@ -10,8 +10,8 @@ import {
 } from "../types/webhook";
 import webhookService from "./webhookService";
 import webhookDeadLetterService from "./webhookDeadLetterService";
-import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
 import {
+  IntegrationMetrics,
   webhookDeliveryLatency,
   MetricsCollector,
 } from "../lib/metrics";

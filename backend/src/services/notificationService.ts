@@ -33,7 +33,7 @@ import {
   NotificationResult,
   NotificationTarget,
 } from "../types/notification";
-import { IntegrationMetrics } from "../monitoring/metrics/prometheus-config";
+import { IntegrationMetrics } from "../lib/metrics";
 import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 
 // ---------------------------------------------------------------------------

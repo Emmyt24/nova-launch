@@ -95,13 +95,15 @@ describe("vault.matured event schema contract", () => {
     }
   });
 
-  it("should accept payload without schemaVersion (not required)", () => {
+  it("should reject payload missing required schemaVersion field", () => {
     const invalidPayload = { ...normalMaturityFixture };
     delete (invalidPayload as Partial<typeof normalMaturityFixture>)
       .schemaVersion;
 
     const isValid = validateVaultMatured(invalidPayload);
-    expect(isValid).toBe(true);
+    expect(isValid).toBe(false);
+    expect(validateVaultMatured.errors).toHaveLength(1);
+    expect(validateVaultMatured.errors?.[0].keyword).toBe("required");
   });
 
   it("should reject payload missing required creatorAddress field", () => {

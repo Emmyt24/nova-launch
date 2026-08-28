@@ -35,6 +35,7 @@ const validateTokenDeployed = ajv.compile(tokenDeployedSchema);
 // ---------------------------------------------------------------------------
 
 const batchTokenDeployFixture = {
+  schemaVersion: 1,
   tokenId: "token-uuid-001",
   address: "CTOKEN_DEPLOYED_001",
   creator: "GCREATOR_001",
@@ -46,6 +47,7 @@ const batchTokenDeployFixture = {
 };
 
 const graphqlSubscriptionFixture = {
+  schemaVersion: 1,
   tokenAddress: "CTOKEN_DEPLOYED_002",
   creatorAddress: "GCREATOR_002",
   name: "Test Token",
@@ -56,6 +58,7 @@ const graphqlSubscriptionFixture = {
 };
 
 const batchTokenDeployNullMetadataFixture = {
+  schemaVersion: 1,
   tokenId: "token-uuid-003",
   address: "CTOKEN_DEPLOYED_003",
   creator: "GCREATOR_003",

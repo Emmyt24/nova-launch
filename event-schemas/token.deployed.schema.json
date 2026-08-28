@@ -22,7 +22,7 @@
         },
         "metadataUri": { "type": ["string", "null"] }
       },
-      "required": ["tokenId", "address", "creator", "name", "symbol", "decimals", "initialSupply"]
+      "required": ["schemaVersion", "tokenId", "address", "creator", "name", "symbol", "decimals", "initialSupply"]
     },
     {
       "description": "Shape expected by the GraphQL tokenDeployed subscription (TokenDeployedPayload).",
@@ -38,7 +38,7 @@
         "txHash": { "type": "string" },
         "timestamp": { "type": "string" }
       },
-      "required": ["tokenAddress", "creatorAddress", "name", "symbol", "totalSupply", "txHash", "timestamp"]
+      "required": ["schemaVersion", "tokenAddress", "creatorAddress", "name", "symbol", "totalSupply", "txHash", "timestamp"]
     }
   ]
 }

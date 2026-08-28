@@ -98,12 +98,7 @@ pub enum PinKey {
 /// * `Error::Unauthorized`      – Caller is not the token creator or admin.
 /// * `Error::InvalidParameters` – URI is empty, too long, or pin limit reached.
 /// * `Error::ArithmeticError`   – Pin count overflowed.
-pub fn add_pin(
-    env: &Env,
-    caller: &Address,
-    token_index: u32,
-    uri: String,
-) -> Result<u32, Error> {
+pub fn add_pin(env: &Env, caller: &Address, token_index: u32, uri: String) -> Result<u32, Error> {
     // ── Authorization ────────────────────────────────────────────────────────
     caller.require_auth();
 
@@ -320,9 +315,7 @@ fn check_rate_limit_and_queue(env: &Env) -> Result<bool, Error> {
             .get(&PinKey::QueueDepth)
             .unwrap_or(0);
 
-        let new_depth = queue_depth
-            .checked_add(1)
-            .ok_or(Error::ArithmeticError)?;
+        let new_depth = queue_depth.checked_add(1).ok_or(Error::ArithmeticError)?;
 
         env.storage()
             .persistent()
@@ -377,17 +370,12 @@ fn emit_pin_queued(env: &Env, token_index: u32, pin_index: u32, queued_by: &Addr
 }
 
 fn emit_pin_queue_warning(env: &Env, queue_depth: u32) {
-    env.events().publish(
-        (symbol_short!("pin_qw"),),
-        queue_depth,
-    );
+    env.events()
+        .publish((symbol_short!("pin_qw"),), queue_depth);
 }
 
 fn emit_rate_limit_updated(env: &Env, limit: u32) {
-    env.events().publish(
-        (symbol_short!("pin_rl"),),
-        limit,
-    );
+    env.events().publish((symbol_short!("pin_rl"),), limit);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -527,9 +515,7 @@ mod tests {
         // Fill up to MAX_PINS
         for i in 0..MAX_PINS {
             let uri = make_uri(&env, "ipfs://QmPin");
-            env.as_contract(&contract_id, || {
-                add_pin(&env, &creator, 0, uri).unwrap()
-            });
+            env.as_contract(&contract_id, || add_pin(&env, &creator, 0, uri).unwrap());
         }
 
         // One more should fail
@@ -573,7 +559,9 @@ mod tests {
             deactivate_pin(&env, &creator, 0, 0).unwrap()
         });
 
-        let pin = env.as_contract(&contract_id, || get_pin(&env, 0, 0)).unwrap();
+        let pin = env
+            .as_contract(&contract_id, || get_pin(&env, 0, 0))
+            .unwrap();
         assert!(!pin.active);
     }
 
@@ -609,8 +597,7 @@ mod tests {
             add_pin(&env, &creator, 0, make_uri(&env, "ipfs://QmA")).unwrap()
         });
 
-        let result =
-            env.as_contract(&contract_id, || deactivate_pin(&env, &stranger, 0, 0));
+        let result = env.as_contract(&contract_id, || deactivate_pin(&env, &stranger, 0, 0));
         assert_eq!(result, Err(Error::Unauthorized));
     }
 
@@ -629,7 +616,9 @@ mod tests {
             add_pin(&env, &creator, 0, uri.clone()).unwrap()
         });
 
-        let pin = env.as_contract(&contract_id, || get_pin(&env, 0, 0)).unwrap();
+        let pin = env
+            .as_contract(&contract_id, || get_pin(&env, 0, 0))
+            .unwrap();
         assert_eq!(pin.uri, uri);
         assert_eq!(pin.pinned_by, creator);
         assert!(pin.active);
@@ -649,10 +638,7 @@ mod tests {
             });
         }
 
-        assert_eq!(
-            env.as_contract(&contract_id, || get_pin_count(&env, 0)),
-            3
-        );
+        assert_eq!(env.as_contract(&contract_id, || get_pin_count(&env, 0)), 3);
     }
 
     #[test]
@@ -736,13 +722,17 @@ mod tests {
 
         assert_eq!(p0, 0);
         assert_eq!(p1, 1);
-        assert_eq!(env.as_contract(&contract_id, || get_active_pin_count(&env, 0)), 2);
+        assert_eq!(
+            env.as_contract(&contract_id, || get_active_pin_count(&env, 0)),
+            2
+        );
 
         // Deactivate the redundant pin
-        env.as_contract(&contract_id, || {
-            deactivate_pin(&env, &admin, 0, 1).unwrap()
-        });
-        assert_eq!(env.as_contract(&contract_id, || get_active_pin_count(&env, 0)), 1);
+        env.as_contract(&contract_id, || deactivate_pin(&env, &admin, 0, 1).unwrap());
+        assert_eq!(
+            env.as_contract(&contract_id, || get_active_pin_count(&env, 0)),
+            1
+        );
 
         // Total count still 2 (audit trail preserved)
         assert_eq!(env.as_contract(&contract_id, || get_pin_count(&env, 0)), 2);
@@ -765,9 +755,7 @@ mod tests {
 
         // Admin can actually set the rate limit
         let admin = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            set_pin_rate_limit(&env, &admin, 2).ok()
-        });
+        env.as_contract(&contract_id, || set_pin_rate_limit(&env, &admin, 2).ok());
 
         // Add pins until we exceed the rate limit
         let mut all_succeeded = true;
@@ -812,9 +800,7 @@ mod tests {
         let (_, _, contract_id) = setup(&env);
         let non_admin = Address::generate(&env);
 
-        let result = env.as_contract(&contract_id, || {
-            set_pin_rate_limit(&env, &non_admin, 5)
-        });
+        let result = env.as_contract(&contract_id, || set_pin_rate_limit(&env, &non_admin, 5));
         assert_eq!(result, Err(Error::Unauthorized));
     }
 

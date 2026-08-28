@@ -195,7 +195,12 @@ fn execute_reveal_chunk(
     let mut indices = Vec::new(env);
     for (token, token_index) in chunk.iter().zip(staged_indices.iter()) {
         crate::token_creation::create_token_internal(env, creator, &token, token_index)
-            .unwrap_or_else(|e| panic!("schedule_batch_reveal: chunk commit failed after validation passed: {:?}", e));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "schedule_batch_reveal: chunk commit failed after validation passed: {:?}",
+                    e
+                )
+            });
         indices.push_back(token_index);
     }
 
@@ -239,7 +244,13 @@ pub fn schedule_batch_reveal(
     }
 
     let ledger_seq = env.ledger().sequence();
-    let chunk_len = compute_allowed_items(env, &creator, ledger_seq, REVEAL_ITEM_GAS_ESTIMATE, batch_len);
+    let chunk_len = compute_allowed_items(
+        env,
+        &creator,
+        ledger_seq,
+        REVEAL_ITEM_GAS_ESTIMATE,
+        batch_len,
+    );
 
     let chunk: Vec<TokenCreationParams> = tokens.slice(0..chunk_len);
     let fee_used = if chunk_len > 0 {
@@ -285,7 +296,8 @@ pub fn resume_batch_reveal(env: &Env, creator: Address) -> Result<BatchScheduleR
     }
     creator.require_auth();
 
-    let continuation = storage::get_reveal_continuation(env, &creator).ok_or(Error::NoContinuationPending)?;
+    let continuation =
+        storage::get_reveal_continuation(env, &creator).ok_or(Error::NoContinuationPending)?;
 
     let ledger_seq = env.ledger().sequence();
     if ledger_seq <= continuation.last_activity_ledger {
@@ -294,11 +306,18 @@ pub fn resume_batch_reveal(env: &Env, creator: Address) -> Result<BatchScheduleR
 
     let remaining = continuation.remaining_tokens.clone();
     let batch_len = remaining.len();
-    let chunk_len = compute_allowed_items(env, &creator, ledger_seq, REVEAL_ITEM_GAS_ESTIMATE, batch_len);
+    let chunk_len = compute_allowed_items(
+        env,
+        &creator,
+        ledger_seq,
+        REVEAL_ITEM_GAS_ESTIMATE,
+        batch_len,
+    );
 
     let chunk: Vec<TokenCreationParams> = remaining.slice(0..chunk_len);
     let fee_used = if chunk_len > 0 {
-        let (_, fee_used) = execute_reveal_chunk(env, &creator, &chunk, continuation.remaining_fee_payment)?;
+        let (_, fee_used) =
+            execute_reveal_chunk(env, &creator, &chunk, continuation.remaining_fee_payment)?;
         storage::record_gas_used(
             env,
             &creator,
@@ -391,9 +410,9 @@ fn execute_settle_chunk(
     storage::set_token_info(env, token_index, &updated_info);
 
     for (recipient, _) in deltas.iter() {
-        let new_balance = staged_balances
-            .get(recipient.clone())
-            .unwrap_or_else(|| panic!("schedule_batch_settle: chunk commit missing staged balance"));
+        let new_balance = staged_balances.get(recipient.clone()).unwrap_or_else(|| {
+            panic!("schedule_batch_settle: chunk commit missing staged balance")
+        });
         storage::set_balance(env, token_index, &recipient, new_balance);
         let _ = crate::snapshot::record_balance_snapshot(env, token_index, &recipient, new_balance);
     }
@@ -444,7 +463,13 @@ pub fn schedule_batch_settle(
     }
 
     let ledger_seq = env.ledger().sequence();
-    let chunk_len = compute_allowed_items(env, &creator, ledger_seq, SETTLE_ITEM_GAS_ESTIMATE, batch_len);
+    let chunk_len = compute_allowed_items(
+        env,
+        &creator,
+        ledger_seq,
+        SETTLE_ITEM_GAS_ESTIMATE,
+        batch_len,
+    );
 
     let chunk: Vec<(Address, i128)> = recipients.slice(0..chunk_len);
     let minted_so_far = if chunk_len > 0 {
@@ -492,7 +517,8 @@ pub fn resume_batch_settle(env: &Env, creator: Address) -> Result<BatchScheduleR
     }
     creator.require_auth();
 
-    let continuation = storage::get_settle_continuation(env, &creator).ok_or(Error::NoContinuationPending)?;
+    let continuation =
+        storage::get_settle_continuation(env, &creator).ok_or(Error::NoContinuationPending)?;
 
     let ledger_seq = env.ledger().sequence();
     if ledger_seq <= continuation.last_activity_ledger {
@@ -505,7 +531,13 @@ pub fn resume_batch_settle(env: &Env, creator: Address) -> Result<BatchScheduleR
 
     let remaining = continuation.remaining_recipients.clone();
     let batch_len = remaining.len();
-    let chunk_len = compute_allowed_items(env, &creator, ledger_seq, SETTLE_ITEM_GAS_ESTIMATE, batch_len);
+    let chunk_len = compute_allowed_items(
+        env,
+        &creator,
+        ledger_seq,
+        SETTLE_ITEM_GAS_ESTIMATE,
+        batch_len,
+    );
 
     let chunk: Vec<(Address, i128)> = remaining.slice(0..chunk_len);
     let minted_this_chunk = if chunk_len > 0 {

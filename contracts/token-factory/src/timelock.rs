@@ -424,14 +424,21 @@ mod tests {
         base_fee: Option<i128>,
         metadata_fee: Option<i128>,
     ) -> Result<u64, Error> {
-        env.as_contract(contract_id, || schedule_fee_update(env, admin, base_fee, metadata_fee))
+        env.as_contract(contract_id, || {
+            schedule_fee_update(env, admin, base_fee, metadata_fee)
+        })
     }
 
     fn execute(env: &Env, contract_id: &Address, change_id: u64) -> Result<(), Error> {
         env.as_contract(contract_id, || execute_change(env, change_id))
     }
 
-    fn cancel(env: &Env, contract_id: &Address, admin: &Address, change_id: u64) -> Result<(), Error> {
+    fn cancel(
+        env: &Env,
+        contract_id: &Address,
+        admin: &Address,
+        change_id: u64,
+    ) -> Result<(), Error> {
         env.as_contract(contract_id, || cancel_change(env, admin, change_id))
     }
 
@@ -472,7 +479,10 @@ mod tests {
         });
 
         execute(&env, &contract_id, change_id).unwrap();
-        assert_eq!(env.as_contract(&contract_id, || storage::get_base_fee(&env)), 2_000_000);
+        assert_eq!(
+            env.as_contract(&contract_id, || storage::get_base_fee(&env)),
+            2_000_000
+        );
 
         let pending = pending(&env, &contract_id, change_id).unwrap();
         assert!(pending.executed);
@@ -596,7 +606,7 @@ pub fn create_proposal(
         start_time,
         end_time,
         eta,
-        timelock_delay: 0, // captured at queue time
+        timelock_delay: 0,   // captured at queue time
         queued_at_ledger: 0, // set when queued
         votes_for: 0,
         votes_against: 0,
@@ -682,7 +692,9 @@ pub fn cancel_proposal(env: &Env, caller: &Address, proposal_id: u64) -> Result<
 #[cfg(test)]
 mod proposal_tests {
     use super::*;
-    use crate::test_helpers::{fee_change_payload, pause_payload, policy_update_payload, treasury_change_payload};
+    use crate::test_helpers::{
+        fee_change_payload, pause_payload, policy_update_payload, treasury_change_payload,
+    };
     use soroban_sdk::testutils::Ledger;
     use soroban_sdk::{testutils::Address as _, Env};
 
@@ -714,7 +726,15 @@ mod proposal_tests {
         eta: u64,
     ) -> Result<u64, Error> {
         env.as_contract(contract_id, || {
-            create_proposal(env, proposer, action_type, payload, start_time, end_time, eta)
+            create_proposal(
+                env,
+                proposer,
+                action_type,
+                payload,
+                start_time,
+                end_time,
+                eta,
+            )
         })
     }
 
@@ -1402,7 +1422,13 @@ pub fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
             events::emit_fees_updated_v2(env, &proposal.proposer, base_fee, metadata_fee);
             // Dedicated fee-update event (#1385): the pending fee change has
             // now been applied to contract storage after timelock expiry.
-            events::emit_fee_update_executed(env, proposal_id, &proposal.proposer, base_fee, metadata_fee);
+            events::emit_fee_update_executed(
+                env,
+                proposal_id,
+                &proposal.proposer,
+                base_fee,
+                metadata_fee,
+            );
         }
         ActionType::TreasuryChange => {
             let new_treasury = payload_validation::parse_treasury_payload(env, &proposal.payload);
@@ -1476,7 +1502,14 @@ mod deterministic_governance_event_order_tests {
         (env, admin, contract_id)
     }
 
-    fn topic0(env: &Env, event: &(Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)) -> Symbol {
+    fn topic0(
+        env: &Env,
+        event: &(
+            Address,
+            soroban_sdk::Vec<soroban_sdk::Val>,
+            soroban_sdk::Val,
+        ),
+    ) -> Symbol {
         Symbol::try_from_val(env, &event.1.get(0).unwrap()).unwrap()
     }
 
@@ -1491,7 +1524,15 @@ mod deterministic_governance_event_order_tests {
         eta: u64,
     ) -> Result<u64, Error> {
         env.as_contract(contract_id, || {
-            create_proposal(env, proposer, action_type, payload, start_time, end_time, eta)
+            create_proposal(
+                env,
+                proposer,
+                action_type,
+                payload,
+                start_time,
+                end_time,
+                eta,
+            )
         })
     }
 
@@ -1502,7 +1543,9 @@ mod deterministic_governance_event_order_tests {
         proposal_id: u64,
         choice: VoteChoice,
     ) -> Result<(), Error> {
-        env.as_contract(contract_id, || vote_proposal(env, voter, proposal_id, choice))
+        env.as_contract(contract_id, || {
+            vote_proposal(env, voter, proposal_id, choice)
+        })
     }
 
     fn queue(env: &Env, contract_id: &Address, proposal_id: u64) -> Result<(), Error> {
@@ -1525,7 +1568,17 @@ mod deterministic_governance_event_order_tests {
         let payload = Bytes::from_slice(&env, &[1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]);
 
         let before = env.events().all().len();
-        let proposal_id = create(&env, &contract_id, &admin, ActionType::FeeChange, payload, start, end, eta).unwrap();
+        let proposal_id = create(
+            &env,
+            &contract_id,
+            &admin,
+            ActionType::FeeChange,
+            payload,
+            start,
+            end,
+            eta,
+        )
+        .unwrap();
 
         env.ledger().with_mut(|li| li.timestamp = start + 1);
         let voter1 = Address::generate(&env);
@@ -1541,12 +1594,30 @@ mod deterministic_governance_event_order_tests {
 
         let all = env.events().all();
         let delta = all.slice((before as u32)..all.len());
-        assert_eq!(topic0(&env, &delta.get(0).unwrap()), symbol_short!("prop_crv1"));
-        assert_eq!(topic0(&env, &delta.get(1).unwrap()), symbol_short!("vote_csv1"));
-        assert_eq!(topic0(&env, &delta.get(2).unwrap()), symbol_short!("vote_csv1"));
-        assert_eq!(topic0(&env, &delta.get(3).unwrap()), symbol_short!("prop_quv1"));
-        assert_eq!(topic0(&env, &delta.get(4).unwrap()), symbol_short!("fee_up_v1"));
-        assert_eq!(topic0(&env, &delta.get(5).unwrap()), symbol_short!("prop_exv1"));
+        assert_eq!(
+            topic0(&env, &delta.get(0).unwrap()),
+            symbol_short!("prop_crv1")
+        );
+        assert_eq!(
+            topic0(&env, &delta.get(1).unwrap()),
+            symbol_short!("vote_csv1")
+        );
+        assert_eq!(
+            topic0(&env, &delta.get(2).unwrap()),
+            symbol_short!("vote_csv1")
+        );
+        assert_eq!(
+            topic0(&env, &delta.get(3).unwrap()),
+            symbol_short!("prop_quv1")
+        );
+        assert_eq!(
+            topic0(&env, &delta.get(4).unwrap()),
+            symbol_short!("fee_up_v1")
+        );
+        assert_eq!(
+            topic0(&env, &delta.get(5).unwrap()),
+            symbol_short!("prop_exv1")
+        );
     }
 
     #[test]
@@ -1558,12 +1629,29 @@ mod deterministic_governance_event_order_tests {
         let eta = end + 20;
         let payload = Bytes::from_slice(&env, &[1u8]);
 
-        let proposal_id = create(&env, &contract_id, &admin, ActionType::FeeChange, payload, start, end, eta).unwrap();
+        let proposal_id = create(
+            &env,
+            &contract_id,
+            &admin,
+            ActionType::FeeChange,
+            payload,
+            start,
+            end,
+            eta,
+        )
+        .unwrap();
         env.ledger().with_mut(|li| li.timestamp = start + 1);
         let voter1 = Address::generate(&env);
         let voter2 = Address::generate(&env);
         vote(&env, &contract_id, &voter1, proposal_id, VoteChoice::For).unwrap();
-        vote(&env, &contract_id, &voter2, proposal_id, VoteChoice::Against).unwrap();
+        vote(
+            &env,
+            &contract_id,
+            &voter2,
+            proposal_id,
+            VoteChoice::Against,
+        )
+        .unwrap();
 
         env.ledger().with_mut(|li| li.timestamp = end + 1);
         let queue_event_count_before = env
@@ -1592,7 +1680,17 @@ mod deterministic_governance_event_order_tests {
         let eta = end + 20;
         let payload = Bytes::from_slice(&env, &[1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8]);
 
-        let proposal_id = create(&env, &contract_id, &admin, ActionType::FeeChange, payload, start, end, eta).unwrap();
+        let proposal_id = create(
+            &env,
+            &contract_id,
+            &admin,
+            ActionType::FeeChange,
+            payload,
+            start,
+            end,
+            eta,
+        )
+        .unwrap();
         env.ledger().with_mut(|li| li.timestamp = start + 1);
         let voter = Address::generate(&env);
         vote(&env, &contract_id, &voter, proposal_id, VoteChoice::For).unwrap();
@@ -1652,7 +1750,16 @@ mod cancel_proposal_tests {
         let t = env.ledger().timestamp();
         let payload = fee_change_payload(env, 2_000_000, 750_000);
         env.as_contract(contract_id, || {
-            create_proposal(env, proposer, ActionType::FeeChange, payload, t + 10, t + 86410, t + 90010).unwrap()
+            create_proposal(
+                env,
+                proposer,
+                ActionType::FeeChange,
+                payload,
+                t + 10,
+                t + 86410,
+                t + 90010,
+            )
+            .unwrap()
         })
     }
 
@@ -1736,7 +1843,16 @@ mod cancel_proposal_tests_v2 {
         let t = env.ledger().timestamp();
         let payload = fee_change_payload(env, 2_000_000, 750_000);
         env.as_contract(contract_id, || {
-            create_proposal(env, proposer, ActionType::FeeChange, payload, t + 10, t + 86410, t + 90010).unwrap()
+            create_proposal(
+                env,
+                proposer,
+                ActionType::FeeChange,
+                payload,
+                t + 10,
+                t + 86410,
+                t + 90010,
+            )
+            .unwrap()
         })
     }
 

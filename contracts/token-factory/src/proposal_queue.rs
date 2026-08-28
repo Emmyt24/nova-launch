@@ -53,9 +53,7 @@ fn set_queue_size(env: &Env, size: u32) {
 }
 
 fn get_slot(env: &Env, index: u32) -> Option<QueueEntry> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::QueueEntry(index))
+    env.storage().persistent().get(&DataKey::QueueEntry(index))
 }
 
 fn set_slot(env: &Env, index: u32, entry: &QueueEntry) {
@@ -96,8 +94,7 @@ pub fn enqueue_proposal(
     proposal_id: u64,
     priority: ProposalPriority,
 ) -> Result<u32, Error> {
-    let proposal =
-        storage::get_proposal(env, proposal_id).ok_or(Error::ProposalNotFound)?;
+    let proposal = storage::get_proposal(env, proposal_id).ok_or(Error::ProposalNotFound)?;
 
     if proposal.state != ProposalState::Queued {
         return Err(Error::InvalidParameters);

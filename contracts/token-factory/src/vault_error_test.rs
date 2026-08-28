@@ -216,7 +216,7 @@ fn test_create_vault_missing_unlock_condition_emits_operation_failed() {
             token.clone(),
             owner.clone(),
             500_000,
-            0, // no time unlock
+            0,                    // no time unlock
             no_milestone.clone(), // no milestone unlock either
             None,
         )
@@ -344,7 +344,10 @@ fn test_claim_vault_unauthorized_emits_operation_failed_with_amount() {
     assert_eq!(evt_vault_id, vault_id);
     assert_eq!(code, Error::Unauthorized.0);
     assert_eq!(name, "Unauthorized");
-    assert_eq!(amount, 500_000, "diagnostic context should carry the vault total");
+    assert_eq!(
+        amount, 500_000,
+        "diagnostic context should carry the vault total"
+    );
     assert_eq!(condition, "not_vault_owner");
 }
 
@@ -405,7 +408,15 @@ fn test_cancel_vault_unauthorized_emits_operation_failed() {
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
 
-    let vault_id = create_test_vault(&env, &contract_id, &creator, &token, &owner, 500_000, 1_750_000_000);
+    let vault_id = create_test_vault(
+        &env,
+        &contract_id,
+        &creator,
+        &token,
+        &owner,
+        500_000,
+        1_750_000_000,
+    );
 
     let result = env.as_contract(&contract_id, || {
         TokenFactory::cancel_vault(env.clone(), vault_id, attacker.clone())
@@ -504,7 +515,15 @@ fn test_propose_vault_owner_change_unauthorized_emits_operation_failed() {
     let attacker = Address::generate(&env);
     let new_owner = Address::generate(&env);
 
-    let vault_id = create_test_vault(&env, &contract_id, &creator, &token, &owner, 500_000, 1_750_000_000);
+    let vault_id = create_test_vault(
+        &env,
+        &contract_id,
+        &creator,
+        &token,
+        &owner,
+        500_000,
+        1_750_000_000,
+    );
 
     let result = env.as_contract(&contract_id, || {
         TokenFactory::propose_vault_owner_change(
@@ -527,7 +546,15 @@ fn test_approve_vault_owner_change_not_found_emits_operation_failed() {
     let (env, contract_id, creator, token) = setup();
     let owner = Address::generate(&env);
 
-    let vault_id = create_test_vault(&env, &contract_id, &creator, &token, &owner, 500_000, 1_750_000_000);
+    let vault_id = create_test_vault(
+        &env,
+        &contract_id,
+        &creator,
+        &token,
+        &owner,
+        500_000,
+        1_750_000_000,
+    );
 
     // No proposal has been created yet.
     let result = env.as_contract(&contract_id, || {

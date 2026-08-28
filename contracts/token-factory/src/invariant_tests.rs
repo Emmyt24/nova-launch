@@ -2,22 +2,16 @@
 ///
 /// Targeted tests that intentionally violate each invariant to confirm
 /// the assertion triggers. Every test in this file is expected to panic.
-
 extern crate std;
 
 #[cfg(test)]
 mod invariant_tests {
-    use soroban_sdk::{testutils::Address as _, Address, Env};
     use crate::invariants::{
-        assert_supply_conservation,
-        assert_supply_non_negative,
-        assert_burned_within_bounds,
-        assert_token_count_monotonic,
-        assert_stream_count_monotonic,
-        assert_burn_count_monotonic,
-        assert_terminal_state_immutable,
-        ProposalStatus,
+        assert_burn_count_monotonic, assert_burned_within_bounds, assert_stream_count_monotonic,
+        assert_supply_conservation, assert_supply_non_negative, assert_terminal_state_immutable,
+        assert_token_count_monotonic, ProposalStatus,
     };
+    use soroban_sdk::{testutils::Address as _, Address, Env};
 
     fn setup() -> (Env, Address, Address, Address, u32) {
         let env = Env::default();
@@ -26,7 +20,7 @@ mod invariant_tests {
         let contract_id = env.register_contract(None, crate::TokenFactory);
         let client = crate::TokenFactoryClient::new(&env, &contract_id);
 
-        let admin    = Address::generate(&env);
+        let admin = Address::generate(&env);
         let treasury = Address::generate(&env);
 
         client.initialize(&admin, &treasury, &100_i128, &50_i128);

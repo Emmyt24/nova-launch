@@ -8,7 +8,6 @@
 /// - `BalanceSnapshot(token_index, holder, idx)` → BalanceSnapshot
 /// - `SupplySnapshotCount(token_index)` → u32
 /// - `SupplySnapshot(token_index, idx)` → SupplySnapshot
-
 use soroban_sdk::{Address, Env};
 
 use crate::{
@@ -31,11 +30,7 @@ pub fn record_balance_snapshot(
     balance: i128,
 ) -> Result<(), Error> {
     let count_key = DataKey::BalanceSnapshotCount(token_index, holder.clone());
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&count_key)
-        .unwrap_or(0);
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
     let snap = BalanceSnapshot {
         ledger: env.ledger().sequence(),
@@ -43,14 +38,16 @@ pub fn record_balance_snapshot(
         balance,
     };
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::BalanceSnapshot(token_index, holder.clone(), count), &snap);
-    env.storage()
-        .persistent()
-        .set(&count_key, &(count + 1));
+    env.storage().persistent().set(
+        &DataKey::BalanceSnapshot(token_index, holder.clone(), count),
+        &snap,
+    );
+    env.storage().persistent().set(&count_key, &(count + 1));
 
-    storage::bump_persistent(env, &DataKey::BalanceSnapshot(token_index, holder.clone(), count));
+    storage::bump_persistent(
+        env,
+        &DataKey::BalanceSnapshot(token_index, holder.clone(), count),
+    );
     storage::bump_persistent(env, &count_key);
 
     Ok(())
@@ -128,11 +125,7 @@ pub fn record_supply_snapshot(
     total_supply: i128,
 ) -> Result<(), Error> {
     let count_key = DataKey::SupplySnapshotCount(token_index);
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&count_key)
-        .unwrap_or(0);
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
     let snap = SupplySnapshot {
         ledger: env.ledger().sequence(),
@@ -143,9 +136,7 @@ pub fn record_supply_snapshot(
     env.storage()
         .persistent()
         .set(&DataKey::SupplySnapshot(token_index, count), &snap);
-    env.storage()
-        .persistent()
-        .set(&count_key, &(count + 1));
+    env.storage().persistent().set(&count_key, &(count + 1));
 
     storage::bump_persistent(env, &DataKey::SupplySnapshot(token_index, count));
     storage::bump_persistent(env, &count_key);
@@ -162,11 +153,7 @@ pub fn get_supply_snapshot_count(env: &Env, token_index: u32) -> u32 {
 }
 
 /// Return the supply snapshot at index `idx`, or `None` if out of bounds.
-pub fn get_supply_snapshot(
-    env: &Env,
-    token_index: u32,
-    idx: u32,
-) -> Option<SupplySnapshot> {
+pub fn get_supply_snapshot(env: &Env, token_index: u32, idx: u32) -> Option<SupplySnapshot> {
     env.storage()
         .persistent()
         .get(&DataKey::SupplySnapshot(token_index, idx))
@@ -206,11 +193,7 @@ pub fn get_supply_at_ledger(
 /// Take a balance snapshot at the CURRENT ledger for use in distribution.
 ///
 /// Returns the current balance for `holder` after writing the snapshot.
-pub fn snapshot_balance_now(
-    env: &Env,
-    token_index: u32,
-    holder: &Address,
-) -> i128 {
+pub fn snapshot_balance_now(env: &Env, token_index: u32, holder: &Address) -> i128 {
     let balance = storage::get_balance(env, token_index, holder);
     let _ = record_balance_snapshot(env, token_index, holder, balance);
     balance

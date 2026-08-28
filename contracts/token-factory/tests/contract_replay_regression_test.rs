@@ -1,32 +1,55 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 enum Error {
-    Unauthorized, InvalidParameters, InvalidAmount, TokenNotFound,
-    ContractPaused, AlreadyExecuted, ProposalCancelled, ProposalNotQueued,
-    NoPendingAdmin, WrongPendingAdmin, AlreadyVoted,
+    Unauthorized,
+    InvalidParameters,
+    InvalidAmount,
+    TokenNotFound,
+    ContractPaused,
+    AlreadyExecuted,
+    ProposalCancelled,
+    ProposalNotQueued,
+    NoPendingAdmin,
+    WrongPendingAdmin,
+    AlreadyVoted,
     // Issue #1765: recurring payment streams
-    RecurringStreamNotFound, RecurringStreamCancelled,
-    RecurringPeriodNotElapsed, RecurringStreamLimitReached,
+    RecurringStreamNotFound,
+    RecurringStreamCancelled,
+    RecurringPeriodNotElapsed,
+    RecurringStreamLimitReached,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-enum ProposalState { Queued, Executed, Cancelled }
+enum ProposalState {
+    Queued,
+    Executed,
+    Cancelled,
+}
 
 #[derive(Clone)]
 struct StreamInfo {
-    creator: Address, recipient: Address,
-    amount: i128, claimed_amount: i128,
-    start_time: u64, end_time: u64,
-    cancelled: bool, paused: bool,
+    creator: Address,
+    recipient: Address,
+    amount: i128,
+    claimed_amount: i128,
+    start_time: u64,
+    end_time: u64,
+    cancelled: bool,
+    paused: bool,
 }
 
 #[derive(Clone)]
 struct Proposal {
-    state: ProposalState, eta: u64,
-    cancelled_at: Option<u64>, executed_at: Option<u64>,
+    state: ProposalState,
+    eta: u64,
+    cancelled_at: Option<u64>,
+    executed_at: Option<u64>,
 }
 
 use std::cell::RefCell;
@@ -45,17 +68,39 @@ fn reset_state() {
     ADMIN.with(|a| *a.borrow_mut() = None);
     PENDING_ADMIN.with(|p| *p.borrow_mut() = None);
 }
-fn set_stream(id: u64, s: StreamInfo) { STREAMS.with(|m| { m.borrow_mut().insert(id, s); }); }
-fn get_stream(id: u64) -> Option<StreamInfo> { STREAMS.with(|m| m.borrow().get(&id).cloned()) }
-fn set_proposal(id: u64, p: Proposal) { PROPOSALS.with(|m| { m.borrow_mut().insert(id, p); }); }
-fn get_proposal(id: u64) -> Option<Proposal> { PROPOSALS.with(|m| m.borrow().get(&id).cloned()) }
-fn set_admin(a: Address) { ADMIN.with(|v| *v.borrow_mut() = Some(a)); }
-fn get_admin() -> Option<Address> { ADMIN.with(|v| v.borrow().clone()) }
-fn set_pending_admin(a: Option<Address>) { PENDING_ADMIN.with(|v| *v.borrow_mut() = a); }
-fn get_pending_admin() -> Option<Address> { PENDING_ADMIN.with(|v| v.borrow().clone()) }
+fn set_stream(id: u64, s: StreamInfo) {
+    STREAMS.with(|m| {
+        m.borrow_mut().insert(id, s);
+    });
+}
+fn get_stream(id: u64) -> Option<StreamInfo> {
+    STREAMS.with(|m| m.borrow().get(&id).cloned())
+}
+fn set_proposal(id: u64, p: Proposal) {
+    PROPOSALS.with(|m| {
+        m.borrow_mut().insert(id, p);
+    });
+}
+fn get_proposal(id: u64) -> Option<Proposal> {
+    PROPOSALS.with(|m| m.borrow().get(&id).cloned())
+}
+fn set_admin(a: Address) {
+    ADMIN.with(|v| *v.borrow_mut() = Some(a));
+}
+fn get_admin() -> Option<Address> {
+    ADMIN.with(|v| v.borrow().clone())
+}
+fn set_pending_admin(a: Option<Address>) {
+    PENDING_ADMIN.with(|v| *v.borrow_mut() = a);
+}
+fn get_pending_admin() -> Option<Address> {
+    PENDING_ADMIN.with(|v| v.borrow().clone())
+}
 
 fn propose_admin(caller: &Address, new_admin: &Address) -> Result<(), Error> {
-    if get_admin().as_ref() != Some(caller) { return Err(Error::Unauthorized); }
+    if get_admin().as_ref() != Some(caller) {
+        return Err(Error::Unauthorized);
+    }
     set_pending_admin(Some(new_admin.clone()));
     Ok(())
 }
@@ -64,18 +109,24 @@ fn accept_admin(caller: &Address) -> Result<(), Error> {
     match get_pending_admin() {
         None => Err(Error::NoPendingAdmin),
         Some(p) if p != *caller => Err(Error::WrongPendingAdmin),
-        Some(p) => { set_admin(p); set_pending_admin(None); Ok(()) }
+        Some(p) => {
+            set_admin(p);
+            set_pending_admin(None);
+            Ok(())
+        }
     }
 }
 
 fn execute_proposal(env: &Env, pid: u64) -> Result<(), Error> {
     let mut p = get_proposal(pid).ok_or(Error::ProposalNotQueued)?;
     match p.state {
-        ProposalState::Executed  => return Err(Error::AlreadyExecuted),
+        ProposalState::Executed => return Err(Error::AlreadyExecuted),
         ProposalState::Cancelled => return Err(Error::ProposalCancelled),
-        ProposalState::Queued    => {}
+        ProposalState::Queued => {}
     }
-    if env.ledger().timestamp() <= p.eta { return Err(Error::InvalidParameters); }
+    if env.ledger().timestamp() <= p.eta {
+        return Err(Error::InvalidParameters);
+    }
     p.state = ProposalState::Executed;
     p.executed_at = Some(env.ledger().timestamp());
     set_proposal(pid, p);
@@ -84,8 +135,12 @@ fn execute_proposal(env: &Env, pid: u64) -> Result<(), Error> {
 
 fn cancel_stream(caller: &Address, sid: u64) -> Result<(), Error> {
     let mut s = get_stream(sid).ok_or(Error::TokenNotFound)?;
-    if s.creator != *caller { return Err(Error::Unauthorized); }
-    if s.cancelled { return Err(Error::InvalidParameters); }
+    if s.creator != *caller {
+        return Err(Error::Unauthorized);
+    }
+    if s.cancelled {
+        return Err(Error::InvalidParameters);
+    }
     s.cancelled = true;
     set_stream(sid, s);
     Ok(())
@@ -93,49 +148,78 @@ fn cancel_stream(caller: &Address, sid: u64) -> Result<(), Error> {
 
 fn claim_stream(env: &Env, recipient: &Address, sid: u64) -> Result<i128, Error> {
     let mut s = get_stream(sid).ok_or(Error::TokenNotFound)?;
-    if s.recipient != *recipient { return Err(Error::Unauthorized); }
-    if s.cancelled { return Err(Error::InvalidParameters); }
-    if s.paused    { return Err(Error::ContractPaused); }
+    if s.recipient != *recipient {
+        return Err(Error::Unauthorized);
+    }
+    if s.cancelled {
+        return Err(Error::InvalidParameters);
+    }
+    if s.paused {
+        return Err(Error::ContractPaused);
+    }
     let now = env.ledger().timestamp();
-    let vested = if now >= s.end_time { s.amount }
-        else if now <= s.start_time { 0 }
-        else {
-            let e = now - s.start_time;
-            let d = s.end_time - s.start_time;
-            s.amount * e as i128 / d as i128
-        };
+    let vested = if now >= s.end_time {
+        s.amount
+    } else if now <= s.start_time {
+        0
+    } else {
+        let e = now - s.start_time;
+        let d = s.end_time - s.start_time;
+        s.amount * e as i128 / d as i128
+    };
     let claimable = vested - s.claimed_amount;
-    if claimable <= 0 { return Err(Error::InvalidAmount); }
+    if claimable <= 0 {
+        return Err(Error::InvalidAmount);
+    }
     s.claimed_amount += claimable;
     set_stream(sid, s);
     Ok(claimable)
 }
 
-fn make_env() -> Env { let e = Env::default(); e.mock_all_auths(); e }
+fn make_env() -> Env {
+    let e = Env::default();
+    e.mock_all_auths();
+    e
+}
 
 fn make_stream_fixture(env: &Env) -> (u64, Address, Address) {
     reset_state();
-    let creator   = Address::generate(env);
+    let creator = Address::generate(env);
     let recipient = Address::generate(env);
-    set_stream(0, StreamInfo {
-        creator: creator.clone(), recipient: recipient.clone(),
-        amount: 10_000, claimed_amount: 0,
-        start_time: 1_000, end_time: 2_000,
-        cancelled: false, paused: false,
-    });
+    set_stream(
+        0,
+        StreamInfo {
+            creator: creator.clone(),
+            recipient: recipient.clone(),
+            amount: 10_000,
+            claimed_amount: 0,
+            start_time: 1_000,
+            end_time: 2_000,
+            cancelled: false,
+            paused: false,
+        },
+    );
     (0, creator, recipient)
 }
 
 fn make_proposal_fixture(env: &Env) -> (u64, u64) {
     reset_state();
     let eta = env.ledger().timestamp() + 3_600;
-    set_proposal(1, Proposal { state: ProposalState::Queued, eta, cancelled_at: None, executed_at: None });
+    set_proposal(
+        1,
+        Proposal {
+            state: ProposalState::Queued,
+            eta,
+            cancelled_at: None,
+            executed_at: None,
+        },
+    );
     (1, eta)
 }
 
 fn make_admin_fixture(env: &Env) -> (Address, Address) {
     reset_state();
-    let admin     = Address::generate(env);
+    let admin = Address::generate(env);
     let new_admin = Address::generate(env);
     set_admin(admin.clone());
     (admin, new_admin)
@@ -158,7 +242,12 @@ fn test_accept_admin_replay_is_deterministic() {
     propose_admin(&admin, &new_admin).unwrap();
     accept_admin(&new_admin).unwrap();
     for i in 0..5 {
-        assert_eq!(accept_admin(&new_admin), Err(Error::NoPendingAdmin), "replay #{}", i+1);
+        assert_eq!(
+            accept_admin(&new_admin),
+            Err(Error::NoPendingAdmin),
+            "replay #{}",
+            i + 1
+        );
     }
     assert_eq!(get_admin(), Some(new_admin));
 }
@@ -171,7 +260,12 @@ fn test_accept_admin_stale_replay_fails() {
     propose_admin(&admin, &first).unwrap();
     propose_admin(&admin, &second).unwrap();
     for i in 0..3 {
-        assert_eq!(accept_admin(&first), Err(Error::WrongPendingAdmin), "stale replay #{}", i+1);
+        assert_eq!(
+            accept_admin(&first),
+            Err(Error::WrongPendingAdmin),
+            "stale replay #{}",
+            i + 1
+        );
     }
     accept_admin(&second).unwrap();
     assert_eq!(get_admin(), Some(second));
@@ -204,7 +298,12 @@ fn test_execute_proposal_replay_is_deterministic() {
     env.ledger().with_mut(|li| li.timestamp = eta + 1);
     execute_proposal(&env, pid).unwrap();
     for i in 0..5 {
-        assert_eq!(execute_proposal(&env, pid), Err(Error::AlreadyExecuted), "replay #{}", i+1);
+        assert_eq!(
+            execute_proposal(&env, pid),
+            Err(Error::AlreadyExecuted),
+            "replay #{}",
+            i + 1
+        );
     }
 }
 
@@ -218,7 +317,12 @@ fn test_execute_cancelled_proposal_replay_fails() {
     set_proposal(pid, p);
     env.ledger().with_mut(|li| li.timestamp = eta + 1);
     for i in 0..3 {
-        assert_eq!(execute_proposal(&env, pid), Err(Error::ProposalCancelled), "attempt #{}", i+1);
+        assert_eq!(
+            execute_proposal(&env, pid),
+            Err(Error::ProposalCancelled),
+            "attempt #{}",
+            i + 1
+        );
     }
 }
 
@@ -228,8 +332,24 @@ fn test_two_proposals_no_cross_replay() {
     reset_state();
     let eta1 = env.ledger().timestamp() + 1_000;
     let eta2 = env.ledger().timestamp() + 2_000;
-    set_proposal(1, Proposal { state: ProposalState::Queued, eta: eta1, cancelled_at: None, executed_at: None });
-    set_proposal(2, Proposal { state: ProposalState::Queued, eta: eta2, cancelled_at: None, executed_at: None });
+    set_proposal(
+        1,
+        Proposal {
+            state: ProposalState::Queued,
+            eta: eta1,
+            cancelled_at: None,
+            executed_at: None,
+        },
+    );
+    set_proposal(
+        2,
+        Proposal {
+            state: ProposalState::Queued,
+            eta: eta2,
+            cancelled_at: None,
+            executed_at: None,
+        },
+    );
     env.ledger().with_mut(|li| li.timestamp = eta1 + 1);
     execute_proposal(&env, 1).unwrap();
     assert_eq!(get_proposal(2).unwrap().state, ProposalState::Queued);
@@ -245,7 +365,10 @@ fn test_claim_stream_replay_same_timestamp_fails() {
     let (sid, _, recipient) = make_stream_fixture(&env);
     env.ledger().with_mut(|li| li.timestamp = 1_500);
     assert!(claim_stream(&env, &recipient, sid).unwrap() > 0);
-    assert_eq!(claim_stream(&env, &recipient, sid), Err(Error::InvalidAmount));
+    assert_eq!(
+        claim_stream(&env, &recipient, sid),
+        Err(Error::InvalidAmount)
+    );
 }
 
 #[test]
@@ -254,7 +377,10 @@ fn test_claim_stream_replay_after_full_vesting_fails() {
     let (sid, _, recipient) = make_stream_fixture(&env);
     env.ledger().with_mut(|li| li.timestamp = 3_000);
     assert_eq!(claim_stream(&env, &recipient, sid).unwrap(), 10_000);
-    assert_eq!(claim_stream(&env, &recipient, sid), Err(Error::InvalidAmount));
+    assert_eq!(
+        claim_stream(&env, &recipient, sid),
+        Err(Error::InvalidAmount)
+    );
 }
 
 #[test]
@@ -264,7 +390,12 @@ fn test_claim_stream_replay_is_deterministic() {
     env.ledger().with_mut(|li| li.timestamp = 3_000);
     claim_stream(&env, &recipient, sid).unwrap();
     for i in 0..5 {
-        assert_eq!(claim_stream(&env, &recipient, sid), Err(Error::InvalidAmount), "replay #{}", i+1);
+        assert_eq!(
+            claim_stream(&env, &recipient, sid),
+            Err(Error::InvalidAmount),
+            "replay #{}",
+            i + 1
+        );
     }
     let s = get_stream(sid).unwrap();
     assert_eq!(s.claimed_amount, s.amount);
@@ -278,7 +409,12 @@ fn test_claim_stream_replay_on_cancelled_fails() {
     let partial = claim_stream(&env, &recipient, sid).unwrap();
     cancel_stream(&creator, sid).unwrap();
     for i in 0..3 {
-        assert_eq!(claim_stream(&env, &recipient, sid), Err(Error::InvalidParameters), "claim #{}", i+1);
+        assert_eq!(
+            claim_stream(&env, &recipient, sid),
+            Err(Error::InvalidParameters),
+            "claim #{}",
+            i + 1
+        );
     }
     assert_eq!(get_stream(sid).unwrap().claimed_amount, partial);
 }
@@ -291,7 +427,12 @@ fn test_claim_stream_unauthorized_replay_fails() {
     env.ledger().with_mut(|li| li.timestamp = 1_500);
     claim_stream(&env, &recipient, sid).unwrap();
     for i in 0..3 {
-        assert_eq!(claim_stream(&env, &attacker, sid), Err(Error::Unauthorized), "attacker replay #{}", i+1);
+        assert_eq!(
+            claim_stream(&env, &attacker, sid),
+            Err(Error::Unauthorized),
+            "attacker replay #{}",
+            i + 1
+        );
     }
 }
 
@@ -311,7 +452,10 @@ fn test_claim_stream_incremental_no_double_accounting() {
     let s = get_stream(sid).unwrap();
     assert_eq!(c1 + c2 + c3, s.amount);
     assert_eq!(s.claimed_amount, s.amount);
-    assert_eq!(claim_stream(&env, &recipient, sid), Err(Error::InvalidAmount));
+    assert_eq!(
+        claim_stream(&env, &recipient, sid),
+        Err(Error::InvalidAmount)
+    );
 }
 
 #[test]
@@ -328,7 +472,12 @@ fn test_cancel_stream_replay_is_deterministic() {
     let (sid, creator, _) = make_stream_fixture(&env);
     cancel_stream(&creator, sid).unwrap();
     for i in 0..5 {
-        assert_eq!(cancel_stream(&creator, sid), Err(Error::InvalidParameters), "replay #{}", i+1);
+        assert_eq!(
+            cancel_stream(&creator, sid),
+            Err(Error::InvalidParameters),
+            "replay #{}",
+            i + 1
+        );
     }
     assert!(get_stream(sid).unwrap().cancelled);
 }
@@ -339,7 +488,12 @@ fn test_cancel_stream_unauthorized_replay_fails() {
     let (sid, creator, _) = make_stream_fixture(&env);
     let attacker = Address::generate(&env);
     for i in 0..3 {
-        assert_eq!(cancel_stream(&attacker, sid), Err(Error::Unauthorized), "attacker replay #{}", i+1);
+        assert_eq!(
+            cancel_stream(&attacker, sid),
+            Err(Error::Unauthorized),
+            "attacker replay #{}",
+            i + 1
+        );
     }
     assert!(!get_stream(sid).unwrap().cancelled);
     cancel_stream(&creator, sid).unwrap();
@@ -356,10 +510,11 @@ fn test_cancel_then_claim_replay_no_state_drift() {
     cancel_stream(&creator, sid).unwrap();
     let claimed_at_cancel = get_stream(sid).unwrap().claimed_amount;
     assert_eq!(cancel_stream(&creator, sid), Err(Error::InvalidParameters));
-    for _ in 0..3 { let _ = claim_stream(&env, &recipient, sid); }
+    for _ in 0..3 {
+        let _ = claim_stream(&env, &recipient, sid);
+    }
     assert_eq!(get_stream(sid).unwrap().claimed_amount, claimed_at_cancel);
 }
-
 
 // =============================================================================
 // REPLAY REGRESSION TESTS: VAULT DEPOSIT
@@ -374,15 +529,20 @@ fn test_cancel_then_claim_replay_no_state_drift() {
 // Error::VaultAlreadyClaimed (code 62), never silently succeed or panic.
 
 #[derive(Debug, PartialEq, Clone)]
-enum VaultStatus { Active, Claimed, Locked, Cancelled }
+enum VaultStatus {
+    Active,
+    Claimed,
+    Locked,
+    Cancelled,
+}
 
 #[derive(Clone)]
 struct VaultState {
-    owner:          Address,
-    total_amount:   i128,
+    owner: Address,
+    total_amount: i128,
     claimed_amount: i128,
-    unlock_time:    u64,
-    status:         VaultStatus,
+    unlock_time: u64,
+    status: VaultStatus,
 }
 
 thread_local! {
@@ -396,15 +556,22 @@ thread_local! {
 
 #[derive(Debug, PartialEq, Clone)]
 enum VaultError {
-    TokenNotFound, Unauthorized, InvalidAmount, InvalidParameters,
-    VaultLocked, VaultAlreadyClaimed, NothingToClaim,
+    TokenNotFound,
+    Unauthorized,
+    InvalidAmount,
+    InvalidParameters,
+    VaultLocked,
+    VaultAlreadyClaimed,
+    NothingToClaim,
 }
 
 fn vault_reset() {
     VAULTS.with(|v| v.borrow_mut().clear());
 }
 fn vault_set(id: u64, s: VaultState) {
-    VAULTS.with(|v| { v.borrow_mut().insert(id, s); });
+    VAULTS.with(|v| {
+        v.borrow_mut().insert(id, s);
+    });
 }
 fn vault_get(id: u64) -> Option<VaultState> {
     VAULTS.with(|v| v.borrow().get(&id).cloned())
@@ -412,10 +579,17 @@ fn vault_get(id: u64) -> Option<VaultState> {
 
 /// Simulate fund_vault: IDEMPOTENT — accumulates on repeat calls.
 fn sim_fund_vault(vault_id: u64, caller: &Address, amount: i128) -> Result<(), VaultError> {
-    if amount <= 0 { return Err(VaultError::InvalidAmount); }
+    if amount <= 0 {
+        return Err(VaultError::InvalidAmount);
+    }
     let mut v = vault_get(vault_id).ok_or(VaultError::TokenNotFound)?;
-    if v.status != VaultStatus::Active { return Err(VaultError::InvalidParameters); }
-    v.total_amount = v.total_amount.checked_add(amount).ok_or(VaultError::InvalidAmount)?;
+    if v.status != VaultStatus::Active {
+        return Err(VaultError::InvalidParameters);
+    }
+    v.total_amount = v
+        .total_amount
+        .checked_add(amount)
+        .ok_or(VaultError::InvalidAmount)?;
     vault_set(vault_id, v);
     Ok(())
 }
@@ -423,16 +597,22 @@ fn sim_fund_vault(vault_id: u64, caller: &Address, amount: i128) -> Result<(), V
 /// Simulate claim_vault: REPLAY-PROTECTED via VaultAlreadyClaimed.
 fn sim_claim_vault(env: &Env, vault_id: u64, caller: &Address) -> Result<i128, VaultError> {
     let mut v = vault_get(vault_id).ok_or(VaultError::TokenNotFound)?;
-    if v.owner != *caller { return Err(VaultError::Unauthorized); }
-    match v.status {
-        VaultStatus::Claimed    => return Err(VaultError::VaultAlreadyClaimed),
-        VaultStatus::Locked     => return Err(VaultError::VaultLocked),
-        VaultStatus::Cancelled  => return Err(VaultError::InvalidParameters),
-        VaultStatus::Active     => {}
+    if v.owner != *caller {
+        return Err(VaultError::Unauthorized);
     }
-    if env.ledger().timestamp() < v.unlock_time { return Err(VaultError::VaultLocked); }
+    match v.status {
+        VaultStatus::Claimed => return Err(VaultError::VaultAlreadyClaimed),
+        VaultStatus::Locked => return Err(VaultError::VaultLocked),
+        VaultStatus::Cancelled => return Err(VaultError::InvalidParameters),
+        VaultStatus::Active => {}
+    }
+    if env.ledger().timestamp() < v.unlock_time {
+        return Err(VaultError::VaultLocked);
+    }
     let claimable = v.total_amount - v.claimed_amount;
-    if claimable <= 0 { return Err(VaultError::NothingToClaim); }
+    if claimable <= 0 {
+        return Err(VaultError::NothingToClaim);
+    }
     v.claimed_amount += claimable;
     v.status = VaultStatus::Claimed;
     vault_set(vault_id, v);
@@ -442,10 +622,16 @@ fn sim_claim_vault(env: &Env, vault_id: u64, caller: &Address) -> Result<i128, V
 fn make_vault_fixture(env: &Env) -> (u64, Address) {
     vault_reset();
     let owner = Address::generate(env);
-    vault_set(0, VaultState {
-        owner: owner.clone(), total_amount: 5_000, claimed_amount: 0,
-        unlock_time: 100, status: VaultStatus::Active,
-    });
+    vault_set(
+        0,
+        VaultState {
+            owner: owner.clone(),
+            total_amount: 5_000,
+            claimed_amount: 0,
+            unlock_time: 100,
+            status: VaultStatus::Active,
+        },
+    );
     (0, owner)
 }
 
@@ -466,8 +652,11 @@ fn replay_protection_vault_deposit_is_idempotent() {
     let after_second = vault_get(vid).unwrap().total_amount;
 
     // Total should be initial + both deposits
-    assert_eq!(after_first,  6_000, "total after first deposit");
-    assert_eq!(after_second, 7_000, "total after second deposit accumulates correctly");
+    assert_eq!(after_first, 6_000, "total after first deposit");
+    assert_eq!(
+        after_second, 7_000,
+        "total after second deposit accumulates correctly"
+    );
 }
 
 /// claim_vault is REPLAY-PROTECTED: after a full claim the vault is sealed
@@ -502,7 +691,8 @@ fn replay_protection_vault_claim_replay_is_deterministic() {
         assert_eq!(
             sim_claim_vault(&env, vid, &owner),
             Err(VaultError::VaultAlreadyClaimed),
-            "replay #{} must return VaultAlreadyClaimed", i + 1
+            "replay #{} must return VaultAlreadyClaimed",
+            i + 1
         );
     }
     // State must not drift
@@ -521,7 +711,8 @@ fn replay_protection_vault_claim_before_unlock_returns_locked() {
         assert_eq!(
             sim_claim_vault(&env, vid, &owner),
             Err(VaultError::VaultLocked),
-            "attempt #{} before unlock must return VaultLocked", i + 1
+            "attempt #{} before unlock must return VaultLocked",
+            i + 1
         );
     }
     // After advancing time it succeeds
@@ -539,12 +730,17 @@ fn replay_protection_vault_claim_before_unlock_returns_locked() {
 // must not change after the first successful vote.
 
 #[derive(Debug, PartialEq, Clone)]
-enum VoteError { ProposalNotFound, AlreadyVoted, Unauthorized, InvalidParameters }
+enum VoteError {
+    ProposalNotFound,
+    AlreadyVoted,
+    Unauthorized,
+    InvalidParameters,
+}
 
 #[derive(Clone)]
 struct ProposalVoteState {
     yes_votes: i128,
-    no_votes:  i128,
+    no_votes: i128,
     open: bool,
 }
 
@@ -560,7 +756,9 @@ fn gov_reset() {
     GOV_VOTERS.with(|v| v.borrow_mut().clear());
 }
 fn gov_set_proposal(id: u64, s: ProposalVoteState) {
-    GOV_PROPOSALS.with(|p| { p.borrow_mut().insert(id, s); });
+    GOV_PROPOSALS.with(|p| {
+        p.borrow_mut().insert(id, s);
+    });
 }
 fn gov_get_proposal(id: u64) -> Option<ProposalVoteState> {
     GOV_PROPOSALS.with(|p| p.borrow().get(&id).cloned())
@@ -571,18 +769,33 @@ fn gov_has_voted(proposal_id: u64, voter: &Address) -> bool {
 }
 fn gov_record_vote(proposal_id: u64, voter: &Address, support: bool) {
     let key = (proposal_id, format!("{:?}", voter));
-    GOV_VOTERS.with(|v| { v.borrow_mut().insert(key, support); });
+    GOV_VOTERS.with(|v| {
+        v.borrow_mut().insert(key, support);
+    });
 }
 
 /// Simulate cast_vote: REPLAY-PROTECTED via AlreadyVoted.
 fn sim_cast_vote(
-    proposal_id: u64, voter: &Address, support: bool, voting_power: i128,
+    proposal_id: u64,
+    voter: &Address,
+    support: bool,
+    voting_power: i128,
 ) -> Result<(), VoteError> {
-    if voting_power <= 0 { return Err(VoteError::InvalidParameters); }
+    if voting_power <= 0 {
+        return Err(VoteError::InvalidParameters);
+    }
     let mut p = gov_get_proposal(proposal_id).ok_or(VoteError::ProposalNotFound)?;
-    if !p.open { return Err(VoteError::InvalidParameters); }
-    if gov_has_voted(proposal_id, voter) { return Err(VoteError::AlreadyVoted); }
-    if support { p.yes_votes += voting_power; } else { p.no_votes += voting_power; }
+    if !p.open {
+        return Err(VoteError::InvalidParameters);
+    }
+    if gov_has_voted(proposal_id, voter) {
+        return Err(VoteError::AlreadyVoted);
+    }
+    if support {
+        p.yes_votes += voting_power;
+    } else {
+        p.no_votes += voting_power;
+    }
     gov_set_proposal(proposal_id, p);
     gov_record_vote(proposal_id, voter, support);
     Ok(())
@@ -590,7 +803,14 @@ fn sim_cast_vote(
 
 fn make_gov_fixture() -> u64 {
     gov_reset();
-    gov_set_proposal(1, ProposalVoteState { yes_votes: 0, no_votes: 0, open: true });
+    gov_set_proposal(
+        1,
+        ProposalVoteState {
+            yes_votes: 0,
+            no_votes: 0,
+            open: true,
+        },
+    );
     1
 }
 
@@ -613,7 +833,8 @@ fn replay_protection_governance_vote_replay_returns_already_voted() {
         "replay vote must return AlreadyVoted"
     );
     assert_eq!(
-        gov_get_proposal(pid).unwrap().yes_votes, after_first,
+        gov_get_proposal(pid).unwrap().yes_votes,
+        after_first,
         "vote total must not change on replay"
     );
 }
@@ -630,7 +851,8 @@ fn replay_protection_governance_vote_replay_is_deterministic() {
         assert_eq!(
             sim_cast_vote(pid, &voter, true, 50),
             Err(VoteError::AlreadyVoted),
-            "replay #{} must return AlreadyVoted", i + 1
+            "replay #{} must return AlreadyVoted",
+            i + 1
         );
     }
     // Totals must reflect exactly one vote
@@ -643,18 +865,24 @@ fn replay_protection_governance_vote_two_voters_no_cross_replay() {
     let env = make_env();
     let pid = make_gov_fixture();
     let alice = Address::generate(&env);
-    let bob   = Address::generate(&env);
+    let bob = Address::generate(&env);
 
-    sim_cast_vote(pid, &alice, true,  100).expect("alice vote 1");
-    sim_cast_vote(pid, &bob,   false, 200).expect("bob vote 1");
+    sim_cast_vote(pid, &alice, true, 100).expect("alice vote 1");
+    sim_cast_vote(pid, &bob, false, 200).expect("bob vote 1");
 
     // Both replays individually rejected
-    assert_eq!(sim_cast_vote(pid, &alice, true, 100), Err(VoteError::AlreadyVoted));
-    assert_eq!(sim_cast_vote(pid, &bob,  false, 200), Err(VoteError::AlreadyVoted));
+    assert_eq!(
+        sim_cast_vote(pid, &alice, true, 100),
+        Err(VoteError::AlreadyVoted)
+    );
+    assert_eq!(
+        sim_cast_vote(pid, &bob, false, 200),
+        Err(VoteError::AlreadyVoted)
+    );
 
     let p = gov_get_proposal(pid).unwrap();
     assert_eq!(p.yes_votes, 100);
-    assert_eq!(p.no_votes,  200);
+    assert_eq!(p.no_votes, 200);
 }
 
 /// Voter switches support on replay — second vote is still rejected.
@@ -675,7 +903,7 @@ fn replay_protection_governance_vote_switch_support_rejected() {
     // Original yes vote must stand
     let p = gov_get_proposal(pid).unwrap();
     assert_eq!(p.yes_votes, 100);
-    assert_eq!(p.no_votes,  0);
+    assert_eq!(p.no_votes, 0);
 }
 
 // =============================================================================
@@ -718,11 +946,15 @@ fn replay_protection_stream_claim_replay_deterministic() {
         assert_eq!(
             claim_stream(&env, &recipient, sid),
             Err(Error::InvalidAmount),
-            "replay #{} must be rejected", i + 1
+            "replay #{} must be rejected",
+            i + 1
         );
     }
     let s = get_stream(sid).unwrap();
-    assert_eq!(s.claimed_amount, s.amount, "claimed_amount must equal total after saturation");
+    assert_eq!(
+        s.claimed_amount, s.amount,
+        "claimed_amount must equal total after saturation"
+    );
 }
 
 /// Replay at the same mid-stream timestamp disburses zero.
@@ -758,24 +990,36 @@ fn replay_protection_stream_claim_mid_stream_same_timestamp_replay_fails() {
 // campaign state-change idempotency.
 
 #[derive(Debug, PartialEq, Clone)]
-enum CampaignStatus { Active, Paused, Completed, Cancelled }
+enum CampaignStatus {
+    Active,
+    Paused,
+    Completed,
+    Cancelled,
+}
 
 #[derive(Clone)]
 struct CampaignState {
-    owner:  Address,
+    owner: Address,
     status: CampaignStatus,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum CampaignError {
-    CampaignNotFound, Unauthorized,
-    CampaignAlreadyPaused, CampaignAlreadyActive,
-    CampaignCompleted, CampaignCancelled,
+    CampaignNotFound,
+    Unauthorized,
+    CampaignAlreadyPaused,
+    CampaignAlreadyActive,
+    CampaignCompleted,
+    CampaignCancelled,
 }
 
-fn camp_reset() { CAMPAIGNS.with(|c| c.borrow_mut().clear()); }
+fn camp_reset() {
+    CAMPAIGNS.with(|c| c.borrow_mut().clear());
+}
 fn camp_set(id: u64, s: CampaignState) {
-    CAMPAIGNS.with(|c| { c.borrow_mut().insert(id, s); });
+    CAMPAIGNS.with(|c| {
+        c.borrow_mut().insert(id, s);
+    });
 }
 fn camp_get(id: u64) -> Option<CampaignState> {
     CAMPAIGNS.with(|c| c.borrow().get(&id).cloned())
@@ -784,10 +1028,14 @@ fn camp_get(id: u64) -> Option<CampaignState> {
 /// Simulate pause_campaign: REPLAY-PROTECTED via CampaignAlreadyPaused.
 fn sim_pause_campaign(campaign_id: u64, caller: &Address) -> Result<(), CampaignError> {
     let mut c = camp_get(campaign_id).ok_or(CampaignError::CampaignNotFound)?;
-    if c.owner != *caller { return Err(CampaignError::Unauthorized); }
+    if c.owner != *caller {
+        return Err(CampaignError::Unauthorized);
+    }
     match c.status {
-        CampaignStatus::Active    => { c.status = CampaignStatus::Paused; }
-        CampaignStatus::Paused    => return Err(CampaignError::CampaignAlreadyPaused),
+        CampaignStatus::Active => {
+            c.status = CampaignStatus::Paused;
+        }
+        CampaignStatus::Paused => return Err(CampaignError::CampaignAlreadyPaused),
         CampaignStatus::Completed => return Err(CampaignError::CampaignCompleted),
         CampaignStatus::Cancelled => return Err(CampaignError::CampaignCancelled),
     }
@@ -798,10 +1046,14 @@ fn sim_pause_campaign(campaign_id: u64, caller: &Address) -> Result<(), Campaign
 /// Simulate resume_campaign: REPLAY-PROTECTED via CampaignAlreadyActive.
 fn sim_resume_campaign(campaign_id: u64, caller: &Address) -> Result<(), CampaignError> {
     let mut c = camp_get(campaign_id).ok_or(CampaignError::CampaignNotFound)?;
-    if c.owner != *caller { return Err(CampaignError::Unauthorized); }
+    if c.owner != *caller {
+        return Err(CampaignError::Unauthorized);
+    }
     match c.status {
-        CampaignStatus::Paused    => { c.status = CampaignStatus::Active; }
-        CampaignStatus::Active    => return Err(CampaignError::CampaignAlreadyActive),
+        CampaignStatus::Paused => {
+            c.status = CampaignStatus::Active;
+        }
+        CampaignStatus::Active => return Err(CampaignError::CampaignAlreadyActive),
         CampaignStatus::Completed => return Err(CampaignError::CampaignCompleted),
         CampaignStatus::Cancelled => return Err(CampaignError::CampaignCancelled),
     }
@@ -812,7 +1064,13 @@ fn sim_resume_campaign(campaign_id: u64, caller: &Address) -> Result<(), Campaig
 fn make_campaign_fixture(env: &Env) -> (u64, Address) {
     camp_reset();
     let owner = Address::generate(env);
-    camp_set(1, CampaignState { owner: owner.clone(), status: CampaignStatus::Active });
+    camp_set(
+        1,
+        CampaignState {
+            owner: owner.clone(),
+            status: CampaignStatus::Active,
+        },
+    );
     (1, owner)
 }
 
@@ -848,7 +1106,8 @@ fn replay_protection_campaign_execute_pause_replay_is_deterministic() {
         assert_eq!(
             sim_pause_campaign(cid, &owner),
             Err(CampaignError::CampaignAlreadyPaused),
-            "pause replay #{} must return CampaignAlreadyPaused", i + 1
+            "pause replay #{} must return CampaignAlreadyPaused",
+            i + 1
         );
     }
 }
@@ -880,14 +1139,20 @@ fn replay_protection_campaign_execute_pause_resume_cycle_no_cross_replay() {
     assert_eq!(camp_get(cid).unwrap().status, CampaignStatus::Paused);
 
     // Replay pause — rejected
-    assert_eq!(sim_pause_campaign(cid, &owner), Err(CampaignError::CampaignAlreadyPaused));
+    assert_eq!(
+        sim_pause_campaign(cid, &owner),
+        Err(CampaignError::CampaignAlreadyPaused)
+    );
 
     // Paused -> Active
     sim_resume_campaign(cid, &owner).unwrap();
     assert_eq!(camp_get(cid).unwrap().status, CampaignStatus::Active);
 
     // Replay resume — rejected
-    assert_eq!(sim_resume_campaign(cid, &owner), Err(CampaignError::CampaignAlreadyActive));
+    assert_eq!(
+        sim_resume_campaign(cid, &owner),
+        Err(CampaignError::CampaignAlreadyActive)
+    );
 }
 
 /// Terminal state (Completed) blocks all execute operations with typed errors.
@@ -896,10 +1161,22 @@ fn replay_protection_campaign_execute_terminal_state_is_immutable() {
     let env = make_env();
     let owner = Address::generate(&env);
     camp_reset();
-    camp_set(2, CampaignState { owner: owner.clone(), status: CampaignStatus::Completed });
+    camp_set(
+        2,
+        CampaignState {
+            owner: owner.clone(),
+            status: CampaignStatus::Completed,
+        },
+    );
 
-    assert_eq!(sim_pause_campaign(2, &owner),   Err(CampaignError::CampaignCompleted));
-    assert_eq!(sim_resume_campaign(2, &owner),  Err(CampaignError::CampaignCompleted));
+    assert_eq!(
+        sim_pause_campaign(2, &owner),
+        Err(CampaignError::CampaignCompleted)
+    );
+    assert_eq!(
+        sim_resume_campaign(2, &owner),
+        Err(CampaignError::CampaignCompleted)
+    );
 }
 
 // =============================================================================
@@ -926,22 +1203,33 @@ thread_local! {
     static RECURRING: RefCell<HashMap<u64, RecurringStreamState>> = RefCell::new(HashMap::new());
 }
 
-fn recurring_reset() { RECURRING.with(|m| m.borrow_mut().clear()); }
-fn recurring_set(id: u64, s: RecurringStreamState) { RECURRING.with(|m| { m.borrow_mut().insert(id, s); }); }
-fn recurring_get(id: u64) -> Option<RecurringStreamState> { RECURRING.with(|m| m.borrow().get(&id).cloned()) }
+fn recurring_reset() {
+    RECURRING.with(|m| m.borrow_mut().clear());
+}
+fn recurring_set(id: u64, s: RecurringStreamState) {
+    RECURRING.with(|m| {
+        m.borrow_mut().insert(id, s);
+    });
+}
+fn recurring_get(id: u64) -> Option<RecurringStreamState> {
+    RECURRING.with(|m| m.borrow().get(&id).cloned())
+}
 
 fn make_recurring_fixture(env: &Env) -> (u64, Address) {
     recurring_reset();
     let creator = Address::generate(env);
-    recurring_set(0, RecurringStreamState {
-        creator: creator.clone(),
-        cancelled: false,
-        total_periods: 3,
-        periods_created: 1,
-        period_ledgers: 10,
-        current_period_start_ledger: 0,
-        auto_renew: false,
-    });
+    recurring_set(
+        0,
+        RecurringStreamState {
+            creator: creator.clone(),
+            cancelled: false,
+            total_periods: 3,
+            periods_created: 1,
+            period_ledgers: 10,
+            current_period_start_ledger: 0,
+            auto_renew: false,
+        },
+    );
     (0, creator)
 }
 
@@ -986,9 +1274,15 @@ fn replay_protection_recurring_trigger_before_due_replay_fails() {
     let (rid, _creator) = make_recurring_fixture(&env);
     env.ledger().with_mut(|li| li.sequence_number = 5); // period is 10 ledgers
 
-    assert_eq!(sim_trigger_recurring_period(&env, rid), Err(Error::RecurringPeriodNotElapsed));
+    assert_eq!(
+        sim_trigger_recurring_period(&env, rid),
+        Err(Error::RecurringPeriodNotElapsed)
+    );
     // Replay at the same (still too-early) ledger — deterministically rejected.
-    assert_eq!(sim_trigger_recurring_period(&env, rid), Err(Error::RecurringPeriodNotElapsed));
+    assert_eq!(
+        sim_trigger_recurring_period(&env, rid),
+        Err(Error::RecurringPeriodNotElapsed)
+    );
 }
 
 /// Cancelling twice — second call returns error, first cancellation is not undone.
@@ -1019,7 +1313,8 @@ fn replay_protection_recurring_trigger_after_cancel_replay_fails() {
         assert_eq!(
             sim_trigger_recurring_period(&env, rid),
             Err(Error::RecurringStreamCancelled),
-            "trigger attempt #{} after cancel must be rejected", i + 1
+            "trigger attempt #{} after cancel must be rejected",
+            i + 1
         );
     }
 }
@@ -1047,5 +1342,9 @@ fn replay_protection_recurring_trigger_beyond_total_periods_replay_fails() {
             Err(Error::RecurringStreamLimitReached)
         );
     }
-    assert_eq!(recurring_get(rid).unwrap().periods_created, 3, "no phantom period ever created past the bound");
+    assert_eq!(
+        recurring_get(rid).unwrap().periods_created,
+        3,
+        "no phantom period ever created past the bound"
+    );
 }

@@ -110,7 +110,12 @@ pub fn batch_reveal(
     let mut indices = Vec::new(env);
     for (token, token_index) in tokens.iter().zip(staged_indices.iter()) {
         crate::token_creation::create_token_internal(env, &creator, &token, token_index)
-            .unwrap_or_else(|e| panic!("batch_reveal: phase 2 commit failed after phase 1 validation passed: {:?}", e));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "batch_reveal: phase 2 commit failed after phase 1 validation passed: {:?}",
+                    e
+                )
+            });
         indices.push_back(token_index);
     }
 
@@ -388,7 +393,10 @@ pub fn preflight_batch_settle(
 
     if !any_item_failed {
         if let Some(max) = token_info.max_supply {
-            let new_supply = token_info.total_supply.checked_add(total_mint).unwrap_or(i128::MAX);
+            let new_supply = token_info
+                .total_supply
+                .checked_add(total_mint)
+                .unwrap_or(i128::MAX);
             if new_supply > max {
                 results.push_back(PreflightItemResult {
                     index: batch_len,
@@ -484,7 +492,10 @@ mod tests {
         let client = crate::TokenFactoryClient::new(&env, &contract_id);
 
         let tokens: Vec<TokenCreationParams> = vec![&env];
-        let err = client.try_batch_reveal(&admin, &tokens, &0_i128).unwrap_err().unwrap();
+        let err = client
+            .try_batch_reveal(&admin, &tokens, &0_i128)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::InvalidParameters);
     }
 
@@ -494,7 +505,10 @@ mod tests {
         let client = crate::TokenFactoryClient::new(&env, &contract_id);
 
         let tokens = vec![&env, make_params(&env, "Alpha", "ALP")];
-        let err = client.try_batch_reveal(&admin, &tokens, &0_i128).unwrap_err().unwrap();
+        let err = client
+            .try_batch_reveal(&admin, &tokens, &0_i128)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::InsufficientFee);
     }
 
@@ -512,7 +526,10 @@ mod tests {
             metadata_uri: None,
         };
         let tokens = vec![&env, make_params(&env, "Good", "GD"), bad];
-        let err = client.try_batch_reveal(&admin, &tokens, &2_000_000_i128).unwrap_err().unwrap();
+        let err = client
+            .try_batch_reveal(&admin, &tokens, &2_000_000_i128)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::InvalidTokenParams);
 
         // Token count must remain 0 — no partial writes.
@@ -572,7 +589,10 @@ mod tests {
 
         let r1 = Address::generate(&env);
         let recipients = vec![&env, (r1, 0_i128)];
-        let err = client.try_batch_settle(&admin, &0_u32, &recipients).unwrap_err().unwrap();
+        let err = client
+            .try_batch_settle(&admin, &0_u32, &recipients)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::InvalidParameters);
     }
 
@@ -594,7 +614,10 @@ mod tests {
         let impostor = Address::generate(&env);
         let r1 = Address::generate(&env);
         let recipients = vec![&env, (r1, 100_i128)];
-        let err = client.try_batch_settle(&impostor, &0_u32, &recipients).unwrap_err().unwrap();
+        let err = client
+            .try_batch_settle(&impostor, &0_u32, &recipients)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::Unauthorized);
     }
 
@@ -619,7 +642,10 @@ mod tests {
 
         let r1 = Address::generate(&env);
         let recipients = vec![&env, (r1, 1_i128)];
-        let err = client.try_batch_settle(&admin, &0_u32, &recipients).unwrap_err().unwrap();
+        let err = client
+            .try_batch_settle(&admin, &0_u32, &recipients)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::MaxSupplyExceeded);
     }
 
@@ -657,7 +683,7 @@ mod tests {
         let client = crate::TokenFactoryClient::new(&env, &contract_id);
 
         let bad = TokenCreationParams {
-            name: String::from_str(&env, ""),   // invalid: empty name
+            name: String::from_str(&env, ""), // invalid: empty name
             symbol: String::from_str(&env, "BAD"),
             decimals: 7,
             initial_supply: 1_000_000,
@@ -670,7 +696,10 @@ mod tests {
             bad,
             make_params(&env, "Good2", "GD2"),
         ];
-        let err = client.try_batch_reveal(&admin, &tokens, &3_000_000_i128).unwrap_err().unwrap();
+        let err = client
+            .try_batch_reveal(&admin, &tokens, &3_000_000_i128)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::InvalidTokenParams);
         // No token should have been created.
         assert!(client.try_get_token_info(&0_u32).is_err());

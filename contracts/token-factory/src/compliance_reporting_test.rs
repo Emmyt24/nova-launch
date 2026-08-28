@@ -28,7 +28,7 @@ use crate::{
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const BASE_FEE: i128 = 100_000_000;    // 10 XLM in stroops
+const BASE_FEE: i128 = 100_000_000; // 10 XLM in stroops
 const METADATA_FEE: i128 = 50_000_000; //  5 XLM in stroops
 
 // Fixture token values – hand-computed expected totals appear alongside each

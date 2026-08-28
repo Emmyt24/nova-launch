@@ -199,9 +199,7 @@ pub fn replay(env: &Env, up_to_index: u64) -> Result<HistorySnapshot, Error> {
 
     for i in 0..=up_to_index {
         if let Some(record) = get_record(env, i) {
-            token_count = token_count
-                .checked_add(1)
-                .ok_or(Error::ArithmeticError)?;
+            token_count = token_count.checked_add(1).ok_or(Error::ArithmeticError)?;
             cumulative_supply = cumulative_supply
                 .checked_add(record.initial_supply)
                 .ok_or(Error::ArithmeticError)?;
@@ -395,7 +393,10 @@ mod tests {
         let impostor = Address::generate(&env);
         deploy_token(&env, &client, &_admin, "Alpha", "ALP");
 
-        let err = client.try_prune_history(&impostor, &1_u64).unwrap_err().unwrap();
+        let err = client
+            .try_prune_history(&impostor, &1_u64)
+            .unwrap_err()
+            .unwrap();
         assert_eq!(err, crate::types::Error::Unauthorized);
     }
 

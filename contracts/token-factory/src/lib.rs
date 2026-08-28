@@ -8,12 +8,12 @@
 extern crate std;
 
 mod compliance_reporting;
-mod freeze_functions;
 mod fractionalization;
 #[cfg(test)]
 mod fractionalization_test;
-mod governance;
+mod freeze_functions;
 mod game_history;
+mod governance;
 mod ipfs_pinning;
 
 mod batch_operations;
@@ -22,54 +22,57 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
+mod clawback;
 mod commit_reveal;
 #[cfg(test)]
 mod commit_reveal_test;
-mod settlement;
-mod clawback;
-mod invariants;
 mod differential_engine;
+mod dividend_distribution;
 mod event_versions;
 mod events;
+mod invariants;
 mod liquidity_mining;
 mod milestone_verification;
 mod oracle;
+mod settlement;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_milestone_verification_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_error_code_stability_test: () = ();
+#[cfg(test)]
+mod dividend_distribution_test;
+#[cfg(test)]
+mod event_versions_test;
+#[cfg(test)]
+mod freeze_functions_test;
+#[cfg(test)]
+mod game_history_test;
+#[cfg(test)]
+mod liquidity_mining_test;
 mod mint;
 mod pagination;
 mod payload_validation;
-#[cfg(feature = "legacy-tests")]
-mod proposal_queue;
-mod proposal_type_queue;
 #[cfg(test)]
 mod proposal_execution_queue_fifo_test;
+#[cfg(feature = "legacy-tests")]
+mod proposal_queue;
+#[cfg(test)]
+mod proposal_queue_test;
 mod proposal_state_machine;
+mod proposal_type_queue;
 mod staking;
+#[cfg(test)]
+mod staking_integration_test;
 mod storage;
 mod storage_migration;
 #[cfg(test)]
 mod test_helpers;
-#[cfg(test)]
-mod freeze_functions_test;
-#[cfg(test)]
-mod liquidity_mining_test;
-#[cfg(test)]
-mod game_history_test;
-#[cfg(test)]
-mod proposal_queue_test;
-#[cfg(test)]
-mod event_versions_test;
-#[cfg(test)]
-mod staking_integration_test;
 mod timelock;
 mod token_creation;
 mod treasury;
 mod types;
-mod vault;
 mod validation;
+mod vault;
 mod vesting;
 
 #[cfg(test)]
@@ -96,7 +99,6 @@ mod snapshot;
 
 #[cfg(test)]
 // mod buyback_integration_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_stream_claim_differential_test: () = ();
 // Property tests (annotated with Property numbers)
@@ -122,9 +124,9 @@ const _ISOLATED_DISABLED_stream_claim_differential_test: () = ();
 // mod supply_cap_test; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 
 #[cfg(test)]
-mod cross_contract_integration_test;
-#[cfg(test)]
 mod compliance_reporting_test;
+#[cfg(test)]
+mod cross_contract_integration_test;
 #[cfg(test)]
 mod invariant_tests;
 
@@ -176,14 +178,16 @@ mod vault_deposit_withdraw_test;
 #[cfg(test)]
 mod vault_balance_invariant_proptest;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec};
+use crate::milestone_verification::MilestoneVerifier;
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+};
 use types::{
     AuctionStatus, BatchScheduleResult, BurnAuction, BuybackCampaign, CampaignStatus,
-    ContractMetadata, DynamicQuorumConfig, Error, FactoryState, PaginationCursor,
-    PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo, StreamPage,
-    StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
+    ContractMetadata, DistributionRecord, DynamicQuorumConfig, Error, FactoryState,
+    PaginationCursor, PreflightItemResult, Reservation, StakeInfo, StakingPool, StreamInfo,
+    StreamPage, StreamParams, TokenCreationParams, TokenInfo, TokenStats, Vault, VaultStatus,
 };
-use crate::milestone_verification::MilestoneVerifier;
 
 #[contract]
 pub struct TokenFactory;
@@ -454,8 +458,6 @@ impl TokenFactory {
         storage::set_governance(&env, &governance);
         Ok(())
     }
-
-
 
     /// Get the current factory state
     ///
@@ -1039,11 +1041,7 @@ impl TokenFactory {
     /// # Errors
     /// `Unauthorized` – Caller is not the factory admin.
     /// `InvalidParameters` – `before_index` is 0 or exceeds the history count.
-    pub fn prune_history(
-        env: Env,
-        admin: Address,
-        before_index: u64,
-    ) -> Result<u32, Error> {
+    pub fn prune_history(env: Env, admin: Address, before_index: u64) -> Result<u32, Error> {
         game_history::prune_history(&env, &admin, before_index)
     }
 
@@ -1501,7 +1499,8 @@ impl TokenFactory {
         total_fee_payment: i128,
     ) -> Result<BatchScheduleResult, Error> {
         storage::acquire_reentrancy_lock(&env)?;
-        let result = batch_scheduler::schedule_batch_reveal(&env, creator, tokens, total_fee_payment);
+        let result =
+            batch_scheduler::schedule_batch_reveal(&env, creator, tokens, total_fee_payment);
         storage::release_reentrancy_lock(&env);
         result
     }
@@ -1589,20 +1588,35 @@ impl TokenFactory {
         token_index: u32,
         amount: i128,
     ) -> Result<u64, Error> {
-        settlement::prepare(&env, governance, proposal_id, recipient, token_index, amount)
+        settlement::prepare(
+            &env,
+            governance,
+            proposal_id,
+            recipient,
+            token_index,
+            amount,
+        )
     }
 
     /// Phase 2 (success path): finalize a `Prepared` reservation by minting
     /// to its recipient. On failure the reservation is left `Prepared` so
     /// the caller can explicitly `abort_settlement` it — never silently
     /// dropped.
-    pub fn commit_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+    pub fn commit_settlement(
+        env: Env,
+        governance: Address,
+        reservation_id: u64,
+    ) -> Result<(), Error> {
         settlement::commit(&env, governance, reservation_id)
     }
 
     /// Release a `Prepared` reservation without minting, returning its
     /// amount to the token's available max-supply headroom.
-    pub fn abort_settlement(env: Env, governance: Address, reservation_id: u64) -> Result<(), Error> {
+    pub fn abort_settlement(
+        env: Env,
+        governance: Address,
+        reservation_id: u64,
+    ) -> Result<(), Error> {
         settlement::abort(&env, governance, reservation_id)
     }
 
@@ -1620,7 +1634,11 @@ impl TokenFactory {
 
     /// Admin-only: configure how many ledgers a reservation may sit
     /// `Prepared` before `cleanup_stuck_reservation` may force-release it.
-    pub fn set_reservation_timeout_ledgers(env: Env, admin: Address, ledgers: u32) -> Result<(), Error> {
+    pub fn set_reservation_timeout_ledgers(
+        env: Env,
+        admin: Address,
+        ledgers: u32,
+    ) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if admin != stored_admin {
@@ -1653,13 +1671,8 @@ impl TokenFactory {
     /// * `Error::TokenNotFound` - Token index does not exist
     /// * `Error::TokenPaused` - Token is currently paused
     /// * `Error::MetadataAlreadySet` - Metadata already set for this token
-    pub fn set_metadata(
-        env: Env,
-        token_index: u32,
-        metadata_uri: String,
-    ) -> Result<(), Error> {
-        let token_info =
-            storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
+    pub fn set_metadata(env: Env, token_index: u32, metadata_uri: String) -> Result<(), Error> {
+        let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         let creator = token_info.creator.clone();
         creator.require_auth();
 
@@ -1682,10 +1695,9 @@ impl TokenFactory {
             updated_at: env.ledger().timestamp(),
             updated_by: creator.clone(),
         };
-        env.storage().persistent().set(
-            &types::DataKey::MetadataHistory(token_index, 1),
-            &record,
-        );
+        env.storage()
+            .persistent()
+            .set(&types::DataKey::MetadataHistory(token_index, 1), &record);
 
         events::emit_metadata_set(&env, &info.address, &creator, &metadata_uri);
         Ok(())
@@ -1757,10 +1769,7 @@ impl TokenFactory {
     ///
     /// Returns `None` if no hash was registered when metadata was set.
     /// Off-chain consumers can use this to verify IPFS content integrity.
-    pub fn get_metadata_content_hash(
-        env: Env,
-        token_index: u32,
-    ) -> Option<BytesN<32>> {
+    pub fn get_metadata_content_hash(env: Env, token_index: u32) -> Option<BytesN<32>> {
         storage::get_metadata_content_hash(&env, token_index)
     }
 
@@ -2035,8 +2044,7 @@ impl TokenFactory {
     pub fn pause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
-        let token_info =
-            storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
+        let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
         if admin != stored_admin
             && admin != token_info.creator
@@ -2070,8 +2078,7 @@ impl TokenFactory {
     pub fn unpause_token(env: Env, admin: Address, token_index: u32) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
-        let token_info =
-            storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
+        let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         // Allow: factory admin, token creator, or address with Pauser role
         if admin != stored_admin
             && admin != token_info.creator
@@ -2136,8 +2143,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         creator.require_auth();
 
-        let token_info =
-            storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
+        let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 
         if token_info.creator != creator {
             return Err(Error::Unauthorized);
@@ -2178,8 +2184,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         creator.require_auth();
 
-        let token_info =
-            storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
+        let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 
         if token_info.creator != creator {
             return Err(Error::Unauthorized);
@@ -2260,11 +2265,7 @@ impl TokenFactory {
     /// # Returns
     /// * `Ok(i128)` - Total supply at the target ledger (0 if no history exists)
     /// * `Err(Error::InvalidParameters)` - If ledger is in the future
-    pub fn get_supply_at(
-        env: Env,
-        token_index: u32,
-        ledger: u32,
-    ) -> Result<i128, Error> {
+    pub fn get_supply_at(env: Env, token_index: u32, ledger: u32) -> Result<i128, Error> {
         snapshot::get_supply_at_ledger(&env, token_index, ledger)
     }
 
@@ -2277,11 +2278,7 @@ impl TokenFactory {
     ///
     /// # Returns
     /// Number of snapshots (0 if none)
-    pub fn get_balance_snapshot_count(
-        env: Env,
-        token_index: u32,
-        holder: Address,
-    ) -> u32 {
+    pub fn get_balance_snapshot_count(env: Env, token_index: u32, holder: Address) -> u32 {
         snapshot::get_balance_snapshot_count(&env, token_index, &holder)
     }
 
@@ -2333,6 +2330,97 @@ impl TokenFactory {
         snapshot_index: u32,
     ) -> Option<types::SupplySnapshot> {
         snapshot::get_supply_snapshot(&env, token_index, snapshot_index)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Pull-Model Dividend Distribution (#1759)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Admin-only: open a new dividend distribution round for `token_index`.
+    ///
+    /// Takes an atomic snapshot of the token's total supply at the current
+    /// ledger and transfers `total_amount` of `asset` from `admin` into
+    /// contract-held escrow. Holders may call `claim_dividend` for their
+    /// pro-rata share until `claim_deadline_ledger`; after that, `admin` may
+    /// call `reclaim_unclaimed` to recover whatever remains.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `Unauthorized`, `TokenNotFound`, `InvalidAmount`,
+    /// `InvalidParameters` (deadline not in the future),
+    /// `DistributionZeroSupply` (token has no supply to distribute against).
+    pub fn initiate_distribution(
+        env: Env,
+        admin: Address,
+        token_index: u32,
+        asset: Address,
+        total_amount: i128,
+        claim_deadline_ledger: u32,
+    ) -> Result<u32, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = dividend_distribution::initiate_distribution(
+            &env,
+            &admin,
+            token_index,
+            &asset,
+            total_amount,
+            claim_deadline_ledger,
+        );
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Claim `holder`'s pro-rata share of `distribution_id`.
+    ///
+    /// The share is computed from `holder`'s balance at the distribution's
+    /// snapshot ledger; each holder may claim at most once per distribution.
+    ///
+    /// # Errors
+    /// `ContractPaused`, `DistributionNotFound`, `DistributionWindowClosed`,
+    /// `DistributionAlreadyClaimed`, `NothingToClaim`, `ArithmeticError`.
+    pub fn claim_dividend(env: Env, holder: Address, distribution_id: u32) -> Result<i128, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = dividend_distribution::claim_dividend(&env, &holder, distribution_id);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Admin-only: recover the unclaimed remainder of `distribution_id` to treasury.
+    ///
+    /// Only callable after `claim_deadline_ledger` has passed, and only once
+    /// per distribution.
+    ///
+    /// # Errors
+    /// `Unauthorized`, `DistributionNotFound`, `DistributionWindowOpen`,
+    /// `DistributionAlreadyReclaimed`, `MissingTreasury`.
+    pub fn reclaim_unclaimed(
+        env: Env,
+        admin: Address,
+        distribution_id: u32,
+    ) -> Result<i128, Error> {
+        storage::acquire_reentrancy_lock(&env)?;
+        let result = dividend_distribution::reclaim_unclaimed(&env, &admin, distribution_id);
+        storage::release_reentrancy_lock(&env);
+        result
+    }
+
+    /// Look up a distribution record by id.
+    pub fn get_distribution(env: Env, distribution_id: u32) -> Result<DistributionRecord, Error> {
+        dividend_distribution::get_distribution(&env, distribution_id)
+    }
+
+    /// Whether `holder` has already claimed their share of `distribution_id`.
+    pub fn has_claimed_dividend(env: Env, distribution_id: u32, holder: Address) -> bool {
+        dividend_distribution::has_claimed(&env, distribution_id, &holder)
+    }
+
+    /// Running total of amounts claimed so far for `distribution_id`.
+    pub fn get_dividend_claimed_total(env: Env, distribution_id: u32) -> i128 {
+        dividend_distribution::get_claimed_total(&env, distribution_id)
+    }
+
+    /// Total number of distributions initiated.
+    pub fn get_distribution_count(env: Env) -> u32 {
+        storage::get_distribution_count(&env)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -2969,12 +3057,24 @@ impl TokenFactory {
         const NO_VAULT_ID: u64 = u64::MAX;
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, NO_VAULT_ID, Error::ContractPaused, amount, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                NO_VAULT_ID,
+                Error::ContractPaused,
+                amount,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
         if amount <= 0 {
-            events::emit_operation_failed(&env, NO_VAULT_ID, Error::InvalidAmount, amount, "amount_not_positive");
+            events::emit_operation_failed(
+                &env,
+                NO_VAULT_ID,
+                Error::InvalidAmount,
+                amount,
+                "amount_not_positive",
+            );
             return Err(Error::InvalidAmount);
         }
 
@@ -2983,18 +3083,36 @@ impl TokenFactory {
         let has_milestone_unlock = milestone_hash != zero_hash;
 
         if !has_time_unlock && !has_milestone_unlock {
-            events::emit_operation_failed(&env, NO_VAULT_ID, Error::InvalidParameters, amount, "missing_unlock_condition");
+            events::emit_operation_failed(
+                &env,
+                NO_VAULT_ID,
+                Error::InvalidParameters,
+                amount,
+                "missing_unlock_condition",
+            );
             return Err(Error::InvalidParameters);
         }
 
         // A verifier is required when a milestone hash is set (#1133)
         if has_milestone_unlock && verifier.is_none() {
-            events::emit_operation_failed(&env, NO_VAULT_ID, Error::InvalidParameters, amount, "milestone_without_verifier");
+            events::emit_operation_failed(
+                &env,
+                NO_VAULT_ID,
+                Error::InvalidParameters,
+                amount,
+                "milestone_without_verifier",
+            );
             return Err(Error::InvalidParameters);
         }
 
         if storage::get_token_info_by_address(&env, &token).is_none() {
-            events::emit_operation_failed(&env, NO_VAULT_ID, Error::TokenNotFound, amount, "token_not_registered");
+            events::emit_operation_failed(
+                &env,
+                NO_VAULT_ID,
+                Error::TokenNotFound,
+                amount,
+                "token_not_registered",
+            );
             return Err(Error::TokenNotFound);
         }
 
@@ -3075,7 +3193,13 @@ impl TokenFactory {
         owner.require_auth();
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, vault_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
@@ -3101,18 +3225,36 @@ impl TokenFactory {
         let mut vault = match storage::get_vault(env, vault_id) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(env, vault_id, Error::TokenNotFound, 0, "vault_not_found");
+                events::emit_operation_failed(
+                    env,
+                    vault_id,
+                    Error::TokenNotFound,
+                    0,
+                    "vault_not_found",
+                );
                 return Err(Error::TokenNotFound);
             }
         };
 
         if vault.owner != *owner {
-            events::emit_operation_failed(env, vault_id, Error::Unauthorized, vault.total_amount, "not_vault_owner");
+            events::emit_operation_failed(
+                env,
+                vault_id,
+                Error::Unauthorized,
+                vault.total_amount,
+                "not_vault_owner",
+            );
             return Err(Error::Unauthorized);
         }
 
         if vault.status != VaultStatus::Active {
-            events::emit_operation_failed(env, vault_id, Error::InvalidParameters, vault.total_amount, "vault_not_active");
+            events::emit_operation_failed(
+                env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "vault_not_active",
+            );
             return Err(Error::InvalidParameters);
         }
 
@@ -3121,7 +3263,13 @@ impl TokenFactory {
         let zero_hash = BytesN::from_array(env, &[0u8; 32]);
         if vault.milestone_hash != zero_hash {
             if !vault.milestone_verified {
-                events::emit_operation_failed(env, vault_id, Error::MilestoneUnauthorized, vault.total_amount, "milestone_not_verified");
+                events::emit_operation_failed(
+                    env,
+                    vault_id,
+                    Error::MilestoneUnauthorized,
+                    vault.total_amount,
+                    "milestone_not_verified",
+                );
                 return Err(Error::MilestoneUnauthorized);
             }
         }
@@ -3129,19 +3277,37 @@ impl TokenFactory {
         // Time-based unlock check
         let current_time = env.ledger().timestamp();
         if vault.unlock_time > 0 && current_time < vault.unlock_time {
-            events::emit_operation_failed(env, vault_id, Error::InvalidParameters, vault.total_amount, "cliff_not_reached");
+            events::emit_operation_failed(
+                env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "cliff_not_reached",
+            );
             return Err(Error::InvalidParameters);
         }
 
         let claimable = match vault.total_amount.checked_sub(vault.claimed_amount) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(env, vault_id, Error::ArithmeticError, vault.total_amount, "claimable_underflow");
+                events::emit_operation_failed(
+                    env,
+                    vault_id,
+                    Error::ArithmeticError,
+                    vault.total_amount,
+                    "claimable_underflow",
+                );
                 return Err(Error::ArithmeticError);
             }
         };
         if claimable <= 0 {
-            events::emit_operation_failed(env, vault_id, Error::NothingToClaim, claimable, "nothing_to_claim");
+            events::emit_operation_failed(
+                env,
+                vault_id,
+                Error::NothingToClaim,
+                claimable,
+                "nothing_to_claim",
+            );
             return Err(Error::NothingToClaim);
         }
 
@@ -3181,39 +3347,75 @@ impl TokenFactory {
         actor.require_auth();
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, vault_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
         let mut vault = match storage::get_vault(&env, vault_id) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::TokenNotFound, 0, "vault_not_found");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::TokenNotFound,
+                    0,
+                    "vault_not_found",
+                );
                 return Err(Error::TokenNotFound);
             }
         };
         let admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
         if actor != vault.creator && actor != admin {
-            events::emit_operation_failed(&env, vault_id, Error::Unauthorized, vault.total_amount, "not_creator_or_admin");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::Unauthorized,
+                vault.total_amount,
+                "not_creator_or_admin",
+            );
             return Err(Error::Unauthorized);
         }
 
         if vault.status != VaultStatus::Active {
-            events::emit_operation_failed(&env, vault_id, Error::InvalidParameters, vault.total_amount, "vault_not_active");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "vault_not_active",
+            );
             return Err(Error::InvalidParameters);
         }
 
         let remaining_amount = match vault.total_amount.checked_sub(vault.claimed_amount) {
             Some(v) => v.max(0),
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::ArithmeticError, vault.total_amount, "remaining_amount_underflow");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::ArithmeticError,
+                    vault.total_amount,
+                    "remaining_amount_underflow",
+                );
                 return Err(Error::ArithmeticError);
             }
         };
 
         vault.status = VaultStatus::Cancelled;
         if let Err(e) = storage::set_vault(&env, &vault) {
-            events::emit_operation_failed(&env, vault_id, e, remaining_amount, "vault_persist_failed");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                e,
+                remaining_amount,
+                "vault_persist_failed",
+            );
             return Err(e);
         }
         events::emit_vault_cancelled(&env, vault_id, &actor, remaining_amount);
@@ -3276,7 +3478,13 @@ impl TokenFactory {
     /// Claim the currently-vested (and unclaimed) balance of a stream.
     pub fn claim_stream(env: Env, recipient: Address, stream_id: u64) -> Result<i128, Error> {
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                stream_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
@@ -3299,7 +3507,8 @@ impl TokenFactory {
         // external token transfer happens after (CEI pattern), matching
         // `claim_vault_inner`.
         let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
-        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_info =
+            storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
         let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
         token_client.transfer(&env.current_contract_address(), &recipient, &claimed);
 
@@ -3310,7 +3519,13 @@ impl TokenFactory {
     /// recipient and returning the unvested remainder to the creator.
     pub fn cancel_stream(env: Env, actor: Address, stream_id: u64) -> Result<(), Error> {
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, stream_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                stream_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
@@ -3330,7 +3545,8 @@ impl TokenFactory {
         };
 
         let stream = storage::get_stream(&env, stream_id).ok_or(Error::StreamNotFound)?;
-        let token_info = storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
+        let token_info =
+            storage::get_token_info(&env, stream.token_index).ok_or(Error::TokenNotFound)?;
         let token_client = soroban_sdk::token::Client::new(&env, &token_info.address);
         let contract_address = env.current_contract_address();
         if vested_unclaimed > 0 {
@@ -3442,8 +3658,7 @@ impl TokenFactory {
         caller: Address,
         recurring_stream_id: u64,
     ) -> Result<u64, Error> {
-        let result =
-            recurring_stream::trigger_recurring_period(&env, &caller, recurring_stream_id);
+        let result = recurring_stream::trigger_recurring_period(&env, &caller, recurring_stream_id);
         if let Err(e) = &result {
             events::emit_operation_failed(
                 &env,
@@ -3477,8 +3692,12 @@ impl TokenFactory {
     }
 
     /// Get a recurring stream by id.
-    pub fn get_recurring_stream(env: Env, recurring_stream_id: u64) -> Result<RecurringStream, Error> {
-        storage::get_recurring_stream(&env, recurring_stream_id).ok_or(Error::RecurringStreamNotFound)
+    pub fn get_recurring_stream(
+        env: Env,
+        recurring_stream_id: u64,
+    ) -> Result<RecurringStream, Error> {
+        storage::get_recurring_stream(&env, recurring_stream_id)
+            .ok_or(Error::RecurringStreamNotFound)
     }
 
     /// Configure the per-epoch vault withdrawal circuit breaker limit (admin only, #1362).
@@ -3541,20 +3760,38 @@ impl TokenFactory {
         verifier.require_auth();
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, vault_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
         let mut vault = match storage::get_vault(&env, vault_id) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::TokenNotFound, 0, "vault_not_found");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::TokenNotFound,
+                    0,
+                    "vault_not_found",
+                );
                 return Err(Error::TokenNotFound);
             }
         };
 
         if vault.status != VaultStatus::Active {
-            events::emit_operation_failed(&env, vault_id, Error::InvalidParameters, vault.total_amount, "vault_not_active");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "vault_not_active",
+            );
             return Err(Error::InvalidParameters);
         }
 
@@ -3562,19 +3799,37 @@ impl TokenFactory {
         match &vault.verifier {
             Some(v) if *v == verifier => {}
             _ => {
-                events::emit_operation_failed(&env, vault_id, Error::MilestoneUnauthorized, vault.total_amount, "not_designated_verifier");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::MilestoneUnauthorized,
+                    vault.total_amount,
+                    "not_designated_verifier",
+                );
                 return Err(Error::MilestoneUnauthorized);
             }
         }
 
         if vault.milestone_verified {
-            events::emit_operation_failed(&env, vault_id, Error::MilestoneAlreadyVerified, vault.total_amount, "milestone_already_verified");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::MilestoneAlreadyVerified,
+                vault.total_amount,
+                "milestone_already_verified",
+            );
             return Err(Error::MilestoneAlreadyVerified);
         }
 
         vault.milestone_verified = true;
         if let Err(e) = storage::set_vault(&env, &vault) {
-            events::emit_operation_failed(&env, vault_id, e, vault.total_amount, "vault_persist_failed");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                e,
+                vault.total_amount,
+                "vault_persist_failed",
+            );
             return Err(e);
         }
 
@@ -3601,30 +3856,60 @@ impl TokenFactory {
         proposer.require_auth();
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, vault_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
         let vault = match storage::get_vault(&env, vault_id) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::TokenNotFound, 0, "vault_not_found");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::TokenNotFound,
+                    0,
+                    "vault_not_found",
+                );
                 return Err(Error::TokenNotFound);
             }
         };
 
         if vault.status != VaultStatus::Active {
-            events::emit_operation_failed(&env, vault_id, Error::InvalidParameters, vault.total_amount, "vault_not_active");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "vault_not_active",
+            );
             return Err(Error::InvalidParameters);
         }
 
         if proposer != vault.owner && proposer != vault.creator {
-            events::emit_operation_failed(&env, vault_id, Error::Unauthorized, vault.total_amount, "not_owner_or_creator");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::Unauthorized,
+                vault.total_amount,
+                "not_owner_or_creator",
+            );
             return Err(Error::Unauthorized);
         }
 
         if storage::get_pending_vault_owner_change(&env, vault_id).is_some() {
-            events::emit_operation_failed(&env, vault_id, Error::VaultOwnerChangePending, vault.total_amount, "owner_change_already_pending");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::VaultOwnerChangePending,
+                vault.total_amount,
+                "owner_change_already_pending",
+            );
             return Err(Error::VaultOwnerChangePending);
         }
 
@@ -3662,27 +3947,51 @@ impl TokenFactory {
         approver.require_auth();
 
         if storage::is_paused(&env) {
-            events::emit_operation_failed(&env, vault_id, Error::ContractPaused, 0, "contract_paused");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::ContractPaused,
+                0,
+                "contract_paused",
+            );
             return Err(Error::ContractPaused);
         }
 
         let mut vault = match storage::get_vault(&env, vault_id) {
             Some(v) => v,
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::TokenNotFound, 0, "vault_not_found");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::TokenNotFound,
+                    0,
+                    "vault_not_found",
+                );
                 return Err(Error::TokenNotFound);
             }
         };
 
         if vault.status != VaultStatus::Active {
-            events::emit_operation_failed(&env, vault_id, Error::InvalidParameters, vault.total_amount, "vault_not_active");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::InvalidParameters,
+                vault.total_amount,
+                "vault_not_active",
+            );
             return Err(Error::InvalidParameters);
         }
 
         let mut change = match storage::get_pending_vault_owner_change(&env, vault_id) {
             Some(c) => c,
             None => {
-                events::emit_operation_failed(&env, vault_id, Error::VaultOwnerChangeNotFound, vault.total_amount, "no_pending_owner_change");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    Error::VaultOwnerChangeNotFound,
+                    vault.total_amount,
+                    "no_pending_owner_change",
+                );
                 return Err(Error::VaultOwnerChangeNotFound);
             }
         };
@@ -3691,16 +4000,34 @@ impl TokenFactory {
         let is_creator = approver == vault.creator;
 
         if !is_owner && !is_creator {
-            events::emit_operation_failed(&env, vault_id, Error::Unauthorized, vault.total_amount, "not_owner_or_creator");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::Unauthorized,
+                vault.total_amount,
+                "not_owner_or_creator",
+            );
             return Err(Error::Unauthorized);
         }
 
         if is_owner && change.owner_approved {
-            events::emit_operation_failed(&env, vault_id, Error::VaultOwnerChangeAlreadyApproved, vault.total_amount, "owner_already_approved");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::VaultOwnerChangeAlreadyApproved,
+                vault.total_amount,
+                "owner_already_approved",
+            );
             return Err(Error::VaultOwnerChangeAlreadyApproved);
         }
         if is_creator && change.creator_approved {
-            events::emit_operation_failed(&env, vault_id, Error::VaultOwnerChangeAlreadyApproved, vault.total_amount, "creator_already_approved");
+            events::emit_operation_failed(
+                &env,
+                vault_id,
+                Error::VaultOwnerChangeAlreadyApproved,
+                vault.total_amount,
+                "creator_already_approved",
+            );
             return Err(Error::VaultOwnerChangeAlreadyApproved);
         }
 
@@ -3718,7 +4045,13 @@ impl TokenFactory {
             let old_owner = vault.owner.clone();
             vault.owner = change.new_owner.clone();
             if let Err(e) = storage::set_vault(&env, &vault) {
-                events::emit_operation_failed(&env, vault_id, e, vault.total_amount, "vault_persist_failed");
+                events::emit_operation_failed(
+                    &env,
+                    vault_id,
+                    e,
+                    vault.total_amount,
+                    "vault_persist_failed",
+                );
                 return Err(e);
             }
             storage::remove_pending_vault_owner_change(&env, vault_id);
@@ -4169,8 +4502,7 @@ impl TokenFactory {
     ) -> Result<u64, Error> {
         proposer.require_auth();
 
-        let config = storage::get_multisig_config(&env)
-            .ok_or(Error::MultiSigNotConfigured)?;
+        let config = storage::get_multisig_config(&env).ok_or(Error::MultiSigNotConfigured)?;
 
         // Verify proposer is a signer
         if !config.signers.contains(&proposer) {
@@ -4225,8 +4557,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         approver.require_auth();
 
-        let config = storage::get_multisig_config(&env)
-            .ok_or(Error::MultiSigNotConfigured)?;
+        let config = storage::get_multisig_config(&env).ok_or(Error::MultiSigNotConfigured)?;
 
         if !config.signers.contains(&approver) {
             return Err(Error::NotASigner);
@@ -4283,8 +4614,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         executor.require_auth();
 
-        let config = storage::get_multisig_config(&env)
-            .ok_or(Error::MultiSigNotConfigured)?;
+        let config = storage::get_multisig_config(&env).ok_or(Error::MultiSigNotConfigured)?;
 
         if !config.signers.contains(&executor) {
             return Err(Error::NotASigner);
@@ -4399,7 +4729,10 @@ impl TokenFactory {
                 let base_fee = i128::from_le_bytes(base_buf);
 
                 let mut meta_buf = [0u8; 16];
-                proposal.payload.slice(16..32).copy_into_slice(&mut meta_buf);
+                proposal
+                    .payload
+                    .slice(16..32)
+                    .copy_into_slice(&mut meta_buf);
                 let metadata_fee = i128::from_le_bytes(meta_buf);
 
                 if base_fee < 0 || metadata_fee < 0 {
@@ -4474,7 +4807,6 @@ impl TokenFactory {
     pub fn pending_rewards(env: Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
         staking::pending_rewards(&env, caller, pool_id)
     }
-
 }
 
 // Temporarily disabled - requires create_token implementation
@@ -4509,7 +4841,6 @@ mod fee_collection_test;
 
 #[cfg(test)]
 // mod burn_property_test;
-
 #[cfg(test)]
 // mod supply_conservation_test;
 // #[cfg(test)]
@@ -4544,7 +4875,6 @@ mod fee_collection_test;
 // Temporarily disabled - has compilation errors
 // #[cfg(test)]
 // mod fuzz_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_token_pause_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -4553,7 +4883,6 @@ const _ISOLATED_DISABLED_rbac_test: () = ();
 // mod token_stats_test;
 
 // mod integration_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 mod gas_benchmark_comprehensive;
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -4562,12 +4891,10 @@ const _ISOLATED_DISABLED_gas_regression_test: () = ();
 mod gas_benchmark_proposal_queue;
 #[cfg(test)]
 // mod gas_compute_thresholds;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_bench_test: () = ();
 #[cfg(test)]
 // mod pagination_integration_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_treasury_integration_test: () = ();
 // #[cfg(test)]
@@ -4591,7 +4918,6 @@ const _ISOLATED_DISABLED_event_replay_test: () = ();
 const _ISOLATED_DISABLED_batch_token_creation_test: () = ();
 #[cfg(test)]
 // mod campaign_stateful_fuzz_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_accounting_property_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -4600,10 +4926,8 @@ const _ISOLATED_DISABLED_stream_status_transition_property_test: () = ();
 const _ISOLATED_DISABLED_stream_lifecycle_integration_test: () = ();
 #[cfg(test)]
 // mod vault_claim_property_test;
-
 #[cfg(test)]
 // mod vault_unlock_time_property_test;
-
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_vault_cancellation_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
@@ -4737,4 +5061,3 @@ mod verifier_injection_test {
         assert_eq!(claimed, 500_000i128);
     }
 }
-

@@ -143,17 +143,12 @@ fn emit_vault_funded(env: &Env, vault_id: u64, funder: &Address, amount: i128) {
 /// - Duplicate prevention: Tracks claimed_amount to prevent over-claiming
 /// - Atomicity: All checks pass or entire operation fails
 /// - Status update: Vault marked as Claimed when fully claimed
-pub fn claim_vault(
-    env: &Env,
-    vault_id: u64,
-    owner: &Address,
-) -> Result<i128, Error> {
+pub fn claim_vault(env: &Env, vault_id: u64, owner: &Address) -> Result<i128, Error> {
     // Require owner authorization
     owner.require_auth();
 
     // Get vault and validate it exists
-    let mut vault = storage::get_vault(env, vault_id)
-        .ok_or(Error::TokenNotFound)?;
+    let mut vault = storage::get_vault(env, vault_id).ok_or(Error::TokenNotFound)?;
 
     // Validate caller is the vault owner
     if vault.owner != *owner {
@@ -182,7 +177,8 @@ pub fn claim_vault(
     ensure_withdrawals_enabled(env)?;
 
     // Calculate claimable amount
-    let claimable = vault.total_amount
+    let claimable = vault
+        .total_amount
         .checked_sub(vault.claimed_amount)
         .ok_or(Error::ArithmeticError)?;
 
@@ -196,7 +192,8 @@ pub fn claim_vault(
     record_withdrawal(env, claimable)?;
 
     // Update claimed amount with checked arithmetic
-    vault.claimed_amount = vault.claimed_amount
+    vault.claimed_amount = vault
+        .claimed_amount
         .checked_add(claimable)
         .ok_or(Error::ArithmeticError)?;
 
@@ -394,8 +391,15 @@ mod tests {
 
         // Verify vault state
         let vault = storage::get_vault(&env, vault_id).unwrap();
-        assert_eq!(vault.claimed_amount, total_amount, "Claimed amount should match");
-        assert_eq!(vault.status, VaultStatus::Claimed, "Status should be Claimed");
+        assert_eq!(
+            vault.claimed_amount, total_amount,
+            "Claimed amount should match"
+        );
+        assert_eq!(
+            vault.status,
+            VaultStatus::Claimed,
+            "Status should be Claimed"
+        );
     }
 
     #[test]
@@ -426,8 +430,11 @@ mod tests {
 
         // Try to claim before unlock
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::CliffNotReached), 
-            "Should fail before unlock time");
+        assert_eq!(
+            result,
+            Err(Error::CliffNotReached),
+            "Should fail before unlock time"
+        );
     }
 
     #[test]
@@ -495,8 +502,11 @@ mod tests {
 
         // Second claim should fail
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::InvalidParameters), 
-            "Should fail - vault already claimed");
+        assert_eq!(
+            result,
+            Err(Error::InvalidParameters),
+            "Should fail - vault already claimed"
+        );
     }
 
     #[test]
@@ -528,8 +538,11 @@ mod tests {
 
         // Try to claim with wrong owner
         let result = claim_vault(&env, vault_id, &attacker);
-        assert_eq!(result, Err(Error::Unauthorized), 
-            "Should fail - not the owner");
+        assert_eq!(
+            result,
+            Err(Error::Unauthorized),
+            "Should fail - not the owner"
+        );
     }
 
     proptest! {
@@ -588,8 +601,11 @@ mod tests {
 
         // Try to claim non-existent vault
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::TokenNotFound), 
-            "Should fail - vault doesn't exist");
+        assert_eq!(
+            result,
+            Err(Error::TokenNotFound),
+            "Should fail - vault doesn't exist"
+        );
     }
 
     #[test]
@@ -620,8 +636,11 @@ mod tests {
 
         // Try to claim cancelled vault
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::InvalidParameters), 
-            "Should fail - vault is cancelled");
+        assert_eq!(
+            result,
+            Err(Error::InvalidParameters),
+            "Should fail - vault is cancelled"
+        );
     }
 
     #[test]
@@ -701,7 +720,11 @@ mod tests {
         let last_event = events.get(events.len() - 1).unwrap();
         let (topics, _): (soroban_sdk::Vec<Val>, soroban_sdk::Vec<Val>) = last_event;
         let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
-        assert_eq!(topic.to_string(), "vlt_cl_v1", "Event topic should be vlt_cl_v1");
+        assert_eq!(
+            topic.to_string(),
+            "vlt_cl_v1",
+            "Event topic should be vlt_cl_v1"
+        );
     }
 
     #[test]
@@ -738,12 +761,12 @@ mod tests {
         let events = env.events().all();
         let last_event = events.get(events.len() - 1).unwrap();
         let (_, data): (soroban_sdk::Vec<Val>, soroban_sdk::Vec<Val>) = last_event;
-        
+
         assert_eq!(data.len(), 2, "Event should have 2 data fields");
-        
+
         let event_owner: Address = data.get(0).unwrap().try_into_val(&env).unwrap();
         let event_amount: i128 = data.get(1).unwrap().try_into_val(&env).unwrap();
-        
+
         assert_eq!(event_owner, owner, "Event owner should match");
         assert_eq!(event_amount, claimed, "Event amount should match");
     }
@@ -776,8 +799,11 @@ mod tests {
 
         // Should detect arithmetic error
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::ArithmeticError), 
-            "Should detect arithmetic underflow");
+        assert_eq!(
+            result,
+            Err(Error::ArithmeticError),
+            "Should detect arithmetic underflow"
+        );
     }
 
     #[test]
@@ -809,8 +835,11 @@ mod tests {
 
         // Should fail with nothing to claim
         let result = claim_vault(&env, vault_id, &owner);
-        assert_eq!(result, Err(Error::NothingToClaim), 
-            "Should fail - nothing left to claim");
+        assert_eq!(
+            result,
+            Err(Error::NothingToClaim),
+            "Should fail - nothing left to claim"
+        );
     }
 
     #[test]
@@ -889,7 +918,10 @@ mod tests {
 
         // Claim should get initial + funded amount
         let claimed = claim_vault(&env, vault_id, &owner).unwrap();
-        assert_eq!(claimed, initial_amount + funded_amount, 
-            "Should claim initial + funded amount");
+        assert_eq!(
+            claimed,
+            initial_amount + funded_amount,
+            "Should claim initial + funded amount"
+        );
     }
 }

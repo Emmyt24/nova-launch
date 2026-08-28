@@ -9,7 +9,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::payload_validation::validate_payload;
-use crate::test_helpers::{fee_change_payload, pause_payload, policy_update_payload, treasury_change_payload};
+use crate::test_helpers::{
+    fee_change_payload, pause_payload, policy_update_payload, treasury_change_payload,
+};
 use crate::types::{ActionType, Error};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;

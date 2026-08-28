@@ -17,17 +17,19 @@
 #![cfg(test)]
 
 use crate::{
-    governance,
-    storage,
+    governance, storage,
     test_helpers::{fee_change_payload, pause_payload, treasury_change_payload},
     timelock::{
-        create_proposal, execute_proposal, finalize_proposal, get_proposal,
-        get_vote_counts, initialize_timelock, queue_proposal, vote_proposal,
+        create_proposal, execute_proposal, finalize_proposal, get_proposal, get_vote_counts,
+        initialize_timelock, queue_proposal, vote_proposal,
     },
     types::{ActionType, Error, ProposalState, VoteChoice},
     TokenFactory,
 };
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Setup
@@ -66,7 +68,16 @@ fn make_proposal(
 ) -> u64 {
     env.as_contract(contract_id, || {
         let now = env.ledger().timestamp();
-        create_proposal(env, admin, action, payload, now + 100, now + 86_500, now + 90_100).unwrap()
+        create_proposal(
+            env,
+            admin,
+            action,
+            payload,
+            now + 100,
+            now + 86_500,
+            now + 90_100,
+        )
+        .unwrap()
     })
 }
 
@@ -79,13 +90,21 @@ fn vote_in_window(
     against_n: usize,
 ) {
     let p = env.as_contract(contract_id, || get_proposal(env, proposal_id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.start_time + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.start_time + 1;
+    });
     env.as_contract(contract_id, || {
         for _ in 0..for_n {
             vote_proposal(env, &Address::generate(env), proposal_id, VoteChoice::For).unwrap();
         }
         for _ in 0..against_n {
-            vote_proposal(env, &Address::generate(env), proposal_id, VoteChoice::Against).unwrap();
+            vote_proposal(
+                env,
+                &Address::generate(env),
+                proposal_id,
+                VoteChoice::Against,
+            )
+            .unwrap();
         }
     });
 }
@@ -93,13 +112,17 @@ fn vote_in_window(
 /// Advances past voting end, finalizes, queues, advances past ETA, executes.
 fn finalize_queue_execute(env: &Env, contract_id: &Address, proposal_id: u64) {
     let p = env.as_contract(contract_id, || get_proposal(env, proposal_id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.end_time + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.end_time + 1;
+    });
     env.as_contract(contract_id, || {
         finalize_proposal(env, proposal_id).unwrap();
         queue_proposal(env, proposal_id).unwrap();
     });
     let p = env.as_contract(contract_id, || get_proposal(env, proposal_id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.eta + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.eta + 1;
+    });
     env.as_contract(contract_id, || {
         execute_proposal(env, proposal_id).unwrap();
     });
@@ -114,7 +137,10 @@ fn integration_test_fee_change_full_lifecycle() {
     let (env, cid, admin, _) = setup();
 
     let (base, meta) = env.as_contract(&cid, || {
-        (storage::get_base_fee(&env), storage::get_metadata_fee(&env).unwrap())
+        (
+            storage::get_base_fee(&env),
+            storage::get_metadata_fee(&env).unwrap(),
+        )
     });
     assert_eq!(base, 1_000_000);
     assert_eq!(meta, 500_000);
@@ -126,7 +152,10 @@ fn integration_test_fee_change_full_lifecycle() {
     finalize_queue_execute(&env, &cid, id);
 
     let (new_base, new_meta) = env.as_contract(&cid, || {
-        (storage::get_base_fee(&env), storage::get_metadata_fee(&env).unwrap())
+        (
+            storage::get_base_fee(&env),
+            storage::get_metadata_fee(&env).unwrap(),
+        )
     });
     assert_eq!(new_base, 2_000_000);
     assert_eq!(new_meta, 750_000);
@@ -187,8 +216,12 @@ fn integration_test_proposal_fails_quorum_not_met() {
 
     // No votes — quorum not met.
     let p = env.as_contract(&cid, || get_proposal(&env, id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.end_time + 1; });
-    env.as_contract(&cid, || { finalize_proposal(&env, id).unwrap(); });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.end_time + 1;
+    });
+    env.as_contract(&cid, || {
+        finalize_proposal(&env, id).unwrap();
+    });
 
     let state = env.as_contract(&cid, || get_proposal(&env, id).unwrap().state);
     assert_eq!(state, ProposalState::Failed);
@@ -215,8 +248,12 @@ fn integration_test_proposal_defeated_approval_not_met() {
     vote_in_window(&env, &cid, id, 3, 7);
 
     let p = env.as_contract(&cid, || get_proposal(&env, id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.end_time + 1; });
-    env.as_contract(&cid, || { finalize_proposal(&env, id).unwrap(); });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.end_time + 1;
+    });
+    env.as_contract(&cid, || {
+        finalize_proposal(&env, id).unwrap();
+    });
 
     let state = env.as_contract(&cid, || get_proposal(&env, id).unwrap().state);
     assert_eq!(state, ProposalState::Defeated);
@@ -241,7 +278,9 @@ fn integration_test_double_vote_rejected() {
 
     let voter = Address::generate(&env);
     let p = env.as_contract(&cid, || get_proposal(&env, id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.start_time + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.start_time + 1;
+    });
 
     env.as_contract(&cid, || {
         vote_proposal(&env, &voter, id, VoteChoice::For).unwrap();
@@ -274,8 +313,12 @@ fn integration_test_governance_config_update_affects_proposals() {
     vote_in_window(&env, &cid, id, 5, 0);
 
     let p = env.as_contract(&cid, || get_proposal(&env, id).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.end_time + 1; });
-    env.as_contract(&cid, || { finalize_proposal(&env, id).unwrap(); });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.end_time + 1;
+    });
+    env.as_contract(&cid, || {
+        finalize_proposal(&env, id).unwrap();
+    });
 
     let state = env.as_contract(&cid, || get_proposal(&env, id).unwrap().state);
     assert_eq!(state, ProposalState::Failed);
@@ -299,19 +342,31 @@ fn integration_test_concurrent_proposals_independent_tallies() {
     let id_b = make_proposal(&env, &cid, &admin, ActionType::PauseContract, payload_b);
 
     let p = env.as_contract(&cid, || get_proposal(&env, id_a).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.start_time + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.start_time + 1;
+    });
 
     env.as_contract(&cid, || {
         // A: 8 FOR, 2 AGAINST → Succeeded.
-        for _ in 0..8 { vote_proposal(&env, &Address::generate(&env), id_a, VoteChoice::For).unwrap(); }
-        for _ in 0..2 { vote_proposal(&env, &Address::generate(&env), id_a, VoteChoice::Against).unwrap(); }
+        for _ in 0..8 {
+            vote_proposal(&env, &Address::generate(&env), id_a, VoteChoice::For).unwrap();
+        }
+        for _ in 0..2 {
+            vote_proposal(&env, &Address::generate(&env), id_a, VoteChoice::Against).unwrap();
+        }
         // B: 2 FOR, 8 AGAINST → Defeated.
-        for _ in 0..2 { vote_proposal(&env, &Address::generate(&env), id_b, VoteChoice::For).unwrap(); }
-        for _ in 0..8 { vote_proposal(&env, &Address::generate(&env), id_b, VoteChoice::Against).unwrap(); }
+        for _ in 0..2 {
+            vote_proposal(&env, &Address::generate(&env), id_b, VoteChoice::For).unwrap();
+        }
+        for _ in 0..8 {
+            vote_proposal(&env, &Address::generate(&env), id_b, VoteChoice::Against).unwrap();
+        }
     });
 
     let p = env.as_contract(&cid, || get_proposal(&env, id_a).unwrap());
-    env.ledger().with_mut(|li| { li.timestamp = p.end_time + 1; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = p.end_time + 1;
+    });
 
     env.as_contract(&cid, || {
         finalize_proposal(&env, id_a).unwrap();
@@ -328,6 +383,3 @@ fn integration_test_concurrent_proposals_independent_tallies() {
     assert_eq!((a_for, a_against), (8, 2));
     assert_eq!((b_for, b_against), (2, 8));
 }
-
-
-

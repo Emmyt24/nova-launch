@@ -192,10 +192,8 @@ pub fn set_contract_version(env: &Env, version: ContractVersion) {
 /// Emitted when storage migration is completed
 fn emit_storage_migrated(env: &Env, old_version: u32, new_version: u32) {
     use soroban_sdk::symbol_short;
-    env.events().publish(
-        (symbol_short!("stor_mig"),),
-        (old_version, new_version),
-    );
+    env.events()
+        .publish((symbol_short!("stor_mig"),), (old_version, new_version));
 }
 
 // ─────────────────────────────────────────────

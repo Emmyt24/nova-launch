@@ -494,7 +494,11 @@ fn current_reward_per_token(env: &Env, pool: &LiquidityMiningPool) -> Result<i12
     }
 
     let now = env.ledger().timestamp();
-    let effective_time = if now > pool.end_time { pool.end_time } else { now };
+    let effective_time = if now > pool.end_time {
+        pool.end_time
+    } else {
+        now
+    };
 
     if effective_time <= pool.last_update_time {
         return Ok(pool.reward_per_token_stored);
@@ -522,7 +526,11 @@ fn update_reward_per_token(env: &Env, pool: &mut LiquidityMiningPool) -> Result<
     pool.reward_per_token_stored = current_reward_per_token(env, pool)?;
 
     let now = env.ledger().timestamp();
-    pool.last_update_time = if now > pool.end_time { pool.end_time } else { now };
+    pool.last_update_time = if now > pool.end_time {
+        pool.end_time
+    } else {
+        now
+    };
 
     Ok(())
 }

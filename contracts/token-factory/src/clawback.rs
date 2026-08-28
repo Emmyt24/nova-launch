@@ -16,8 +16,8 @@
 //! `from`, `amount`, `admin`, and `timestamp` so indexers have a full audit
 //! trail.
 
-use crate::{events, storage};
 use crate::types::Error;
+use crate::{events, storage};
 use soroban_sdk::{Address, Env};
 
 /// Clawback `amount` tokens from `from`'s balance.
@@ -77,9 +77,18 @@ pub fn clawback(
 
     // 7. Checks-Effects-Interactions: compute new values, then commit
     let new_balance = balance.checked_sub(amount).ok_or(Error::ArithmeticError)?;
-    let new_supply = info.total_supply.checked_sub(amount).ok_or(Error::ArithmeticError)?;
-    let new_burned = info.total_burned.checked_add(amount).ok_or(Error::ArithmeticError)?;
-    let new_burn_count = info.burn_count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    let new_supply = info
+        .total_supply
+        .checked_sub(amount)
+        .ok_or(Error::ArithmeticError)?;
+    let new_burned = info
+        .total_burned
+        .checked_add(amount)
+        .ok_or(Error::ArithmeticError)?;
+    let new_burn_count = info
+        .burn_count
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?;
 
     storage::set_balance(env, token_index, &from, new_balance);
     info.total_supply = new_supply;

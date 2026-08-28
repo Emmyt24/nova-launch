@@ -73,6 +73,7 @@ export class CanaryDeploymentService extends EventEmitter {
 
   private observationTimer: ReturnType<typeof setInterval> | null = null;
   private metricsPollingTimer: ReturnType<typeof setInterval> | null = null;
+  private transitioning: boolean = false;
   private readonly config: CanaryConfig;
 
   constructor(config: Partial<CanaryConfig> = {}) {
@@ -134,14 +135,17 @@ export class CanaryDeploymentService extends EventEmitter {
   async evaluateMetrics(metrics: CanaryMetrics): Promise<void> {
     this.state.lastMetrics = metrics;
 
-    if (this.state.stage !== 'observing') return;
+    if (this.state.stage !== 'observing' || this.transitioning) return;
 
     const breached = this.checkThresholds(metrics);
     if (breached) {
-      if (this.config.autoRollback) {
-        await this.performRollback(breached);
-      } else {
-        structuredLogger.warn('Canary threshold breached — auto-rollback disabled', { reason: breached });
+      // Re-check stage immediately before rolling back (may have already transitioned via auto-promote)
+      if (this.state.stage === 'observing' && !this.transitioning) {
+        if (this.config.autoRollback) {
+          await this.performRollback(breached);
+        } else {
+          structuredLogger.warn('Canary threshold breached — auto-rollback disabled', { reason: breached });
+        }
       }
     }
   }
@@ -187,7 +191,10 @@ export class CanaryDeploymentService extends EventEmitter {
     this.observationTimer = setInterval(async () => {
       if (Date.now() >= endTime) {
         this.stopObservation();
-        await this.promote();
+        // Re-check stage immediately before promoting (may have already transitioned via rollback)
+        if (this.state.stage === 'observing' && !this.transitioning) {
+          await this.promote();
+        }
         return;
       }
 
@@ -229,42 +236,58 @@ export class CanaryDeploymentService extends EventEmitter {
   }
 
   private async promote(): Promise<void> {
-    this.transitionTo('promoting');
-    structuredLogger.info('Promoting canary to stable', {
-      canaryVersion: this.state.canaryVersion,
-    });
-    // Concrete promotion logic (kubectl / load-balancer update) lives in canary-deploy.sh
-    this.transitionTo('complete');
-    structuredLogger.info('Canary promotion complete', {
-      version: this.state.canaryVersion,
-    });
+    // Ensure no concurrent transition is in progress
+    if (this.transitioning || this.state.stage !== 'observing') return;
+
+    this.transitioning = true;
+    try {
+      this.transitionTo('promoting');
+      structuredLogger.info('Promoting canary to stable', {
+        canaryVersion: this.state.canaryVersion,
+      });
+      // Concrete promotion logic (kubectl / load-balancer update) lives in canary-deploy.sh
+      this.transitionTo('complete');
+      structuredLogger.info('Canary promotion complete', {
+        version: this.state.canaryVersion,
+      });
+    } finally {
+      this.transitioning = false;
+    }
   }
 
   private async performRollback(reason: string): Promise<void> {
-    this.stopObservation();
-    this.stopMetricsPolling();
+    // Ensure no concurrent transition is in progress and we're still in observing state
+    if (this.transitioning || this.state.stage !== 'observing') return;
 
-    // Revert canary traffic to 0%
-    this.config.weight = 0;
+    this.transitioning = true;
+    try {
+      this.stopObservation();
+      this.stopMetricsPolling();
 
-    this.state.rollbackReason = reason;
-    this.transitionTo('rolled_back');
+      // Revert canary traffic to 0%
+      this.config.weight = 0;
 
-    const errorRate = this.state.lastMetrics?.errorRate ?? 0;
-    const deploymentId = this.state.canaryVersion;
+      this.state.rollbackReason = reason;
+      this.transitionTo('rolled_back');
 
-    structuredLogger.error('Canary rollback triggered', {
-      reason,
-      canaryVersion:  this.state.canaryVersion,
-      stableVersion:  this.state.stableVersion,
-      errorRate,
-    });
+      const errorRate = this.state.lastMetrics?.errorRate ?? 0;
+      const deploymentId = this.state.canaryVersion;
 
-    // Emit event for observability / external listeners
-    const payload: CanaryRolledBackPayload = { deploymentId, errorRate, reason };
-    this.emit('deployment.canary.rolled_back', payload);
+      structuredLogger.error('Canary rollback triggered', {
+        reason,
+        canaryVersion:  this.state.canaryVersion,
+        stableVersion:  this.state.stableVersion,
+        errorRate,
+      });
 
-    // Concrete rollback (kubectl scale / nginx upstream) lives in canary-deploy.sh
+      // Emit event for observability / external listeners
+      const payload: CanaryRolledBackPayload = { deploymentId, errorRate, reason };
+      this.emit('deployment.canary.rolled_back', payload);
+
+      // Concrete rollback (kubectl scale / nginx upstream) lives in canary-deploy.sh
+    } finally {
+      this.transitioning = false;
+    }
   }
 }
 

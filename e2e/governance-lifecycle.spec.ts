@@ -42,13 +42,27 @@ async function navigateToGovernance(page: Page): Promise<void> {
   await page.waitForLoadState("networkidle");
 }
 
-async function waitForStatusChip(page: Page, status: string): Promise<void> {
+async function waitForStatusChip(
+  page: Page,
+  status: string,
+  proposalTitle?: string
+): Promise<void> {
   await page.waitForFunction(
-    ({ sel, expected }: { sel: string; expected: string }) => {
-      const chip = document.querySelector(sel);
-      return chip?.textContent?.toLowerCase().includes(expected.toLowerCase());
+    ({ selCard, selChip, expected, title }: { selCard: string; selChip: string; expected: string; title?: string }) => {
+      if (title) {
+        // Scope the status chip query to the specific proposal card
+        const cards = document.querySelectorAll(selCard);
+        const card = Array.from(cards).find((c) => c.textContent?.includes(title));
+        if (!card) return false;
+        const chip = card.querySelector(selChip);
+        return chip?.textContent?.toLowerCase().includes(expected.toLowerCase());
+      } else {
+        // Fallback for unscoped queries (for tests that don't provide title)
+        const chip = document.querySelector(selChip);
+        return chip?.textContent?.toLowerCase().includes(expected.toLowerCase());
+      }
     },
-    { sel: SEL.proposalStatusChip, expected: status },
+    { selCard: SEL.proposalCard, selChip: SEL.proposalStatusChip, expected: status, title: proposalTitle },
     { timeout: 15_000 }
   );
 }
@@ -88,7 +102,8 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
     await page.click(SEL.submitProposalBtn);
 
     // Optimistic UI: status chip should show "active" without page refresh
-    await waitForStatusChip(page, "active");
+    // Scoped to the specific proposal created by this test
+    await waitForStatusChip(page, "active", title);
 
     // The new proposal card should appear in the list
     const cards = page.locator(SEL.proposalCard);
@@ -124,6 +139,9 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
   }) => {
     const firstCard = page.locator(SEL.proposalCard).first();
     await firstCard.waitFor({ timeout: 10_000 });
+    const cardText = await firstCard.textContent();
+    // Extract proposal title from the card to scope the status check
+    const proposalTitle = cardText?.split("\n")[0] || "";
     await firstCard.click();
 
     await page.click(SEL.voteAgainstBtn);
@@ -132,7 +150,8 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
     });
 
     // Proposal stays active — quorum not yet reached
-    await waitForStatusChip(page, "active");
+    // Scoped to the specific proposal card
+    await waitForStatusChip(page, "active", proposalTitle);
   });
 
   // -- 3. Queue --------------------------------------------------------------
@@ -146,13 +165,16 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
 
     const passedCard = page.locator(SEL.proposalCard).first();
     await passedCard.waitFor({ timeout: 10_000 });
+    const cardText = await passedCard.textContent();
+    const proposalTitle = cardText?.split("\n")[0] || "";
     await passedCard.click();
 
     const queueBtn = page.locator(SEL.queueProposalBtn);
     // Only present for eligible proposals — skip if not rendered
     if (await queueBtn.isVisible()) {
       await queueBtn.click();
-      await waitForStatusChip(page, "queued");
+      // Scoped to the specific proposal
+      await waitForStatusChip(page, "queued", proposalTitle);
       await expect(page.locator(SEL.toastSuccess)).toBeVisible({
         timeout: 8_000,
       });
@@ -171,12 +193,15 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
 
     const queuedCard = page.locator(SEL.proposalCard).first();
     await queuedCard.waitFor({ timeout: 10_000 });
+    const cardText = await queuedCard.textContent();
+    const proposalTitle = cardText?.split("\n")[0] || "";
     await queuedCard.click();
 
     const executeBtn = page.locator(SEL.executeProposalBtn);
     if (await executeBtn.isVisible()) {
       await executeBtn.click();
-      await waitForStatusChip(page, "executed");
+      // Scoped to the specific proposal
+      await waitForStatusChip(page, "executed", proposalTitle);
       await expect(page.locator(SEL.toastSuccess)).toBeVisible({
         timeout: 8_000,
       });
@@ -229,5 +254,58 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
     );
 
     await secondPage.close();
+  });
+
+  // -- 6. Multiple proposals: verify status checks are scoped correctly --------
+
+  test("status assertions track correct proposal when multiple proposals exist", async ({
+    page,
+  }) => {
+    // Create first proposal
+    const proposal1Title = `E2E Proposal 1 ${Date.now()}`;
+    await page.click(SEL.createProposalBtn);
+    await page.fill(SEL.proposalTitleInput, proposal1Title);
+    await page.fill(
+      SEL.proposalDescInput,
+      "First test proposal — verifies scoped status checks."
+    );
+    await page.click(SEL.submitProposalBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Verify first proposal status (scoped to its title)
+    await waitForStatusChip(page, "active", proposal1Title);
+
+    // Create second proposal
+    const proposal2Title = `E2E Proposal 2 ${Date.now()}`;
+    await page.click(SEL.createProposalBtn);
+    await page.fill(SEL.proposalTitleInput, proposal2Title);
+    await page.fill(
+      SEL.proposalDescInput,
+      "Second test proposal — ensures status checks don't cross-contaminate."
+    );
+    await page.click(SEL.submitProposalBtn);
+
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
+
+    // Verify second proposal status (scoped to its title)
+    await waitForStatusChip(page, "active", proposal2Title);
+
+    // Verify both proposals are visible in the list
+    const cards = page.locator(SEL.proposalCard);
+    await expect(cards.filter({ hasText: proposal1Title })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(cards.filter({ hasText: proposal2Title })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Both status checks should still pass because they target specific proposals
+    await waitForStatusChip(page, "active", proposal1Title);
+    await waitForStatusChip(page, "active", proposal2Title);
   });
 });

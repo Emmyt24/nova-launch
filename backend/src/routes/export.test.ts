@@ -166,6 +166,36 @@ describe("GET /api/export/tokens", () => {
     expect(res.text).toContain('"Token ""Special"""');
   });
 
+  it("CSV neutralizes formula-injection characters", async () => {
+    const formulaTokens = [
+      {
+        id: "token-formula",
+        address: "GFORMULA",
+        creator: "GCREATOR1",
+        name: "=HYPERLINK(\"http://evil.example\",\"click\")",
+        symbol: "+CMD",
+        decimals: 7,
+        totalSupply: BigInt("1000000"),
+        initialSupply: BigInt("1000000"),
+        totalBurned: BigInt("0"),
+        burnCount: 0,
+        metadataUri: "@SUM(A1:A9)",
+        createdAt: new Date("2024-01-15T10:00:00.000Z"),
+        updatedAt: new Date("2024-01-15T10:00:00.000Z"),
+      },
+    ];
+    vi.mocked(prisma.token.findMany).mockResolvedValue(formulaTokens);
+
+    const res = await request(app).get("/api/export/tokens?format=csv");
+
+    // Values starting with =, +, -, @ should be prefixed with '
+    expect(res.text).toContain("'=HYPERLINK");
+    expect(res.text).toContain("'+CMD");
+    expect(res.text).toContain("'@SUM(A1:A9)");
+    // Normal values should not be prefixed
+    expect(res.text).not.toContain("'=GFORMULA");
+  });
+
   it("returns empty CSV body when no tokens exist", async () => {
     vi.mocked(prisma.token.findMany).mockResolvedValue([]);
 

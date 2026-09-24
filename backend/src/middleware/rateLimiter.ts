@@ -167,8 +167,25 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
 // Pre-configured limiters (drop-in replacements for the express-rate-limit ones)
 // ---------------------------------------------------------------------------
 
-const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"); // 15 min
-const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100");
+const WINDOW_MS = (() => {
+  const parsed = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000");
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `Invalid RATE_LIMIT_WINDOW_MS: "${process.env.RATE_LIMIT_WINDOW_MS}" is not a valid integer`
+    );
+  }
+  return parsed;
+})();
+
+const MAX_REQUESTS = (() => {
+  const parsed = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100");
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `Invalid RATE_LIMIT_MAX_REQUESTS: "${process.env.RATE_LIMIT_MAX_REQUESTS}" is not a valid integer`
+    );
+  }
+  return parsed;
+})();
 
 /**
  * Global rate limiter for all API endpoints.

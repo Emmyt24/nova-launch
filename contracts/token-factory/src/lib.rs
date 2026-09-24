@@ -239,6 +239,9 @@ impl TokenFactory {
             return Err(Error::AlreadyInitialized);
         }
 
+        // Initialize storage version to current schema version
+        storage_migration::initialize_storage_version(&env);
+
         // Combined parameter validation (Phase 1 optimization)
         // Check both fees in single evaluation
         if base_fee < 0 || metadata_fee < 0 {

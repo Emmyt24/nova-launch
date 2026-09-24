@@ -28,6 +28,31 @@ fn test_initialize() {
 }
 
 #[test]
+fn test_initialize_sets_storage_version() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let base_fee = 70_000_000;
+    let metadata_fee = 30_000_000;
+
+    // Before initialize, contract should have default version (1)
+    let version_before = storage_migration::get_storage_version(&env);
+    assert_eq!(version_before, 1);
+
+    // Initialize factory
+    client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+    // After initialize, storage version should be set to CURRENT_SCHEMA_VERSION
+    let version_after = storage_migration::get_storage_version(&env);
+    assert!(version_after > 1, "initialize() should set storage version to current");
+    assert!(!storage_migration::is_migration_required(&env), "fresh contract should not require migration");
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_negative_base_fee_rejected() {
     let env = Env::default();

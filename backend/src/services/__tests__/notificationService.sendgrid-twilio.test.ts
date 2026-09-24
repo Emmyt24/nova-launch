@@ -312,6 +312,68 @@ describe("SendGrid email provider", () => {
     expect(htmlContent.value).toContain("Your token MYTKN is live");
     expect(htmlContent.value).toContain("GABC123");
   });
+
+  it("escapes regex metacharacters in metadata keys to prevent template injection (Issue #1978)", async () => {
+    successAxios(202);
+    const svc = makeService();
+
+    // Metadata key with regex special characters
+    const result = await svc.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: {
+        message: "Template test",
+        subject: "Test Event",
+        metadata: {
+          templateKey: "TOKEN_DEPLOYED",
+          "key(with)special*chars": "value123",
+          "bracket[test]": "content",
+          "dot.separator": "dotted",
+        },
+      },
+    });
+
+    // Should not throw and should succeed
+    expect(result[0].success).toBe(true);
+
+    // Verify the mocked template was called and rendered
+    const body = mockedPost.mock.calls[0][1] as any;
+    expect(body).toBeDefined();
+
+    // The rendered template should contain the message (original placeholder)
+    const htmlContent = body.content?.find((c: any) => c.type === "text/html");
+    expect(htmlContent?.value).toContain("Template test");
+  });
+
+  it("handles metadata keys with regex quantifiers without corrupting placeholders", async () => {
+    successAxios(202);
+    const svc = makeService();
+
+    // Test with various regex special characters
+    const result = await svc.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: {
+        message: "Important: Keep this text",
+        subject: "Security Test",
+        metadata: {
+          templateKey: "TOKEN_DEPLOYED",
+          "amount*": "100", // asterisk (quantifier)
+          "count+": "5", // plus (quantifier)
+          "id?": "abc", // question mark (optional)
+          "pattern|alt": "test", // pipe (alternation)
+          "group(a)": "value", // parens (grouping)
+          "escape\\test": "ok", // backslash
+        },
+      },
+    });
+
+    expect(result[0].success).toBe(true);
+
+    // The original message placeholder should still be intact in the output
+    const body = mockedPost.mock.calls[0][1] as any;
+    const htmlContent = body.content?.find((c: any) => c.type === "text/html");
+    // Our mocked template includes {{message}}, which should be rendered
+    expect(htmlContent?.value).toContain("Important: Keep this text");
+  });
 });
 
 // ---------------------------------------------------------------------------

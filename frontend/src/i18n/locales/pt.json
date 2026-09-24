@@ -139,5 +139,17 @@
     "loading": "Carregando...",
     "processing": "Processando...",
     "pleaseWait": "Por favor, aguarde..."
+  },
+  "governance": {
+    "title": "Governança",
+    "statusFilter": {
+      "all": "Todas",
+      "active": "Ativas",
+      "passed": "Aprovadas",
+      "rejected": "Rejeitadas",
+      "executed": "Executadas",
+      "cancelled": "Canceladas",
+      "expired": "Expiradas"
+    }
   }
 }

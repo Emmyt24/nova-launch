@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ProposalList } from '../components/Governance/ProposalList';
 import { ProposalDetail } from '../components/Governance/ProposalDetail';
 import { CreateProposalForm } from '../components/Governance/CreateProposalForm';
@@ -17,6 +18,7 @@ interface GovernancePageProps {
 }
 
 export function GovernancePage({ wallet }: GovernancePageProps) {
+  const { t } = useTranslation();
   const [selectedProposal, setSelectedProposal] = useState<GovernanceProposal | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [hasGovernancePower, setHasGovernancePower] = useState(false);
@@ -66,7 +68,9 @@ export function GovernancePage({ wallet }: GovernancePageProps) {
   return (
     <div className="max-w-3xl mx-auto py-8 px-4">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Governance</h1>
+        <h1 data-testid="governance-heading" className="text-2xl font-bold text-gray-900">
+          {t('governance.title')}
+        </h1>
         {wallet.connected && hasGovernancePower && (
           <Button variant="primary" onClick={() => setShowCreateForm(true)}>
             Create Proposal

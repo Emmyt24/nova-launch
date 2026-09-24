@@ -17,6 +17,14 @@
  *   DB_CONNECT_TIMEOUT_MS    – connection acquisition timeout ms    (default 5000)
  *   DB_IDLE_TIMEOUT_MS       – idle connection eviction timeout ms  (default 30000)
  *
+ * DB_POOL_MAX and DB_CONNECT_TIMEOUT_MS genuinely configure the real Prisma
+ * pool: lib/prisma.ts appends them to DATABASE_URL as `connection_limit` and
+ * `pool_timeout` (seconds) before constructing the PrismaClient. Any of those
+ * parameters already present on DATABASE_URL take precedence. When unset,
+ * Prisma's own defaults apply (the defaults above are only what
+ * getPoolConfig() reports). DB_POOL_MIN and DB_IDLE_TIMEOUT_MS have no Prisma
+ * connection-string equivalent and are informational only.
+ *
  * Security notes (OWASP DB hardening):
  *  - Connection string is read from env only; never hard-coded.
  *  - Query parameters are always passed as bound values (Prisma handles this).

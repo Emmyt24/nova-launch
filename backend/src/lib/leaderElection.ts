@@ -266,5 +266,8 @@ export class LeaderElection {
       }
       this.leader = false;
     }
+    // A deliberate stop ends this instance's leadership term, so the cached
+    // token must not outlive it — keeps getFencingToken() consistent with isLeader().
+    this.fencingToken = null;
   }
 }

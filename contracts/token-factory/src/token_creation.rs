@@ -140,6 +140,10 @@ pub fn create_token_internal(
     // Set initial balance for creator
     storage::set_balance(env, token_index, creator, params.initial_supply);
 
+    // Record initial balance and supply snapshots for dividend distribution
+    let _ = crate::snapshot::record_balance_snapshot(env, token_index, creator, params.initial_supply);
+    let _ = crate::snapshot::record_supply_snapshot(env, token_index, params.initial_supply);
+
     // Emit token created event
     crate::events::emit_token_created(
         env,

@@ -72,6 +72,8 @@ mod storage_migration;
 mod test_helpers;
 mod timelock;
 mod token_creation;
+#[cfg(test)]
+mod token_creation_snapshot_test;
 mod treasury;
 mod types;
 mod validation;

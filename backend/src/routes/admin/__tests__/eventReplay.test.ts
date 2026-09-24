@@ -139,3 +139,77 @@ describe('POST /event-replay/clear-and-rebuild – auth guards', () => {
     expect(res.body.error).toMatch(/[Cc]onfirmation/);
   });
 });
+
+describe('POST /event-replay – batchSize validation', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('rejects non-numeric batchSize with 400', async () => {
+    buildApp('super-admin');
+    const { default: router } = await import('../eventReplay');
+    const app = express();
+    app.use(express.json());
+    app.use('/', router);
+
+    const res = await request(app)
+      .post('/event-replay?batchSize=abc')
+      .set('Authorization', 'Bearer super-admin-token');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+  });
+
+  it('rejects batchSize below 1 with 400', async () => {
+    buildApp('super-admin');
+    const { default: router } = await import('../eventReplay');
+    const app = express();
+    app.use(express.json());
+    app.use('/', router);
+
+    const res = await request(app)
+      .post('/event-replay?batchSize=0')
+      .set('Authorization', 'Bearer super-admin-token');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+  });
+
+  it('rejects batchSize above 200 with 400', async () => {
+    buildApp('super-admin');
+    const { default: router } = await import('../eventReplay');
+    const app = express();
+    app.use(express.json());
+    app.use('/', router);
+
+    const res = await request(app)
+      .post('/event-replay?batchSize=201')
+      .set('Authorization', 'Bearer super-admin-token');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+  });
+
+  it('accepts valid batchSize between 1 and 200', async () => {
+    buildApp('super-admin');
+    const { default: router } = await import('../eventReplay');
+    const app = express();
+    app.use(express.json());
+    app.use('/', router);
+
+    const res = await request(app)
+      .post('/event-replay?batchSize=100')
+      .set('Authorization', 'Bearer super-admin-token');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts omitted batchSize (uses default)', async () => {
+    buildApp('super-admin');
+    const { default: router } = await import('../eventReplay');
+    const app = express();
+    app.use(express.json());
+    app.use('/', router);
+
+    const res = await request(app)
+      .post('/event-replay')
+      .set('Authorization', 'Bearer super-admin-token');
+    expect(res.status).toBe(200);
+  });
+});

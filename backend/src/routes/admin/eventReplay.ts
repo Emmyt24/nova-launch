@@ -39,8 +39,11 @@ router.post('/event-replay', authenticateAdmin, requireSuperAdmin, async (req: R
     } = req.query;
 
     // Validate parameters
-    if (batchSize && (Number(batchSize) < 1 || Number(batchSize) > 200)) {
-      return res.status(400).json({ error: 'batchSize must be between 1 and 200' });
+    if (batchSize) {
+      const parsed = Number(batchSize);
+      if (Number.isNaN(parsed) || parsed < 1 || parsed > 200) {
+        return res.status(400).json({ error: 'batchSize must be between 1 and 200' });
+      }
     }
 
     const result = await replayService.replay({

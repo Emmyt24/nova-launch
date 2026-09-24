@@ -99,6 +99,8 @@ mod payload_validation_fuzz_test;
 mod snapshot;
 #[cfg(test)]
 mod snapshot_counter_test;
+#[cfg(test)]
+mod burn_schedule_counter_test;
 
 #[cfg(test)]
 // mod buyback_integration_test;

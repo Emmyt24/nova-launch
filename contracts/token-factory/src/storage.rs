@@ -2104,16 +2104,18 @@ pub fn get_burn_schedule_count_by_token(env: &Env, token_index: u32) -> u32 {
         .unwrap_or(0)
 }
 
-pub fn add_burn_schedule_by_token(env: &Env, token_index: u32, schedule_id: u64) {
+pub fn add_burn_schedule_by_token(env: &Env, token_index: u32, schedule_id: u64) -> Result<(), Error> {
     let count = get_burn_schedule_count_by_token(env, token_index);
     env.storage().instance().set(
         &crate::types::DataKey::BurnSchedulesByToken(token_index, count),
         &schedule_id,
     );
+    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
     env.storage().instance().set(
         &crate::types::DataKey::BurnScheduleCountByToken(token_index),
-        &(count + 1),
+        &next_count,
     );
+    Ok(())
 }
 
 pub fn get_burn_schedule_id_by_token(env: &Env, token_index: u32, local_index: u32) -> Option<u64> {

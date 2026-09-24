@@ -33,6 +33,8 @@ const POLICY_PAYLOAD_LEN: usize = 25;
 /// - **UnpauseContract**: 0 bytes (empty).
 /// - **PolicyUpdate**: 25 bytes = daily_cap (i128 LE) + allowlist (u8) + period_duration (u64 LE).
 ///   daily_cap must be >= 0, allowlist is 0 or 1, period_duration must be > 0.
+/// - **ParameterChange**: 32 bytes = parameter_id (u32 LE) + value (i128 LE) + flags (u8) + reserved (7 bytes).
+///   value must be >= 0, flags must be 0 or 1.
 pub fn validate_payload(env: &Env, action_type: ActionType, payload: &Bytes) -> Result<(), Error> {
     match action_type {
         ActionType::FeeChange => validate_fee_payload(payload),
@@ -40,7 +42,7 @@ pub fn validate_payload(env: &Env, action_type: ActionType, payload: &Bytes) -> 
         ActionType::PauseContract => validate_pause_payload(payload),
         ActionType::UnpauseContract => validate_unpause_payload(payload),
         ActionType::PolicyUpdate => validate_policy_payload(payload),
-        ActionType::ParameterChange => Ok(()), // Placeholder validation
+        ActionType::ParameterChange => validate_parameter_change_payload(payload),
     }
 }
 
@@ -110,6 +112,31 @@ fn validate_policy_payload(payload: &Bytes) -> Result<(), Error> {
         return Err(Error::InvalidParameters);
     }
     if period_duration == 0 {
+        return Err(Error::InvalidParameters);
+    }
+
+    Ok(())
+}
+
+fn validate_parameter_change_payload(payload: &Bytes) -> Result<(), Error> {
+    if payload.len() != 32 {
+        return Err(Error::InvalidParameters);
+    }
+
+    let mut param_id_buf = [0u8; 4];
+    payload.slice(0..4).copy_into_slice(&mut param_id_buf);
+    let _param_id = u32::from_le_bytes(param_id_buf);
+
+    let mut value_buf = [0u8; 16];
+    payload.slice(4..20).copy_into_slice(&mut value_buf);
+    let value = i128::from_le_bytes(value_buf);
+
+    let flags = payload.get_unchecked(20);
+
+    if value < 0 {
+        return Err(Error::InvalidParameters);
+    }
+    if flags > 1 {
         return Err(Error::InvalidParameters);
     }
 
@@ -332,6 +359,83 @@ mod tests {
         );
     }
 
+    fn parameter_change_payload(env: &Env, param_id: u32, value: i128, flags: u8) -> Bytes {
+        let mut arr = [0u8; 32];
+        arr[0..4].copy_from_slice(&param_id.to_le_bytes());
+        arr[4..20].copy_from_slice(&value.to_le_bytes());
+        arr[20] = flags;
+        Bytes::from_array(env, &arr)
+    }
+
+    #[test]
+    fn test_parameter_change_payload_valid() {
+        let env = Env::default();
+        let payload = parameter_change_payload(&env, 1, 1_000_000, 0);
+        assert!(validate_parameter_change_payload(&payload).is_ok());
+    }
+
+    #[test]
+    fn test_parameter_change_payload_valid_with_flags() {
+        let env = Env::default();
+        let payload = parameter_change_payload(&env, 2, 500_000, 1);
+        assert!(validate_parameter_change_payload(&payload).is_ok());
+    }
+
+    #[test]
+    fn test_parameter_change_payload_negative_value_rejected() {
+        let env = Env::default();
+        let payload = parameter_change_payload(&env, 1, -1, 0);
+        assert_eq!(
+            validate_parameter_change_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    #[test]
+    fn test_parameter_change_payload_invalid_flags_rejected() {
+        let env = Env::default();
+        let mut payload = parameter_change_payload(&env, 1, 1_000_000, 0);
+        payload.set(20, 2);
+        assert_eq!(
+            validate_parameter_change_payload(&payload),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    #[test]
+    fn test_parameter_change_payload_wrong_length_short_rejected() {
+        let env = Env::default();
+        let short = Bytes::from_slice(&env, &[1u8; 16]);
+        assert_eq!(
+            validate_parameter_change_payload(&short),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    #[test]
+    fn test_parameter_change_payload_wrong_length_long_rejected() {
+        let env = Env::default();
+        let long = Bytes::from_slice(&env, &[1u8; 64]);
+        assert_eq!(
+            validate_parameter_change_payload(&long),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    #[test]
+    fn test_parameter_change_payload_zero_value_valid() {
+        let env = Env::default();
+        let payload = parameter_change_payload(&env, 3, 0, 1);
+        assert!(validate_parameter_change_payload(&payload).is_ok());
+    }
+
+    #[test]
+    fn test_parameter_change_payload_large_value_valid() {
+        let env = Env::default();
+        let payload = parameter_change_payload(&env, 5, i128::MAX, 0);
+        assert!(validate_parameter_change_payload(&payload).is_ok());
+    }
+
     #[test]
     fn test_validate_payload_dispatches_correctly() {
         let env = Env::default();
@@ -348,6 +452,12 @@ mod tests {
             &env,
             ActionType::PolicyUpdate,
             &policy_payload(&env, 1, false, 1)
+        )
+        .is_ok());
+        assert!(validate_payload(
+            &env,
+            ActionType::ParameterChange,
+            &parameter_change_payload(&env, 1, 1_000_000, 0)
         )
         .is_ok());
     }

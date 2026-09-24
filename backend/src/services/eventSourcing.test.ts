@@ -141,6 +141,30 @@ describe('EventSourcingService', () => {
       expect(history).toHaveLength(1);
     }
   });
+
+  it('assigns unique, sequential versions under concurrent publishes for same aggregate (Issue #1977)', async () => {
+    // Fire multiple concurrent publishEvent calls for the same aggregateId
+    // Each event should get a unique, sequential version number
+    const concurrentCount = 5;
+    const promises = Array.from({ length: concurrentCount }, (_, i) =>
+      service.publishEvent('agg-concurrent', `Event${i}`, { index: i })
+    );
+
+    await Promise.all(promises);
+
+    const history = await service.getAggregateHistory('agg-concurrent');
+    expect(history).toHaveLength(concurrentCount);
+
+    // Versions should be unique and sequential (1, 2, 3, 4, 5)
+    const versions = history.map((e) => e.version).sort((a, b) => a - b);
+    for (let i = 0; i < concurrentCount; i++) {
+      expect(versions[i]).toBe(i + 1);
+    }
+
+    // Check for duplicates — there should be none
+    const uniqueVersions = new Set(versions);
+    expect(uniqueVersions.size).toBe(concurrentCount);
+  });
 });
 
 describe('EventSourcingService — snapshot-based replay', () => {

@@ -42,7 +42,8 @@ pub fn record_balance_snapshot(
         &DataKey::BalanceSnapshot(token_index, holder.clone(), count),
         &snap,
     );
-    env.storage().persistent().set(&count_key, &(count + 1));
+    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage().persistent().set(&count_key, &next_count);
 
     storage::bump_persistent(
         env,
@@ -136,7 +137,8 @@ pub fn record_supply_snapshot(
     env.storage()
         .persistent()
         .set(&DataKey::SupplySnapshot(token_index, count), &snap);
-    env.storage().persistent().set(&count_key, &(count + 1));
+    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
+    env.storage().persistent().set(&count_key, &next_count);
 
     storage::bump_persistent(env, &DataKey::SupplySnapshot(token_index, count));
     storage::bump_persistent(env, &count_key);

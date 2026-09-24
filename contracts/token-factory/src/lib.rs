@@ -97,6 +97,8 @@ mod payload_validation_fuzz_test;
 // #[cfg(test)]
 // mod token_lifecycle_tests; // Temporarily disabled due to pre-existing compilation errors (stale vs. current contract API)
 mod snapshot;
+#[cfg(test)]
+mod snapshot_counter_test;
 
 #[cfg(test)]
 // mod buyback_integration_test;

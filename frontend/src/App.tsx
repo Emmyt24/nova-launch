@@ -1,7 +1,8 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { useNetwork } from "./hooks/useNetwork";
 import { useWallet } from "./hooks/useWallet";
-import { Spinner, ErrorBoundary } from "./components/UI";
+import { ErrorBoundary } from "./components/UI";
+import { PageLoader } from "./components/UI/PageLoader";
 import { DashboardLayout } from "./components/Layout";
 import { PerformanceDashboard } from "./components/PerformanceDashboard";
 import { PWAUpdateNotification } from "./components/PWA";
@@ -15,20 +16,6 @@ const NotFoundRoute = lazy(() => import("./routes/NotFoundRoute"));
 const RecurringPayments = lazy(() => import("./app/dashboard/RecurringPayments"));
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
 const StreamDashboard = lazy(() => import("./components/Streams/StreamDashboard"));
-
-// Loading fallback
-function PageLoader() {
-  return (
-    <div
-      className="flex items-center justify-center min-h-screen bg-gray-50"
-      role="status"
-      aria-label="Loading page"
-    >
-      <Spinner size="lg" />
-      <span className="sr-only">Loading...</span>
-    </div>
-  );
-}
 
 function normalizePath(pathname: string): string {
   if (pathname.length > 1 && pathname.endsWith("/")) {

@@ -458,16 +458,40 @@ for (const locale of LOCALES) {
 
       test("loading message translation resolves to localised string", async () => {
         const expected = EXPECTED[locale].loadingMsg;
-        // loading strings appear in aria-labels of spinners and sr-only spans
-        const loadingLocator = page
-          .locator(`[aria-label*="${expected}"], .sr-only`)
-          .filter({ hasText: expected });
-        // Not guaranteed to be visible during smoke run, so only assert if present.
-        const count = await loadingLocator.count();
-        if (count > 0) {
-          const text = (await loadingLocator.first().textContent())?.trim() ?? "";
+
+        // The Suspense PageLoader is only shown while a lazy page chunk is in
+        // flight, so hold the LandingPage chunk back to make the loader render
+        // deterministically instead of skipping the assertion when it's missed.
+        const chunkPattern = /LandingPage/;
+        let releaseChunk: () => void = () => {};
+        const chunkGate = new Promise<void>((resolve) => {
+          releaseChunk = resolve;
+        });
+        await page.route(chunkPattern, async (route) => {
+          await chunkGate;
+          await route.continue();
+        });
+
+        try {
+          await page.goto("/", { waitUntil: "commit" });
+
+          // Fails (rather than silently passing) if the loader never renders.
+          const loadingMessage = page.locator('[data-testid="page-loader-message"]');
+          await expect(loadingMessage).toBeAttached({ timeout: 10_000 });
+
+          // Fails if the message reverts to untranslated / raw-key text.
+          await expect(loadingMessage).toHaveText(expected);
+          const text = (await loadingMessage.textContent())?.trim() ?? "";
           expect(RAW_KEY_RE.test(text)).toBe(false);
+        } finally {
+          releaseChunk();
+          await page.unroute(chunkPattern);
         }
+
+        // Once the chunk is released, the loader must give way to the page.
+        await expect(page.locator('[data-testid="page-loader"]')).toHaveCount(0, {
+          timeout: 10_000,
+        });
       });
 
       test("error messages in DOM are fully resolved strings", async () => {

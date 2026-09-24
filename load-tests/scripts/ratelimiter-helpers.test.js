@@ -4,6 +4,9 @@ import {
   withinTolerance,
   buildRateLimitReport,
   formatRateLimitSummary,
+  msToK6Duration,
+  buildWindowStages,
+  buildRateLimitPlan,
 } from '../lib/ratelimiter-helpers.js';
 
 // ── classifyResponse ──────────────────────────────────────────────────────
@@ -152,5 +155,42 @@ describe('formatRateLimitSummary', () => {
   it('uses provided timestamp', () => {
     const ts = '2026-05-27T10:00:00.000Z';
     expect(formatRateLimitSummary(passingReport, ts)).toContain(ts);
+  });
+});
+
+// ── window-derived stages / dry-run plan ──────────────────────────────────
+
+describe('msToK6Duration', () => {
+  it('converts 15 minutes to 900s', () => {
+    expect(msToK6Duration(900000)).toBe('900s');
+  });
+
+  it('rounds partial seconds up', () => {
+    expect(msToK6Duration(1500)).toBe('2s');
+  });
+});
+
+describe('buildWindowStages', () => {
+  it('holds VUs for exactly one gateway window', () => {
+    expect(buildWindowStages(50, 900000)).toEqual([
+      { duration: '5s', target: 50 },
+      { duration: '900s', target: 50 },
+      { duration: '5s', target: 0 },
+    ]);
+  });
+});
+
+describe('buildRateLimitPlan', () => {
+  it('reflects the gateway default 100 req / 15 min tier', () => {
+    const plan = buildRateLimitPlan({
+      baseUrl: 'http://localhost:3001',
+      vus: 50,
+      budget: 100,
+      windowMs: 900000,
+      toleranceFraction: 0.05,
+    });
+    expect(plan.windowMinutes).toBe(15);
+    expect(plan.budget).toBe(100);
+    expect(plan.stages[1]).toEqual({ duration: '900s', target: 50 });
   });
 });

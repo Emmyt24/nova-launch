@@ -1,7 +1,8 @@
 /**
  * Pure helper functions for the rate-limiter accuracy load scenario.
  *
- * Concurrency: 50 VUs firing simultaneously (5× the default budget of 100 req/min).
+ * Concurrency: 50 VUs firing simultaneously against the gateway's default
+ * tier of 100 requests per 15-minute window (see config/gateway-defaults.js).
  * Tolerance: ±5 % of the configured per-window budget for allowed requests.
  * Denied requests must return HTTP 429.
  *
@@ -86,4 +87,50 @@ export function formatRateLimitSummary(report, timestamp = new Date().toISOStrin
     `    Denied returned 429     : ${report.deniedCorrectStatus ? 'yes' : 'no'}`,
     '',
   ].join('\n');
+}
+
+/**
+ * Convert a millisecond duration to a k6 duration string (whole seconds).
+ * @param {number} ms
+ * @returns {string} e.g. '900s'
+ */
+export function msToK6Duration(ms) {
+  return `${Math.ceil(ms / 1000)}s`;
+}
+
+/**
+ * Build k6 stages that hold the target VUs for exactly one rate-limit window,
+ * so the allowed-request count is comparable to the per-window budget.
+ *
+ * @param {number} vus       Virtual users to ramp to.
+ * @param {number} windowMs  Gateway rate-limit window in milliseconds.
+ * @returns {Array<{ duration: string, target: number }>}
+ */
+export function buildWindowStages(vus, windowMs) {
+  return [
+    { duration: '5s', target: vus },
+    { duration: msToK6Duration(windowMs), target: vus },
+    { duration: '5s', target: 0 },
+  ];
+}
+
+/**
+ * Describe the assumptions the rate-limiter scenario will assert against.
+ * Used for `--dry-run` style inspection without contacting the gateway.
+ *
+ * @param {{ vus: number, budget: number, windowMs: number, toleranceFraction: number, baseUrl: string }} params
+ * @returns {{ baseUrl: string, vus: number, budget: number, windowMs: number,
+ *             windowMinutes: number, toleranceFraction: number,
+ *             stages: Array<{ duration: string, target: number }> }}
+ */
+export function buildRateLimitPlan({ vus, budget, windowMs, toleranceFraction, baseUrl }) {
+  return {
+    baseUrl,
+    vus,
+    budget,
+    windowMs,
+    windowMinutes: windowMs / 60000,
+    toleranceFraction,
+    stages: buildWindowStages(vus, windowMs),
+  };
 }

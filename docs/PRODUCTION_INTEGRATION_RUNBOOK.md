@@ -93,7 +93,9 @@ ENABLE_EVENT_LISTENER=true npm start
 **Checkpoint:**
 
 ```bash
-curl -s http://localhost:3000/health | jq .data.status
+# Backend default PORT is 3001 (backend/src/config/env.ts; mirrored in
+# load-tests/config/gateway-defaults.js). Adjust if you set PORT explicitly.
+curl -s http://localhost:3001/health | jq .data.status
 # Expected: "ok"
 ```
 

@@ -186,21 +186,36 @@ export class MigrationOrchestrator {
   private installDualWriteMiddleware(): void {
     if (this.middlewareInstalled) return;
 
+    const mirroring: MigrationPhase[] = [
+      "dual_write",
+      "backfilling",
+      "verifying",
+      "verified",
+    ];
+    const shouldMirror = (model: string | undefined) =>
+      model === this.config.modelName && mirroring.includes(this.state.phase);
+
     const middleware: Prisma.Middleware = async (params, next) => {
+      // deleteMany's rows are gone from the old table once `next` runs, so
+      // resolve exactly which primary keys *this* call's predicate matches
+      // beforehand — the shadow deletion must be scoped to those rows only.
+      let preDeleteKeys: unknown[] | undefined;
+      if (params.action === "deleteMany" && shouldMirror(params.model)) {
+        try {
+          preDeleteKeys = await this.findAffectedPrimaryKeys(params.args?.where);
+        } catch (err) {
+          console.error("MigrationOrchestrator: failed to resolve deleteMany keys", err);
+        }
+      }
+
       const result = await next(params);
 
-      const mirroring: MigrationPhase[] = [
-        "dual_write",
-        "backfilling",
-        "verifying",
-        "verified",
-      ];
-      if (params.model !== this.config.modelName || !mirroring.includes(this.state.phase)) {
+      if (!shouldMirror(params.model)) {
         return result;
       }
 
       try {
-        await this.mirrorWrite(params.action, params.args, result);
+        await this.mirrorWrite(params.action, params.args, result, preDeleteKeys);
       } catch (err) {
         // Dual-write mirroring must never break the primary write path —
         // the primary table is always the source of truth until cutover.
@@ -214,7 +229,12 @@ export class MigrationOrchestrator {
     this.middlewareInstalled = true;
   }
 
-  private async mirrorWrite(action: string, args: any, result: any): Promise<void> {
+  private async mirrorWrite(
+    action: string,
+    args: any,
+    result: any,
+    preDeleteKeys?: unknown[],
+  ): Promise<void> {
     switch (action) {
       case "create":
       case "update":
@@ -245,9 +265,9 @@ export class MigrationOrchestrator {
         return;
       }
       case "deleteMany": {
-        // Rows are already gone from the old table by the time we get here,
-        // so mirror the same predicate directly against the shadow table.
-        await this.deleteManyShadowByOldPredicate(args?.where);
+        // Rows are already gone from the old table by the time we get here;
+        // the middleware captured this call's matching keys pre-delete.
+        await this.deleteManyShadowByOldPredicate(preDeleteKeys ?? []);
         return;
       }
       default:
@@ -308,17 +328,15 @@ export class MigrationOrchestrator {
     return rows.map(r => r[this.config.primaryKeyColumn]);
   }
 
-  private async deleteManyShadowByOldPredicate(where: unknown): Promise<void> {
-    // deleteMany already removed the rows from the old table, so we can no
-    // longer resolve `where` against it. Instead, delete from the shadow
-    // table anything that is no longer present in the old table.
-    const table = quoteIdent(this.config.tableName);
-    const shadow = quoteIdent(this.config.shadowTableName);
-    const pk = quoteIdent(this.config.primaryKeyColumn);
-    void where;
-    await this.prisma.$executeRawUnsafe(
-      `DELETE FROM ${shadow} s WHERE NOT EXISTS (SELECT 1 FROM ${table} o WHERE o.${pk} = s.${pk})`,
-    );
+  private async deleteManyShadowByOldPredicate(affectedKeys: unknown[]): Promise<void> {
+    // `affectedKeys` are the primary keys this deleteMany's own `where`
+    // matched, resolved before the delete ran. Only those rows are mirrored,
+    // so rows removed from the old table by unrelated concurrent operations
+    // are never touched. Re-reading the old table (rather than deleting
+    // blindly) keeps the shadow correct if a key was re-inserted meanwhile.
+    for (const pk of affectedKeys) {
+      await this.copyRowFromOldToShadow(pk);
+    }
   }
 
   private lowerFirst(s: string): string {

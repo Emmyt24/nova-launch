@@ -28,6 +28,8 @@ use crate::storage;
 use crate::types::{ActionType, DataKey, Error, ProposalState};
 use soroban_sdk::{Env, Vec};
 
+pub const MAX_TYPE_QUEUE_LENGTH: u32 = 5_000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +80,11 @@ pub fn enqueue(env: &Env, proposal_id: u64) -> Result<u32, Error> {
 
     let action_type = proposal.action_type;
     let mut queue = queue_for(env, action_type);
+
+    // Check queue length limit.
+    if queue.len() >= MAX_TYPE_QUEUE_LENGTH {
+        return Err(Error::InvalidParameters);
+    }
 
     // Guard against duplicate entries.
     for id in queue.iter() {

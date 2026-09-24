@@ -61,6 +61,8 @@ mod proposal_queue;
 mod proposal_queue_test;
 mod proposal_state_machine;
 mod proposal_type_queue;
+#[cfg(test)]
+mod proposal_type_queue_max_length_test;
 mod staking;
 #[cfg(test)]
 mod staking_integration_test;

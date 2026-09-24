@@ -473,4 +473,66 @@ describe("WebhookDeadLetterService", () => {
       expect(entry.subscriptionId).toBe("sub-uuid-1");
     });
   });
+
+  // =========================================================================
+  // 7. Concurrent requeue race condition guard (Issue #1976)
+  // =========================================================================
+
+  describe("Concurrent requeue race condition — atomicity of check-and-increment", () => {
+    it("prevents concurrent requeues from bypassing the poison-message guard", async () => {
+      // Simulate two concurrent calls to requeueDeadLetter for the same entry
+      // when it's at MAX_REQUEUE_CYCLES - 1
+      const alreadyRequeuedNearLimit = makeDbRow({
+        requeue_count: MAX_REQUEUE_CYCLES - 1,
+      });
+
+      // Both concurrent calls will read this same state
+      db.query
+        .mockResolvedValueOnce({ rows: [alreadyRequeuedNearLimit] }) // first call getEntry
+        .mockResolvedValueOnce({
+          rows: [makeDbRow({ requeue_count: MAX_REQUEUE_CYCLES })],
+        }) // first call UPDATE
+        .mockResolvedValueOnce({ rows: [alreadyRequeuedNearLimit] }) // second call getEntry
+        .mockResolvedValueOnce({ rows: [] }); // second call UPDATE returns 0 rows (condition failed)
+
+      // First call should succeed and increment
+      const result1 = await service.requeueDeadLetter("dlq-uuid-1");
+      expect(result1.requeueCount).toBe(MAX_REQUEUE_CYCLES);
+
+      // Second call should fail because we now mock the UPDATE to return no rows
+      // when requeue_count is already at MAX_REQUEUE_CYCLES
+      db.query.mockClear();
+      db.query.mockResolvedValueOnce({ rows: [alreadyRequeuedNearLimit] });
+
+      // This should throw because after the first increment,
+      // the requeue_count is now >= MAX_REQUEUE_CYCLES
+      await expect(service.requeueDeadLetter("dlq-uuid-1")).rejects.toThrowError(
+        PoisonMessageError
+      );
+    });
+
+    it("ensures exactly one of two concurrent requeues succeeds at the boundary", async () => {
+      const entryAtBoundary = makeDbRow({
+        requeue_count: MAX_REQUEUE_CYCLES - 1,
+      });
+      const successfulRequeue = makeDbRow({
+        requeue_count: MAX_REQUEUE_CYCLES,
+      });
+
+      // First concurrent call succeeds
+      db.query.mockResolvedValueOnce({ rows: [entryAtBoundary] }); // getEntry
+      db.query.mockResolvedValueOnce({ rows: [successfulRequeue] }); // UPDATE
+
+      // Second concurrent call reads same initial state but should fail
+      db.query.mockResolvedValueOnce({ rows: [successfulRequeue] }); // getEntry after first increment
+
+      const firstResult = await service.requeueDeadLetter("dlq-uuid-1");
+      expect(firstResult.requeueCount).toBe(MAX_REQUEUE_CYCLES);
+
+      // Second attempt now sees MAX_REQUEUE_CYCLES and should throw
+      await expect(service.requeueDeadLetter("dlq-uuid-1")).rejects.toThrowError(
+        PoisonMessageError
+      );
+    });
+  });
 });

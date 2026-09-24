@@ -259,3 +259,156 @@ describe('getProjectionLagHealth', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkProjectionLag threshold logic (#1718)
+// Tests the private checkProjectionLag method directly via a fake queryFn,
+// covering healthy, warning, and critical cases.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('checkProjectionLag threshold logic (#1718)', () => {
+  let monitor: HealthMonitor;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    monitor = new HealthMonitor();
+  });
+
+  afterEach(() => {
+    monitor.stopAll();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  const LAG_CHECK_BASE = {
+    name: 'projection-lag',
+    type: 'projection-lag' as const,
+    interval: 1000,
+    timeout: 1000,
+    retries: 0,
+    critical: false,
+  };
+
+  it('reports healthy when average lag is below the warning threshold', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => ({ average: 5_000, max: 8_000, count: 5 }),
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(true);
+    expect(result?.metadata?.status).toBe('healthy');
+  });
+
+  it('reports unhealthy (warning) when average lag equals the warning threshold', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => ({ average: 30_000, max: 35_000, count: 3 }),
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.metadata?.status).toBe('warning');
+  });
+
+  it('reports unhealthy (warning) when average lag is between warning and critical thresholds', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => ({ average: 45_000, max: 50_000, count: 7 }),
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.metadata?.status).toBe('warning');
+  });
+
+  it('reports unhealthy (critical) when average lag equals the critical threshold', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => ({ average: 60_000, max: 70_000, count: 4 }),
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.metadata?.status).toBe('critical');
+  });
+
+  it('reports unhealthy (critical) when average lag exceeds the critical threshold', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => ({ average: 120_000, max: 150_000, count: 8 }),
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.metadata?.status).toBe('critical');
+    expect(result?.metadata?.averageLag).toBe(120_000);
+    expect(result?.metadata?.maxLag).toBe(150_000);
+    expect(result?.metadata?.measurementCount).toBe(8);
+  });
+
+  it('reports unhealthy when queryFn throws an error', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        queryFn: async () => { throw new Error('DB connection failed'); },
+        warningThresholdMs: 30_000,
+        criticalThresholdMs: 60_000,
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.error).toContain('DB connection failed');
+  });
+
+  it('uses default thresholds (30s warning / 60s critical) when none are configured', async () => {
+    const checkPromise = (monitor as any).performCheck({
+      ...LAG_CHECK_BASE,
+      lagThresholdConfig: {
+        // No warningThresholdMs / criticalThresholdMs — should fall back to defaults
+        queryFn: async () => ({ average: 35_000, max: 40_000, count: 2 }),
+      },
+    });
+    await vi.runAllTimersAsync();
+    await checkPromise;
+
+    const result = monitor.getResults().find(r => r.name === 'projection-lag');
+    expect(result?.healthy).toBe(false);
+    expect(result?.metadata?.status).toBe('warning');
+    expect(result?.metadata?.warningThreshold).toBe(30_000);
+    expect(result?.metadata?.criticalThreshold).toBe(60_000);
+  });
+});

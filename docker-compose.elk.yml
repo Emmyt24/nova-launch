@@ -2,6 +2,19 @@
 # ELK Stack + HashiCorp Vault — Nova Launch
 # Issues: #894 (ELK), #896 (Vault)
 #
+# ⚠️  SECURITY WARNING — ELASTICSEARCH_PASSWORD
+# ──────────────────────────────────────────────
+# Every service in this file authenticates to Elasticsearch using the
+# `elastic` superuser password supplied via ELASTICSEARCH_PASSWORD.
+# If that variable is not set in your environment or .env file, the
+# fallback "changeme" default is used — this is ONLY acceptable for
+# local development on an isolated machine.
+#
+# Before running this file in any shared, staging, or production
+# environment you MUST set ELASTICSEARCH_PASSWORD to a strong, unique
+# secret.  Add it to your root .env file (see .env.example) and ensure
+# it is never committed to source control.
+#
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.elk.yml up -d
 ##############################################################################

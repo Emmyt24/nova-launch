@@ -357,6 +357,36 @@ describe("JobQueue", () => {
       const payload = { data: "a".repeat(63 * 1024) };
       expect(() => q.enqueue("size.ok", payload)).not.toThrow();
     });
+
+    it("handles BigInt payload fields without crashing (Issue #1975)", () => {
+      q.register("bigint.test", async () => {});
+      // Payload containing BigInt should not throw TypeError during serialization check
+      const payload = {
+        amount: BigInt("12345678901234567890"),
+        description: "large number",
+      };
+      expect(() => q.enqueue("bigint.test", payload)).not.toThrow();
+      expect(q.stats().pending).toBe(1);
+    });
+
+    it("accepts payloads with nested BigInt values", () => {
+      q.register("bigint.nested", async () => {});
+      const payload = {
+        transaction: {
+          tokenAmount: BigInt("999999999999999999"),
+          burnedAmount: BigInt("1000000000000"),
+        },
+        metadata: "test",
+      };
+      expect(() => q.enqueue("bigint.nested", payload)).not.toThrow();
+      expect(q.stats().pending).toBe(1);
+    });
+
+    it("still rejects payloads that are genuinely too large", () => {
+      q.register("size.fail", async () => {});
+      const hugePayload = { data: "x".repeat(65 * 1024) };
+      expect(() => q.enqueue("size.fail", hugePayload)).toThrow(/exceeds limit/i);
+    });
   });
 
   // ── failedJobs ────────────────────────────────────────────────────────────

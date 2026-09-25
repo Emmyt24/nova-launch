@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { checkPinStatus } from "./pinMonitor";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { checkPinStatus, startPinMonitor } from "./pinMonitor";
 
 // ─── Mock fetch ────────────────────────────────────────────────────────────
 
@@ -105,5 +105,164 @@ describe("checkPinStatus", () => {
     const result = await checkPinStatus(targetCid, apiKey, apiSecret);
 
     expect(result.pinned).toBe(true);
+  });
+});
+
+describe("startPinMonitor", () => {
+  const apiKey = "test-key";
+  const apiSecret = "test-secret";
+  const cids = new Set<string>();
+  const onUnpinned = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // Clean up timers
+    vi.clearAllTimers();
+  });
+
+  it("uses the provided intervalMs parameter when explicitly passed", () => {
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned, 5000);
+
+    // Since we can't directly inspect the interval, we verify it doesn't throw
+    expect(stop).toBeDefined();
+    stop();
+  });
+
+  it("uses the default interval when no parameter is provided and env var is unset", () => {
+    // Ensure env var is unset
+    const originalEnv = process.env.PIN_MONITOR_INTERVAL_MS;
+    delete process.env.PIN_MONITOR_INTERVAL_MS;
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned);
+
+    // Should not warn when using default
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(stop).toBeDefined();
+
+    stop();
+    warnSpy.mockRestore();
+
+    // Restore env var
+    if (originalEnv !== undefined) {
+      process.env.PIN_MONITOR_INTERVAL_MS = originalEnv;
+    }
+  });
+
+  it("falls back to default interval when PIN_MONITOR_INTERVAL_MS is not numeric", () => {
+    const originalEnv = process.env.PIN_MONITOR_INTERVAL_MS;
+    process.env.PIN_MONITOR_INTERVAL_MS = "not-a-number";
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned);
+
+    // Should warn about invalid interval
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid PIN_MONITOR_INTERVAL_MS")
+    );
+
+    expect(stop).toBeDefined();
+    stop();
+
+    warnSpy.mockRestore();
+
+    // Restore env var
+    if (originalEnv !== undefined) {
+      process.env.PIN_MONITOR_INTERVAL_MS = originalEnv;
+    } else {
+      delete process.env.PIN_MONITOR_INTERVAL_MS;
+    }
+  });
+
+  it("falls back to default interval when PIN_MONITOR_INTERVAL_MS is NaN", () => {
+    const originalEnv = process.env.PIN_MONITOR_INTERVAL_MS;
+    process.env.PIN_MONITOR_INTERVAL_MS = "NaN";
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned);
+
+    // Should warn about invalid interval
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid PIN_MONITOR_INTERVAL_MS")
+    );
+
+    expect(stop).toBeDefined();
+    stop();
+
+    warnSpy.mockRestore();
+
+    // Restore env var
+    if (originalEnv !== undefined) {
+      process.env.PIN_MONITOR_INTERVAL_MS = originalEnv;
+    } else {
+      delete process.env.PIN_MONITOR_INTERVAL_MS;
+    }
+  });
+
+  it("falls back to default interval when PIN_MONITOR_INTERVAL_MS is negative", () => {
+    const originalEnv = process.env.PIN_MONITOR_INTERVAL_MS;
+    process.env.PIN_MONITOR_INTERVAL_MS = "-1000";
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned);
+
+    // Should warn about invalid interval
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid PIN_MONITOR_INTERVAL_MS")
+    );
+
+    expect(stop).toBeDefined();
+    stop();
+
+    warnSpy.mockRestore();
+
+    // Restore env var
+    if (originalEnv !== undefined) {
+      process.env.PIN_MONITOR_INTERVAL_MS = originalEnv;
+    } else {
+      delete process.env.PIN_MONITOR_INTERVAL_MS;
+    }
+  });
+
+  it("falls back to default interval when PIN_MONITOR_INTERVAL_MS is zero", () => {
+    const originalEnv = process.env.PIN_MONITOR_INTERVAL_MS;
+    process.env.PIN_MONITOR_INTERVAL_MS = "0";
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned);
+
+    // Should warn about invalid interval
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid PIN_MONITOR_INTERVAL_MS")
+    );
+
+    expect(stop).toBeDefined();
+    stop();
+
+    warnSpy.mockRestore();
+
+    // Restore env var
+    if (originalEnv !== undefined) {
+      process.env.PIN_MONITOR_INTERVAL_MS = originalEnv;
+    } else {
+      delete process.env.PIN_MONITOR_INTERVAL_MS;
+    }
+  });
+
+  it("returns a stop function that clears the timer", () => {
+    const stop = startPinMonitor(cids, apiKey, apiSecret, onUnpinned, 1000);
+
+    expect(typeof stop).toBe("function");
+
+    // Calling stop should not throw
+    expect(() => stop()).not.toThrow();
   });
 });

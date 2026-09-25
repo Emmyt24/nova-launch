@@ -97,11 +97,25 @@ export function startPinMonitor(
   apiKey: string,
   apiSecret: string,
   onUnpinned: UnpinnedAlertHandler,
-  intervalMs: number = parseInt(
-    process.env.PIN_MONITOR_INTERVAL_MS ?? String(DEFAULT_INTERVAL_MS),
-    10
-  )
+  intervalMs?: number
 ): () => void {
+  let resolvedInterval = intervalMs;
+
+  if (resolvedInterval === undefined) {
+    const envValue = process.env.PIN_MONITOR_INTERVAL_MS;
+    const parsed = parseInt(envValue ?? String(DEFAULT_INTERVAL_MS), 10);
+
+    // Validate the parsed interval is a finite positive number
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      console.warn(
+        `Invalid PIN_MONITOR_INTERVAL_MS: "${envValue}". Using default ${DEFAULT_INTERVAL_MS}ms`
+      );
+      resolvedInterval = DEFAULT_INTERVAL_MS;
+    } else {
+      resolvedInterval = parsed;
+    }
+  }
+
   const timer = setInterval(async () => {
     for (const cid of cids) {
       const result = await checkPinStatus(cid, apiKey, apiSecret);
@@ -109,7 +123,7 @@ export function startPinMonitor(
         onUnpinned(cid, result.error);
       }
     }
-  }, intervalMs);
+  }, resolvedInterval);
 
   // Allow the process to exit even if the timer is still running
   if (timer.unref) timer.unref();

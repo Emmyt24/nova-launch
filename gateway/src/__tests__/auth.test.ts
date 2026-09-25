@@ -104,4 +104,39 @@ describe("createAuthMiddleware", () => {
     );
     expect(n).not.toHaveBeenCalled();
   });
+
+  describe("algorithm pinning", () => {
+    it("accepts a token explicitly signed with HS256", () => {
+      const token = jwt.sign({ userId: "u1" }, SECRET, { algorithm: "HS256" });
+      const n = next();
+      auth(mockReq({ headers: { authorization: `Bearer ${token}` } }), mockRes(), n);
+      expect(n).toHaveBeenCalledOnce();
+    });
+
+    it.each(["HS384", "HS512"] as const)(
+      "rejects a token signed with %s even when the secret is correct",
+      (algorithm) => {
+        const token = jwt.sign({ userId: "u1" }, SECRET, { algorithm });
+        const res = mockRes();
+        const n = next();
+        auth(mockReq({ headers: { authorization: `Bearer ${token}` } }), res, n);
+        expect(res.statusCode).toBe(401);
+        expect(res.body.error).toMatch(/invalid or expired/i);
+        expect(n).not.toHaveBeenCalled();
+      }
+    );
+
+    it('rejects an unsigned token using alg "none"', () => {
+      const encode = (obj: object) =>
+        Buffer.from(JSON.stringify(obj)).toString("base64url");
+      const token = `${encode({ alg: "none", typ: "JWT" })}.${encode({ userId: "attacker" })}.`;
+      const res = mockRes();
+      const n = next();
+      const req = mockReq({ headers: { authorization: `Bearer ${token}` } });
+      auth(req, res, n);
+      expect(res.statusCode).toBe(401);
+      expect(n).not.toHaveBeenCalled();
+      expect((req as any).user).toBeUndefined();
+    });
+  });
 });

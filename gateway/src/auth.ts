@@ -5,7 +5,8 @@
  * are skipped.  On success, the decoded payload is attached to `req.user`.
  *
  * Security: OWASP API2 — Broken Authentication
- *   - Tokens are verified with jsonwebtoken (HS256 by default).
+ *   - Tokens are verified with jsonwebtoken, pinned to HS256 only — tokens
+ *     signed with any other algorithm (including "none") are rejected.
  *   - Expired tokens are rejected with 401.
  *   - Missing tokens on protected routes are rejected with 401.
  */
@@ -27,6 +28,9 @@ import jwt from "jsonwebtoken";
  * removed if the middleware is refactored to be applied globally in the future.
  */
 const PUBLIC_PATHS = new Set(["/health", "/health/live", "/health/ready"]);
+
+/** The only algorithm accepted when verifying tokens; must match the signing side. */
+export const JWT_ALGORITHM = "HS256" as const;
 
 export interface JwtPayload {
   userId: string;
@@ -68,7 +72,9 @@ export function createAuthMiddleware(jwtSecret: string) {
 
     const token = authHeader.slice(7);
     try {
-      const payload = jwt.verify(token, jwtSecret) as JwtPayload;
+      const payload = jwt.verify(token, jwtSecret, {
+        algorithms: [JWT_ALGORITHM],
+      }) as JwtPayload;
       req.user = payload;
       next();
     } catch {

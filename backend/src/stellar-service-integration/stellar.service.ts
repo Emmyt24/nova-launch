@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import {
@@ -35,7 +35,7 @@ import {
 import { SequenceNumberCache } from "./sequence-number-cache";
 
 @Injectable()
-export class StellarService implements OnModuleInit {
+export class StellarService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StellarService.name);
   private readonly config: StellarConfig;
   private horizon: StellarSdk.Horizon.Server;
@@ -120,6 +120,21 @@ export class StellarService implements OnModuleInit {
       `StellarService initialized on ${this.config.network}. ` +
         `Horizon: ${this.config.horizonUrl}, Soroban: ${this.config.sorobanRpcUrl}`
     );
+
+    // Invalidate cached sequence numbers as soon as a ledger closes rather
+    // than relying solely on the TTL fallback.
+    try {
+      this.sequenceCache.startLedgerSubscription(this.horizon as any);
+    } catch (error) {
+      this.logger.error(
+        "Failed to start ledger-close subscription; falling back to TTL-only sequence cache invalidation",
+        error as Error
+      );
+    }
+  }
+
+  onModuleDestroy(): void {
+    this.sequenceCache.stopLedgerSubscription();
   }
 
   // ---------------------------------------------------------------------------

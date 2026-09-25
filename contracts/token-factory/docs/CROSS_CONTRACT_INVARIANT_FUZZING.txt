@@ -49,10 +49,31 @@ token supply it's supposed to represent.
   level, not the Rust type level, so the caller's SDK version doesn't need
   to match the callee's).
 - Each fuzz input is an arbitrary sequence of `Action`s (`Mint`, `Burn`,
-  `Delegate`, `Undelegate`, `Vote`) over a small fixed pool of user
-  addresses. The invariant is asserted once before the sequence runs and
-  again after **every single action**, not just at the end — so a violation
-  is caught (and shrunk by libFuzzer) at the exact operation that caused it.
+  `Delegate`, `Undelegate`, `Vote`, `TakeSnapshot`) over a small fixed pool
+  of user addresses. The invariant is asserted once before the sequence runs
+  and again after **every single action**, not just at the end — so a
+  violation is caught (and shrunk by libFuzzer) at the exact operation that
+  caused it.
+
+## TakeSnapshot action and snapshot invariants (#1830)
+
+The `TakeSnapshot { holder_idx }` action exercises governance's
+`take_snapshot` / `get_snapshot_power` subsystem, which was previously
+completely unexercised in adversarial cross-contract testing.
+
+When `TakeSnapshot` fires, the harness:
+
+1. Reads the holder's live `get_vote_power` immediately before calling
+   `try_take_snapshot`.
+2. On success, calls `assert_snapshot_invariants`, which verifies:
+   - **Faithfulness**: `get_snapshot_power(holder, ledger)` equals the live
+     vote power that was captured just before the snapshot was taken.
+   - **Supply bound**: the snapshotted value does not exceed
+     `token_factory.total_supply` (a single holder cannot accumulate more
+     vote power than the total supply of tokens).
+
+These checks are in addition to — not instead of — the main cross-contract
+invariant assertion that runs after every action.
 
 ## Building and running
 

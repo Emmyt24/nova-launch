@@ -113,7 +113,25 @@ pub fn set_vote_power(env: &Env, delegatee: &Address, power: i128) {
 }
 
 // ─── Nonces (replay protection) ────────────────────────────────────────────
+//
+// NOTE: The functions below are currently **vestigial** and are not called by
+// any contract entry point.  Replay protection for all `require_auth`-gated
+// operations in this crate (delegation, voting, admin actions) is already
+// provided by Soroban's built-in account sequence numbers — `require_auth()`
+// enforces that each transaction can only be used once.  The `DataKey::Nonce`
+// storage key and these helpers were introduced speculatively for a possible
+// future off-chain delegation-signature scheme and are **not** part of the
+// active security model.
+//
+// See also: `DataKey::Nonce` in `types.rs` for why the key must remain in
+// place (XDR enum serialization), and `delegation.rs`'s "Security properties"
+// doc comment which documents `require_auth()` as the authoritative replay
+// protection mechanism.
 
+/// Return the current nonce for `address`.
+///
+/// **Currently unused** — no entry point calls this function.  See the
+/// "Nonces (replay protection)" section comment above for context.
 pub fn get_nonce(env: &Env, address: &Address) -> u64 {
     env.storage()
         .persistent()
@@ -121,6 +139,10 @@ pub fn get_nonce(env: &Env, address: &Address) -> u64 {
         .unwrap_or(0)
 }
 
+/// Increment and return the nonce for `address`.
+///
+/// **Currently unused** — no entry point calls this function.  See the
+/// "Nonces (replay protection)" section comment above for context.
 pub fn increment_nonce(env: &Env, address: &Address) -> u64 {
     let next = get_nonce(env, address) + 1;
     env.storage()

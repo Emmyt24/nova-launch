@@ -317,16 +317,6 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// Resume a paused contract, re-enabling write operations.
-    ///
-    /// # Arguments
-    /// * `admin` – Contract admin (must authorize).
-    ///
-    /// # Returns
-    /// `Ok(())` on success.
-    ///
-    /// # Errors
-    /// * [`Error::Unauthorized`] – Caller is not the stored admin.
     /// Configure the deployed token-factory contract this governance
     /// instance is authorized to disburse treasury payouts through.
     ///
@@ -351,6 +341,16 @@ impl GovernanceContract {
         Ok(())
     }
 
+    /// Resume a paused contract, re-enabling write operations.
+    ///
+    /// # Arguments
+    /// * `admin` – Contract admin (must authorize).
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`Error::Unauthorized`] – Caller is not the stored admin.
     pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = storage::get_admin(&env);

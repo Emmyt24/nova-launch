@@ -297,3 +297,162 @@ proptest! {
             "Delegatee's vote power delta must equal delegator's balance delta");
     }
 }
+
+// ─── Property 9: finalize_proposal status matches the decision table ────────
+//
+// The three-way decision table from finalize_proposal's rustdoc in lib.rs:
+//   total_votes < quorum           → Failed
+//   total_votes >= quorum
+//     votes_for > threshold_votes  → Passed
+//     else                         → Rejected
+
+proptest! {
+    /// Generate random quorum, threshold_percent, and two voter weights/directions,
+    /// drive a full proposal lifecycle, and assert the outcome matches the
+    /// decision table documented in `finalize_proposal`'s rustdoc.
+    #[test]
+    fn prop_finalize_status_matches_decision_table(
+        quorum            in 1_i128..=500_i128,
+        threshold_percent in 0_u32..=100_u32,
+        alice_bal         in 1_i128..=300_i128,
+        bob_bal           in 1_i128..=300_i128,
+        alice_in_favor    in any::<bool>(),
+        bob_in_favor      in any::<bool>(),
+    ) {
+        let (env, id, admin) = make_contract();
+        let client = c(&env, &id);
+
+        let alice = Address::generate(&env);
+        let bob   = Address::generate(&env);
+
+        // Give voters real balances so cast_vote weight-resolution works.
+        client.set_balance(&admin, &alice, &alice_bal);
+        client.set_balance(&admin, &bob,   &bob_bal);
+
+        // Create a proposal with a 10-second voting period.
+        let voting_period: u64 = 10;
+        let proposal_id = client
+            .create_proposal(
+                &alice,
+                &soroban_sdk::String::from_str(&env, "test"),
+                &soroban_sdk::Bytes::new(&env),
+                &voting_period,
+                &quorum,
+                &threshold_percent,
+            )
+            .unwrap();
+
+        // Cast votes while the voting window is still open.
+        client.cast_vote(&alice, &proposal_id, &alice_in_favor).unwrap();
+        client.cast_vote(&bob,   &proposal_id, &bob_in_favor).unwrap();
+
+        // Advance ledger time past voting_end so finalization is allowed.
+        env.ledger().with_mut(|li| {
+            li.timestamp = li.timestamp + voting_period + 1;
+        });
+
+        let status = client.finalize_proposal(&proposal_id).unwrap();
+
+        // Recompute the decision table in the test.
+        let votes_for     = (if alice_in_favor { alice_bal } else { 0 })
+                          + (if bob_in_favor   { bob_bal   } else { 0 });
+        let votes_against = (if !alice_in_favor { alice_bal } else { 0 })
+                          + (if !bob_in_favor   { bob_bal   } else { 0 });
+        let total_votes   = votes_for + votes_against;
+
+        use crate::types::ProposalStatus;
+        let expected = if total_votes < quorum {
+            ProposalStatus::Failed
+        } else {
+            let threshold_votes = total_votes * threshold_percent as i128 / 100;
+            if votes_for > threshold_votes {
+                ProposalStatus::Passed
+            } else {
+                ProposalStatus::Rejected
+            }
+        };
+
+        prop_assert_eq!(status, expected,
+            "finalize_proposal result must match the decision table \
+             (quorum={quorum}, threshold={threshold_percent}%, \
+             votes_for={votes_for}, votes_against={votes_against})");
+    }
+}
+
+// ─── Property 10: cast_vote weight-resolution rule ─────────────────────────
+//
+// From cast_vote's rustdoc:
+//   weight = get_vote_power(voter)   if vote_power > 0
+//          = get_balance(voter)      if vote_power == 0
+
+proptest! {
+    /// Assert that cast_vote uses get_vote_power when it is nonzero, and
+    /// falls back to get_balance only when vote power is exactly zero.
+    #[test]
+    fn prop_cast_vote_weight_resolution(
+        alice_bal in 1_i128..=1_000_000_i128,
+        bob_bal   in 1_i128..=1_000_000_i128,
+    ) {
+        let (env, id, admin) = make_contract();
+        let client = c(&env, &id);
+
+        let alice = Address::generate(&env);
+        let bob   = Address::generate(&env);
+
+        // ── Case A: vote power is nonzero (alice has no delegation) ────────
+        // After set_balance with no delegation, alice's vote power == alice_bal.
+        client.set_balance(&admin, &alice, &alice_bal);
+
+        let voting_period: u64 = 10;
+        let proposal_a = client
+            .create_proposal(
+                &alice,
+                &soroban_sdk::String::from_str(&env, "prop-a"),
+                &soroban_sdk::Bytes::new(&env),
+                &voting_period,
+                &1_i128,
+                &50_u32,
+            )
+            .unwrap();
+
+        client.cast_vote(&alice, &proposal_a, &true).unwrap();
+
+        let vote_a = client.get_proposal_vote(&proposal_a, &alice).unwrap();
+        prop_assert_eq!(
+            vote_a.weight, alice_bal,
+            "weight must equal vote_power (== balance) when vote_power > 0"
+        );
+
+        // ── Case B: vote power is zero because alice delegated everything ──
+        // bob has a balance; alice delegates to bob so alice's vote power → 0.
+        client.set_balance(&admin, &bob, &bob_bal);
+        client.delegate(&alice, &bob);
+
+        let alice_power_after_delegation = client.get_vote_power(&alice);
+        prop_assert_eq!(
+            alice_power_after_delegation, 0_i128,
+            "alice must have zero vote power after delegating"
+        );
+
+        // Open a fresh proposal so alice can cast a new vote.
+        let proposal_b = client
+            .create_proposal(
+                &bob,
+                &soroban_sdk::String::from_str(&env, "prop-b"),
+                &soroban_sdk::Bytes::new(&env),
+                &voting_period,
+                &1_i128,
+                &50_u32,
+            )
+            .unwrap();
+
+        // alice's vote power is 0 → cast_vote falls back to raw balance.
+        client.cast_vote(&alice, &proposal_b, &true).unwrap();
+
+        let vote_b = client.get_proposal_vote(&proposal_b, &alice).unwrap();
+        prop_assert_eq!(
+            vote_b.weight, alice_bal,
+            "weight must fall back to raw balance when vote_power == 0"
+        );
+    }
+}

@@ -33,7 +33,22 @@ pub enum DataKey {
     Delegate(Address),
     /// Accumulated vote power of `delegatee` (sum of all delegators + own balance)
     VotePower(Address),
-    /// Nonce for replay-protection on delegation signatures: Nonce(address)
+    /// Reserved nonce storage key: Nonce(address)
+    ///
+    /// **Currently unused by any contract entry point.**
+    ///
+    /// Replay protection for all `require_auth`-gated calls in this contract
+    /// (delegation, voting, admin operations) is already provided by Soroban's
+    /// built-in account sequence numbers — there is no need for a separate
+    /// on-chain nonce counter.  This key was introduced speculatively for a
+    /// future off-chain signature scheme and is **not** part of the active
+    /// security model.  Neither `get_nonce` nor `increment_nonce` in
+    /// `storage.rs` is called by any function in `lib.rs` or `delegation.rs`.
+    ///
+    /// This field must not be removed or reordered (the `#[contracttype]`
+    /// derive encodes enum discriminants by position for XDR serialization).
+    /// A future change to wire it up — or remove it — requires a separate
+    /// storage-migration issue.
     Nonce(Address),
     /// Snapshot of vote power at a given ledger: Snapshot(address, ledger_seq)
     Snapshot(Address, u32),

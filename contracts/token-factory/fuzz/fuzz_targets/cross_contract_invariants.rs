@@ -60,6 +60,7 @@ enum Action {
     Delegate { from_idx: u8, to_idx: u8 },
     Undelegate { from_idx: u8 },
     Vote { voter_idx: u8, in_favor: bool },
+    TakeSnapshot { holder_idx: u8 },
 }
 
 fn assert_invariant(
@@ -81,6 +82,45 @@ fn assert_invariant(
         total_vote_power,
         total_supply,
     );
+}
+
+/// After a successful `take_snapshot`, verify two additional properties:
+///
+/// 1. The snapshotted power matches the holder's live `get_vote_power` at the
+///    moment the snapshot was recorded (snapshot is a faithful point-in-time
+///    copy, not a stale or fabricated value).
+/// 2. The snapshotted value itself does not exceed the total token supply
+///    (a single holder can never hold more vote power than exists).
+fn assert_snapshot_invariants(
+    tf: &TokenFactoryClient,
+    gov: &governance_contract::Client,
+    token_index: u32,
+    holder: &Address,
+    ledger_at_snapshot: u32,
+    vote_power_at_snapshot: i128,
+) {
+    let total_supply = tf.get_token_info(&token_index).total_supply;
+
+    // Property 1: snapshot faithfully records the live vote power.
+    if let Ok(snap_power) = gov.try_get_snapshot_power(holder, &ledger_at_snapshot) {
+        if let Ok(snap_power) = snap_power {
+            assert_eq!(
+                snap_power,
+                vote_power_at_snapshot,
+                "snapshot power {} does not match live vote power {} recorded at ledger {}",
+                snap_power,
+                vote_power_at_snapshot,
+                ledger_at_snapshot,
+            );
+            // Property 2: snapshotted power must not exceed total supply.
+            assert!(
+                snap_power <= total_supply,
+                "snapshot invariant violated: snapshotted power {} exceeds token supply {}",
+                snap_power,
+                total_supply,
+            );
+        }
+    }
 }
 
 fuzz_target!(|actions: Vec<Action>| {
@@ -157,6 +197,16 @@ fuzz_target!(|actions: Vec<Action>| {
                 // does not itself change vote power.
                 let voter = &users[voter_idx as usize % users.len()];
                 let _ = gov.try_cast_vote(voter, &0u32, &in_favor);
+            }
+            Action::TakeSnapshot { holder_idx } => {
+                let holder = &users[holder_idx as usize % users.len()];
+                // Capture the live vote power *before* the snapshot call so
+                // assert_snapshot_invariants can compare against it.
+                let live_power = gov.get_vote_power(holder);
+                let ledger = env.ledger().sequence();
+                if gov.try_take_snapshot(holder).is_ok() {
+                    assert_snapshot_invariants(&tf, &gov, token_index, holder, ledger, live_power);
+                }
             }
         }
 

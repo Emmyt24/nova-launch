@@ -15,9 +15,11 @@ import { RetryConfig } from "../stellar-service-integration/rate-limiter";
 
 const SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
 const SOROBAN_HOST = "https://soroban-testnet.stellar.org";
-// A valid 56-char Soroban contract ID (C + 55 uppercase base32 chars)
-const VALID_CONTRACT_ID = "C" + "A".repeat(55);
 const NETWORK = "testnet";
+
+// A valid 56-char Soroban contract ID (generated with proper CRC16 checksum)
+// This is a contract ID for a 32-byte hash of all zeros
+const VALID_CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXGI";
 
 // Fast retry config for tests
 const FAST_RETRY: RetryConfig = {
@@ -147,6 +149,51 @@ describe("validateContractOnNetwork", () => {
 
       await expect(
         validateContractOnNetwork("INVALID", SOROBAN_RPC_URL, NETWORK, FAST_RETRY)
+      ).rejects.toThrow(ContractAddressError);
+
+      expect(scope.isDone()).toBe(false);
+      nock.cleanAll();
+    });
+
+    it("throws ContractAddressError when CRC16 checksum is invalid", async () => {
+      // Create a contract ID with one character flipped
+      // VALID_CONTRACT_ID is "C" + "A".repeat(55)
+      // Flip one character from A to B to create invalid checksum
+      const invalidCrcContractId =
+        "C" + "A".repeat(54) + "B"; // Last char changed from A to B
+
+      await expect(
+        validateContractOnNetwork(
+          invalidCrcContractId,
+          SOROBAN_RPC_URL,
+          NETWORK,
+          FAST_RETRY
+        )
+      ).rejects.toThrow(ContractAddressError);
+
+      // Verify the error mentions checksum
+      await expect(
+        validateContractOnNetwork(
+          invalidCrcContractId,
+          SOROBAN_RPC_URL,
+          NETWORK,
+          FAST_RETRY
+        )
+      ).rejects.toThrow(/checksum|CRC/i);
+    });
+
+    it("does not make an RPC call when CRC16 checksum is invalid", async () => {
+      const scope = nock(SOROBAN_HOST).post("/").reply(200, {});
+      const invalidCrcContractId =
+        "C" + "A".repeat(54) + "B";
+
+      await expect(
+        validateContractOnNetwork(
+          invalidCrcContractId,
+          SOROBAN_RPC_URL,
+          NETWORK,
+          FAST_RETRY
+        )
       ).rejects.toThrow(ContractAddressError);
 
       expect(scope.isDone()).toBe(false);

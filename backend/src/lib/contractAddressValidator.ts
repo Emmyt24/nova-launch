@@ -40,13 +40,29 @@ function base32Decode(s: string): Buffer {
   return Buffer.from(output);
 }
 
+function calculateCrc16XModem(data: Buffer): number {
+  let crc = 0;
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i]! << 8;
+    for (let j = 0; j < 8; j++) {
+      crc = crc << 1;
+      if (crc & 0x10000) {
+        crc = (crc ^ 0x1021) & 0xffff;
+      } else {
+        crc = crc & 0xffff;
+      }
+    }
+  }
+  return crc;
+}
+
 /**
  * Decodes a Soroban contract StrKey (C... 56 chars) to the 32-byte hash.
  * The CONTRACT strkey version byte is 0x10 (= 2 << 3).
  */
 function decodeContractStrkey(contractId: string): Buffer {
   const decoded = base32Decode(contractId); // 35 bytes: version + 32-byte hash + 2-byte CRC
-  if (decoded.length < 33) {
+  if (decoded.length < 35) {
     throw new ContractAddressError(
       `Contract ID decoded to fewer bytes than expected: ${contractId}`
     );
@@ -57,6 +73,18 @@ function decodeContractStrkey(contractId: string): Buffer {
       `Contract ID has unexpected version byte 0x${decoded[0].toString(16)}: ${contractId}`
     );
   }
+
+  // Verify CRC16-XModem checksum (last 2 bytes)
+  const dataToCheck = decoded.slice(0, 33); // version + 32-byte hash
+  const storedCrc = decoded.readUInt16BE(33);
+  const computedCrc = calculateCrc16XModem(dataToCheck);
+
+  if (storedCrc !== computedCrc) {
+    throw new ContractAddressError(
+      `Contract ID has invalid CRC checksum: ${contractId}`
+    );
+  }
+
   return decoded.slice(1, 33);
 }
 

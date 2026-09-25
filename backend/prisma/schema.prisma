@@ -290,6 +290,27 @@ enum StreamStatus {
   CANCELLED
 }
 
+/// One row per on-chain withdrawal (claim or cancellation refund) from a vault/stream.
+/// Unlike the terminal timestamps on `Stream`, this keeps every withdrawal.
+model StreamWithdrawal {
+  id              String               @id @default(uuid())
+  streamId        Int
+  transactionType StreamWithdrawalType
+  amount          BigInt
+  recipient       String
+  txHash          String
+  timestamp       DateTime
+  createdAt       DateTime             @default(now())
+
+  @@unique([streamId, txHash, transactionType])
+  @@index([streamId, timestamp])
+}
+
+enum StreamWithdrawalType {
+  CLAIMED
+  CANCELLED
+}
+
 /// Off-chain metadata cache for the payment-streaming/vesting feature
 /// (Issue #1765) — a distinct feature from the `Stream` model above, which
 /// backs the pre-existing Vaults ingestion pipeline. `streamId` here refers

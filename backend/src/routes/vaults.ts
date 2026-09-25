@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { StreamStatus } from "@prisma/client";
+import { StreamStatus, StreamWithdrawalType } from "@prisma/client";
 import { streamProjectionService } from "../services/streamProjectionService";
 import { successResponse, errorResponse } from "../utils/response";
 
@@ -88,36 +88,20 @@ router.get("/:id/withdrawals", async (req, res) => {
     const vault = await streamProjectionService.getStreamById(id);
     if (!vault) return res.status(404).json(errorResponse({ code: "NOT_FOUND", message: "Vault not found" }));
 
-    // Query withdrawal transactions from the stream projection.
-    // A withdrawal transaction represents a claim or cancellation of a vault.
-    const withdrawals: any[] = [];
-
-    if (vault.claimedAt && (!status || status === "CLAIMED")) {
-      withdrawals.push({
-        id: `${id}-claim-${vault.txHash}`,
-        vaultId: id,
-        transactionType: "CLAIMED",
-        amount: vault.amount,
-        timestamp: vault.claimedAt.toISOString(),
-        txHash: vault.txHash,
-        recipient: vault.recipient,
-      });
-    }
-
-    if (vault.cancelledAt && (!status || status === "CANCELLED")) {
-      withdrawals.push({
-        id: `${id}-cancel-${vault.txHash}`,
-        vaultId: id,
-        transactionType: "CANCELLED",
-        amount: vault.amount,
-        timestamp: vault.cancelledAt.toISOString(),
-        txHash: vault.txHash,
-        recipient: vault.recipient,
-      });
-    }
-
-    // Sort by timestamp descending (most recent first)
-    withdrawals.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    // Real withdrawal transactions recorded from on-chain claim/cancel events,
+    // already ordered most recent first.
+    const records = await streamProjectionService.getWithdrawalsByStreamId(id, {
+      transactionType: status as StreamWithdrawalType | undefined,
+    });
+    const withdrawals = records.map((w) => ({
+      id: `${id}-${w.transactionType === "CLAIMED" ? "claim" : "cancel"}-${w.txHash}`,
+      vaultId: id,
+      transactionType: w.transactionType,
+      amount: w.amount,
+      timestamp: w.timestamp.toISOString(),
+      txHash: w.txHash,
+      recipient: w.recipient,
+    }));
 
     // Implement cursor-based pagination
     const startIndex = cursor ? Math.max(0, parseInt(atob(cursor), 10)) : 0;

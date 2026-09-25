@@ -1,4 +1,4 @@
-import { PrismaClient, StreamStatus } from "@prisma/client";
+import { PrismaClient, StreamStatus, StreamWithdrawalType } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -40,6 +40,16 @@ export interface StreamKeysetPage {
   streams: StreamProjection[];
   nextCursor: number | null;
   hasMore: boolean;
+}
+
+export interface StreamWithdrawalRecord {
+  id: string;
+  streamId: number;
+  transactionType: StreamWithdrawalType;
+  amount: string; // BigInt serialized as string
+  recipient: string;
+  txHash: string;
+  timestamp: Date;
 }
 
 /** Hard upper bound on page size for keyset-paginated stream listings. */
@@ -117,6 +127,32 @@ export class StreamProjectionService {
       nextCursor,
       hasMore,
     };
+  }
+
+  /**
+   * All recorded withdrawal transactions for a stream, most recent first.
+   * Ties on timestamp are broken by txHash so ordering is deterministic.
+   */
+  async getWithdrawalsByStreamId(
+    streamId: number,
+    opts: { transactionType?: StreamWithdrawalType } = {}
+  ): Promise<StreamWithdrawalRecord[]> {
+    const rows = await prisma.streamWithdrawal.findMany({
+      where: {
+        streamId,
+        ...(opts.transactionType ? { transactionType: opts.transactionType } : {}),
+      },
+      orderBy: [{ timestamp: "desc" }, { txHash: "desc" }],
+    });
+    return rows.map((w) => ({
+      id: w.id,
+      streamId: w.streamId,
+      transactionType: w.transactionType,
+      amount: w.amount.toString(),
+      recipient: w.recipient,
+      txHash: w.txHash,
+      timestamp: w.timestamp,
+    }));
   }
 
   async getStreamStats(address?: string): Promise<StreamStats> {

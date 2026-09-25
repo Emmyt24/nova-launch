@@ -152,6 +152,9 @@ function createMockPrisma() {
       }),
     },
 
+    streamWithdrawal: {
+      upsert: vi.fn(async () => ({})),
+    },
     stream: {
       upsert: vi.fn(async ({ where, create }: any) => {
         if (!streams.has(where.streamId)) streams.set(where.streamId, { ...create });

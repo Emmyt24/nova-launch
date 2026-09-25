@@ -33,6 +33,9 @@ type StreamRow = {
 const streamStore = new Map<number, StreamRow>();
 
 const mockPrisma = {
+  streamWithdrawal: {
+    upsert: vi.fn(async () => ({})),
+  },
   stream: {
     upsert: vi.fn(async ({ where, create }: any) => {
       if (!streamStore.has(where.streamId)) {

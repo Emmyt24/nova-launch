@@ -1,4 +1,4 @@
-import { PrismaClient, StreamStatus } from '@prisma/client';
+import { PrismaClient, StreamStatus, StreamWithdrawalType } from '@prisma/client';
 import { StreamCreatedEvent, StreamClaimedEvent, StreamCancelledEvent, StreamMetadataUpdatedEvent } from '../types/stream';
 
 export class StreamEventParser {
@@ -29,6 +29,14 @@ export class StreamEventParser {
         claimedAt: event.timestamp,
       },
     });
+    await this.recordWithdrawal({
+      streamId: event.streamId,
+      transactionType: StreamWithdrawalType.CLAIMED,
+      amount: event.amount,
+      recipient: event.recipient,
+      txHash: event.txHash,
+      timestamp: event.timestamp,
+    });
   }
 
   async parseCancelledEvent(event: StreamCancelledEvent): Promise<void> {
@@ -38,6 +46,47 @@ export class StreamEventParser {
         status: StreamStatus.CANCELLED,
         cancelledAt: event.timestamp,
       },
+    });
+    // The cancelling party (creator) receives the refund of the remaining balance.
+    await this.recordWithdrawal({
+      streamId: event.streamId,
+      transactionType: StreamWithdrawalType.CANCELLED,
+      amount: event.refundAmount,
+      recipient: event.creator,
+      txHash: event.txHash,
+      timestamp: event.timestamp,
+    });
+  }
+
+  /**
+   * Persist a single withdrawal transaction. Idempotent on replay: the same
+   * (streamId, txHash, transactionType) is never stored twice.
+   */
+  private async recordWithdrawal(withdrawal: {
+    streamId: number;
+    transactionType: StreamWithdrawalType;
+    amount: string;
+    recipient: string;
+    txHash: string;
+    timestamp: Date;
+  }): Promise<void> {
+    await this.prisma.streamWithdrawal.upsert({
+      where: {
+        streamId_txHash_transactionType: {
+          streamId: withdrawal.streamId,
+          txHash: withdrawal.txHash,
+          transactionType: withdrawal.transactionType,
+        },
+      },
+      create: {
+        streamId: withdrawal.streamId,
+        transactionType: withdrawal.transactionType,
+        amount: BigInt(withdrawal.amount),
+        recipient: withdrawal.recipient,
+        txHash: withdrawal.txHash,
+        timestamp: withdrawal.timestamp,
+      },
+      update: {}, // no-op on replay — withdrawal records are immutable
     });
   }
 

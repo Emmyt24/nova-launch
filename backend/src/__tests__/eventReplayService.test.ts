@@ -79,6 +79,9 @@ function buildMockPrisma() {
         return rec;
       }),
     },
+    streamWithdrawal: {
+      upsert: vi.fn(async () => ({})),
+    },
     stream: {
       upsert: vi.fn(async ({ where, create, update }: any) => {
         const key = where.streamId;

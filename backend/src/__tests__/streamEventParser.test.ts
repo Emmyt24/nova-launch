@@ -24,6 +24,9 @@ describe('StreamEventParser — malformed-payload guard', () => {
   const updateMock = vi.fn().mockResolvedValue({});
 
   const mockPrisma = {
+    streamWithdrawal: {
+      upsert: vi.fn(async () => ({})),
+    },
     stream: {
       upsert: upsertMock,
       update: updateMock,

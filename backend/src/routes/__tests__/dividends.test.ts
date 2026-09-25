@@ -326,3 +326,38 @@ describe("POST /api/dividends/events/ingest", () => {
     });
   });
 });
+
+describe("DELETE /api/dividends/pools/:poolId (#1698 regression guard)", () => {
+  // The legacy funder-only cancel endpoint trusted a self-reported
+  // `requestedBy` body field. Cancellation must never be reachable by simply
+  // claiming to be the funder in the request body.
+  it("does not cancel a pool for a caller that spoofs requestedBy", async () => {
+    const res = await request(app)
+      .delete("/api/dividends/pools/42")
+      .send({ requestedBy: ADMIN_ADDR });
+
+    expect(res.status).toBe(404);
+    for (const fn of Object.values(mockDividendService)) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not cancel a pool for an unauthenticated caller even with a funder-looking body", async () => {
+    const res = await request(app)
+      .delete("/api/dividends/pools/42")
+      .set("Authorization", "Bearer spoofed-token")
+      .send({ requestedBy: HOLDER_ADDR, funder: HOLDER_ADDR });
+
+    expect(res.status).not.toBe(200);
+    expect(res.body?.success).not.toBe(true);
+  });
+
+  it("exposes no route that derives the reclaiming identity from the body without admin auth", async () => {
+    const res = await request(app)
+      .post("/api/dividends/reclaim")
+      .send({ admin: ADMIN_ADDR, distributionId: 1 });
+
+    expect(res.status).toBe(401);
+    expect(mockDividendService.buildReclaimUnclaimedTx).not.toHaveBeenCalled();
+  });
+});

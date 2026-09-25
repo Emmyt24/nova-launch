@@ -163,6 +163,30 @@ describe("QueryBuilder", () => {
       expect(result.cursor).toEqual(cursor);
       expect(result.skip).toBe(1);
     });
+
+    it("preserves cursor-derived skip when chained with paginate()", () => {
+      const cursor = { id: "abc-123" };
+      const result = new QueryBuilder()
+        .after(cursor)
+        .paginate({ take: 10 })
+        .build();
+
+      expect(result.cursor).toEqual(cursor);
+      expect(result.skip).toBe(1); // Should be preserved, not reset to 0
+      expect(result.take).toBe(10);
+    });
+
+    it("allows caller to override skip when explicitly provided", () => {
+      const cursor = { id: "abc-123" };
+      const result = new QueryBuilder()
+        .after(cursor)
+        .paginate({ skip: 5, take: 10 })
+        .build();
+
+      expect(result.cursor).toEqual(cursor);
+      expect(result.skip).toBe(5); // Caller's explicit value takes precedence
+      expect(result.take).toBe(10);
+    });
   });
 
   // ── chaining ──────────────────────────────────────────────────────────────

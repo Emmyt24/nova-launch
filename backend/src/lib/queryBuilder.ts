@@ -99,13 +99,20 @@ export class QueryBuilder<
   /**
    * Sets offset-based pagination.
    * `take` is capped at MAX_PAGE_SIZE.
+   *
+   * Preserves a cursor-derived skip value (from after()) unless the caller
+   * explicitly provides their own skip value.
    */
   paginate(opts: {
     skip?: number;
     take?: number;
   }): QueryBuilder<TWhereInput, TOrderByInput> {
     const take = Math.min(opts.take ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
-    const skip = Math.max(opts.skip ?? 0, 0);
+    // Preserve cursor-derived skip unless caller explicitly overrides it
+    const skip =
+      opts.skip !== undefined
+        ? Math.max(opts.skip, 0)
+        : Math.max(this.options.skip ?? 0, 0);
     return new QueryBuilder({ ...this.options, skip, take });
   }
 

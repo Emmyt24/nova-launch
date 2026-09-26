@@ -4975,9 +4975,9 @@ const _ISOLATED_DISABLED_event_replay_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_batch_token_creation_test: () = ();
 #[cfg(test)]
-// mod campaign_stateful_fuzz_test;
-#[cfg(all(test, feature = "legacy-tests"))]
-const _ISOLATED_DISABLED_accounting_property_test: () = ();
+mod campaign_stateful_fuzz_test;
+#[cfg(test)]
+mod accounting_property_test;
 #[cfg(all(test, feature = "legacy-tests"))]
 const _ISOLATED_DISABLED_stream_status_transition_property_test: () = ();
 #[cfg(all(test, feature = "legacy-tests"))]

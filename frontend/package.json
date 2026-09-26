@@ -17,7 +17,7 @@
     "test:integration:watch": "vitest src/test/integration --config vitest.config.ts",
     "test:integration:coverage": "vitest run src/test/integration --coverage --config vitest.config.ts",
     "test:e2e": "vitest run src/test/e2e --config vitest.config.ts",
-    "test:e2e:lifecycle": "vitest run src/test/e2e/token-deployment-lifecycle.e2e.test.ts src/test/e2e/governance-lifecycle.e2e.test.ts src/test/e2e/template-deployment-lifecycle.e2e.test.ts --config vitest.config.ts",
+    "test:e2e:lifecycle": "vitest run src/test/e2e/token-deployment-lifecycle.e2e.test.ts src/test/e2e/governance-lifecycle.e2e.test.ts src/test/e2e/template-deployment-lifecycle.e2e.test.ts src/test/e2e/campaign-lifecycle.e2e.test.tsx --config vitest.config.ts",
     "test:e2e:watch": "vitest src/test/e2e --config vitest.config.ts",
     "test:a11y": "vitest run src/test/accessibility --config vitest.config.ts",
     "test:a11y:watch": "vitest src/test/accessibility --config vitest.config.ts",

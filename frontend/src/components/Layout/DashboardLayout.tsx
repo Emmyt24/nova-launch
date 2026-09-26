@@ -11,6 +11,15 @@ interface NavItem {
 // Navigation items
 const NAV_ITEMS: NavItem[] = [
   {
+    label: 'Campaigns',
+    href: '/campaigns',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3v18h18M7 14l4-4 4 4 6-7" />
+      </svg>
+    ),
+  },
+  {
     label: 'Dashboard',
     href: '/',
     icon: (

@@ -1,0 +1,75 @@
+name: Campaign Invariant Tests
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/token-factory/src/accounting_property_test.rs'
+      - 'contracts/token-factory/src/campaign_stateful_fuzz_test.rs'
+      - 'contracts/token-factory/src/lib.rs'
+      - '.github/workflows/campaign-invariant-tests.yml'
+  schedule:
+    - cron: '30 2 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  accounting-properties:
+    name: Campaign accounting properties
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+    env:
+      PROPTEST_CASES: ${{ github.event_name == 'schedule' && '1000' || '150' }}
+      PROPTEST_MAX_SHRINK_ITERS: '2000'
+      PROPTEST_RNG_ALGORITHM: chacha
+      PROPTEST_RNG_SEED: '18364758544493064720'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run accounting properties
+        run: cargo test --lib accounting_property_test -- --nocapture
+
+      - name: Upload minimized regression cases
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: campaign-accounting-regressions-${{ github.run_number }}
+          path: contracts/token-factory/proptest-regressions/accounting_property_test.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+  stateful-fuzz:
+    name: Campaign stateful fuzz
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/token-factory
+    env:
+      CAMPAIGN_FUZZ_BASE_SEED: '12648430'
+      CAMPAIGN_FUZZ_CASES: ${{ github.event_name == 'schedule' && '400' || '64' }}
+      CAMPAIGN_FUZZ_DEPTH: ${{ github.event_name == 'schedule' && '600' || '150' }}
+      CAMPAIGN_FUZZ_ARTIFACT_DIR: test-artifacts/campaign-fuzz
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run seeded campaign interleavings
+        run: cargo test --lib campaign_stateful_fuzz_test::stateful_campaign_fuzz -- --nocapture
+
+      - name: Upload failing seeds and action traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: campaign-fuzz-failures-${{ github.run_number }}
+          path: contracts/token-factory/test-artifacts/campaign-fuzz/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -349,3 +349,67 @@ fn change_bps(reference: i128, other: i128) -> Result<u32, Error> {
         .ok_or(Error::ArithmeticError)?;
     u32::try_from(bps).map_err(|_| Error::ArithmeticError)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{BuybackCampaign, CampaignStatus};
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn clearing_emergency_halt_resets_the_failure_streak() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = Address::generate(&env);
+        let governance = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let campaign_id = 1;
+        let campaign = BuybackCampaign {
+            id: campaign_id,
+            token_index: 0,
+            budget: 1_000_000,
+            spent: 0,
+            tokens_bought: 0,
+            execution_count: 0,
+            start_time: 0,
+            end_time: u64::MAX,
+            min_interval: 0,
+            max_slippage_bps: 100,
+            source_token: Address::generate(&env),
+            target_token: Address::generate(&env),
+            owner: owner.clone(),
+            status: CampaignStatus::Active,
+            created_at: 0,
+            updated_at: 0,
+            trigger_price: 0,
+            last_executed_at: 0,
+        };
+
+        env.as_contract(&contract_id, || {
+            storage::set_governance(&env, &governance);
+            storage::set_campaign(&env, campaign_id, &campaign);
+
+            for _ in 0..(DEFAULT_MAX_CONSECUTIVE_FAILURES - 1) {
+                assert!(!record_settlement_outcome(&env, &owner, campaign_id, false).unwrap());
+            }
+            assert_eq!(
+                get_state(&env, campaign_id).unwrap().consecutive_failures,
+                DEFAULT_MAX_CONSECUTIVE_FAILURES - 1
+            );
+
+            emergency_halt_campaign(
+                &env,
+                &governance,
+                campaign_id,
+                CampaignHaltReason::GovernanceManual,
+            )
+            .unwrap();
+            clear_emergency_halt(&env, &governance, campaign_id).unwrap();
+
+            assert!(!record_settlement_outcome(&env, &owner, campaign_id, false).unwrap());
+            let state = get_state(&env, campaign_id).unwrap();
+            assert_eq!(state.consecutive_failures, 1);
+            assert!(!state.halted);
+        });
+    }
+}

@@ -128,7 +128,7 @@ pub fn get_price(env: &Env, asset: &Address) -> Result<PriceData, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
 
     const MAX_AGE: u64 = 300;
 
@@ -185,6 +185,28 @@ mod tests {
             // price servable again (it was never cleared from storage).
             set_oracle_authorized(&env, &admin, &source, true).unwrap();
             assert!(get_price(&env, &asset).is_ok());
+        });
+    }
+
+    #[test]
+    fn reauthorizing_source_does_not_refresh_a_stale_price() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = Address::generate(&env);
+        let admin = setup(&env, &contract_id);
+        let source = Address::generate(&env);
+        let asset = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_oracle_authorized(&env, &admin, &source, true).unwrap();
+            submit_price(&env, &source, &asset, 1_000, 2).unwrap();
+            set_oracle_authorized(&env, &admin, &source, false).unwrap();
+
+            env.ledger()
+                .with_mut(|ledger| ledger.timestamp += MAX_AGE + 1);
+            set_oracle_authorized(&env, &admin, &source, true).unwrap();
+
+            assert_eq!(get_price(&env, &asset), Err(Error::OraclePriceStale));
         });
     }
 

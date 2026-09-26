@@ -52,8 +52,7 @@ export class IdempotencyStore implements IIdempotencyStore {
 
   /** @deprecated Use complete() instead. Kept for backwards compatibility. */
   set(key: string, statusCode: number, body: unknown): void {
-    this.store.set(key, { statusCode, body, createdAt: Date.now() });
-    this.inFlight.delete(key);
+    this.complete(key, statusCode, body);
   }
 
   complete(key: string, statusCode: number, body: unknown): void {

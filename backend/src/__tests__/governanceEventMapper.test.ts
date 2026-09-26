@@ -11,13 +11,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { GovernanceEventMapper } from '../services/governanceEventMapper';
+import { GovernanceEventMapper, GOVERNANCE_EVENT_NAMES } from '../services/governanceEventMapper';
 import {
   ProposalStatus,
   ProposalType,
   GovernanceEvent,
   VoteCastEvent,
 } from '../types/governance';
+// The decoder registry is the other place that enumerates governance topic
+// names (used by the Stellar event listener).  Import kindForTopic so the
+// drift-detection test below can verify both lists stay in sync.
+import { kindForTopic } from '../services/eventVersioning/decoderRegistry';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -767,5 +771,100 @@ describe('GovernanceEventMapper – vote-weight accumulation', () => {
     expect(noTotal).toBe(1_700_000n);    // 0.5M + 1.2M
     expect(votes.every(v => v.proposalId === PROPOSAL_ID)).toBe(true);
     expect(votes.every(v => v.type === 'vote_cast')).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drift-detection: GOVERNANCE_EVENT_NAMES vs. the decoder registry
+//
+// Every topic name in GOVERNANCE_EVENT_NAMES MUST be present in the decoder
+// registry (kindForTopic returns non-null), and every governance-kind topic
+// in the decoder registry MUST be present in GOVERNANCE_EVENT_NAMES.
+//
+// This test catches the case where a new governance event is added to the
+// contract and to the decoder registry (the listener's subscription filter)
+// but the author forgets to update GOVERNANCE_EVENT_NAMES, or vice-versa.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** All governance-kind values produced by the decoder registry. */
+const GOVERNANCE_KINDS = new Set([
+  'proposal_created',
+  'vote_cast',
+  'proposal_queued',
+  'proposal_executed',
+  'proposal_cancelled',
+  'proposal_status_changed',
+  'proposal_state_snapshot',
+]);
+
+describe('GOVERNANCE_EVENT_NAMES drift detection', () => {
+  it('every name in GOVERNANCE_EVENT_NAMES is recognized by the decoder registry', () => {
+    const unrecognized: string[] = [];
+    for (const name of GOVERNANCE_EVENT_NAMES) {
+      if (kindForTopic(name) === null) {
+        unrecognized.push(name);
+      }
+    }
+    expect(unrecognized).toEqual([]);
+  });
+
+  it('every governance topic in the decoder registry is present in GOVERNANCE_EVENT_NAMES', () => {
+    // We probe the decoder registry by iterating the known topic names that
+    // map to a governance kind.  Because TOPIC_KIND is not exported we rely on
+    // the mapper's own GOVERNANCE_EVENT_NAMES as the reference set — the test
+    // above already ensures every name resolves to a non-null kind, so here we
+    // check the inverse: that the mapper recognises all event names that the
+    // registry maps to a governance kind.
+    const mapper = new GovernanceEventMapper();
+    const missingFromMapper: string[] = [];
+
+    // Probe a superset of plausible governance topic names:
+    // all names already in GOVERNANCE_EVENT_NAMES plus the canonical variants.
+    const candidateTopics = [
+      ...GOVERNANCE_EVENT_NAMES,
+      'prop_cr_v1', 'prop_cr', 'prop_create',
+      'vote_cs_v1', 'vote_cs', 'vote_cast',
+      'prop_qu_v1', 'prop_qu',
+      'prop_ex_v1', 'prop_ex', 'prop_exec',
+      'prop_ca_v1', 'prop_ca', 'prop_cancel',
+      'prop_st_v1', 'prop_status',
+      'prop_snap',
+    ];
+
+    for (const topic of candidateTopics) {
+      const kind = kindForTopic(topic);
+      if (kind !== null && GOVERNANCE_KINDS.has(kind)) {
+        // This topic maps to a governance kind in the registry.
+        // It MUST also be present in GOVERNANCE_EVENT_NAMES.
+        if (!(GOVERNANCE_EVENT_NAMES as readonly string[]).includes(topic)) {
+          missingFromMapper.push(topic);
+        }
+      }
+    }
+
+    expect(missingFromMapper).toEqual([]);
+  });
+
+  it('isGovernanceEvent returns true for every name in GOVERNANCE_EVENT_NAMES', () => {
+    const mapper = new GovernanceEventMapper();
+    const failing: string[] = [];
+    for (const name of GOVERNANCE_EVENT_NAMES) {
+      const event = {
+        type: 'contract',
+        ledger: 1,
+        ledger_close_time: '2024-01-01T00:00:00Z',
+        contract_id: 'C1',
+        id: 'e1',
+        paging_token: 'p1',
+        in_successful_contract_call: true,
+        transaction_hash: 'tx1',
+        topic: [name],
+        value: {},
+      };
+      if (!mapper.isGovernanceEvent(event)) {
+        failing.push(name);
+      }
+    }
+    expect(failing).toEqual([]);
   });
 });

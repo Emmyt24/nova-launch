@@ -45,17 +45,17 @@ use crate::{TokenFactory, TokenFactoryClient};
 //
 // Operation                    Observed (approx)   Threshold (+20%)
 // ──────────────────────────────────────────────────────────────────
-const THRESHOLD_CREATE_TOKEN:    u64 = 6_000_000;
-const THRESHOLD_EXECUTE_CHANGE:  u64 = 5_000_000;
-const THRESHOLD_PAUSE:           u64 = 2_000_000;
-const THRESHOLD_UNPAUSE:         u64 = 2_000_000;
-const THRESHOLD_PAUSE_TOKEN:     u64 = 2_000_000;
-const THRESHOLD_UNPAUSE_TOKEN:   u64 = 2_000_000;
-const THRESHOLD_GET_TOKEN_STATS: u64 = 1_500_000;
-const THRESHOLD_GET_TOKEN_INFO:  u64 = 1_500_000;
-const THRESHOLD_GET_STATE:       u64 = 1_500_000;
-const THRESHOLD_GET_TOKEN_COUNT: u64 = 1_000_000;
-const THRESHOLD_IS_PAUSED:       u64 = 1_000_000;
+pub(crate) const THRESHOLD_CREATE_TOKEN:    u64 = 6_000_000;
+pub(crate) const THRESHOLD_EXECUTE_CHANGE:  u64 = 5_000_000;
+pub(crate) const THRESHOLD_PAUSE:           u64 = 2_000_000;
+pub(crate) const THRESHOLD_UNPAUSE:         u64 = 2_000_000;
+pub(crate) const THRESHOLD_PAUSE_TOKEN:     u64 = 2_000_000;
+pub(crate) const THRESHOLD_UNPAUSE_TOKEN:   u64 = 2_000_000;
+pub(crate) const THRESHOLD_GET_TOKEN_STATS: u64 = 1_500_000;
+pub(crate) const THRESHOLD_GET_TOKEN_INFO:  u64 = 1_500_000;
+pub(crate) const THRESHOLD_GET_STATE:       u64 = 1_500_000;
+pub(crate) const THRESHOLD_GET_TOKEN_COUNT: u64 = 1_000_000;
+pub(crate) const THRESHOLD_IS_PAUSED:       u64 = 1_000_000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -27,6 +27,45 @@ interface StellarEvent {
 }
 
 /**
+ * Single source of truth for all recognized governance event-topic strings.
+ *
+ * These are the raw Stellar contract event topic names that identify a
+ * governance event.  Every consumer that needs to filter or subscribe to
+ * governance events MUST reference this constant rather than maintaining its
+ * own inline list — this is the only way to guarantee that adding a new name
+ * here is automatically reflected everywhere, and that drift between the
+ * mapper and the listener is caught by the drift-detection test in
+ * `governanceEventMapper.test.ts`.
+ *
+ * The contract-side source of truth is
+ * `contracts/token-factory/src/events.rs` — keep this list in sync with the
+ * `emit_*` functions defined there.
+ */
+export const GOVERNANCE_EVENT_NAMES: readonly string[] = [
+  // v1 versioned events (full suffix form)
+  'prop_cr_v1',
+  'vote_cs_v1',
+  'prop_qu_v1',
+  'prop_ex_v1',
+  'prop_ca_v1',
+  'prop_st_v1',
+  // v1 abbreviated (no suffix)
+  'prop_cr',
+  'vote_cs',
+  'prop_qu',
+  'prop_ex',
+  'prop_ca',
+  // Proposal state snapshot (#1383) — periodic/on-demand checkpoint
+  'prop_snap',
+  // Legacy events (for backward compatibility)
+  'prop_create',
+  'vote_cast',
+  'prop_exec',
+  'prop_cancel',
+  'prop_status',
+] as const;
+
+/**
  * Governance Event Mapper
  * 
  * Maps Stellar blockchain events to governance event types
@@ -34,7 +73,10 @@ interface StellarEvent {
  */
 export class GovernanceEventMapper {
   /**
-   * Check if a Stellar event is a governance event
+   * Check if a Stellar event is a governance event.
+   *
+   * Uses {@link GOVERNANCE_EVENT_NAMES} as the single source of truth so that
+   * any new governance topic name only needs to be added in one place.
    */
   isGovernanceEvent(event: StellarEvent): boolean {
     if (event.topic.length < 1) {
@@ -42,31 +84,7 @@ export class GovernanceEventMapper {
     }
 
     const eventName = event.topic[0];
-    const governanceEvents = [
-      // v1 versioned events (full suffix form)
-      'prop_cr_v1',
-      'vote_cs_v1',
-      'prop_qu_v1',
-      'prop_ex_v1',
-      'prop_ca_v1',
-      'prop_st_v1',
-      // v1 abbreviated (no suffix)
-      'prop_cr',
-      'vote_cs',
-      'prop_qu',
-      'prop_ex',
-      'prop_ca',
-      // Proposal state snapshot (#1383) — periodic/on-demand checkpoint
-      'prop_snap',
-      // Legacy events (for backward compatibility)
-      'prop_create',
-      'vote_cast',
-      'prop_exec',
-      'prop_cancel',
-      'prop_status',
-    ];
-
-    return governanceEvents.includes(eventName);
+    return (GOVERNANCE_EVENT_NAMES as readonly string[]).includes(eventName);
   }
 
   /**

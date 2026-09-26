@@ -579,3 +579,80 @@ pub fn resume_batch_settle(env: &Env, creator: Address) -> Result<BatchScheduleR
         continuation_pending: remaining_count > 0,
     })
 }
+
+// ── Gas-estimate consistency tests ───────────────────────────────────────────
+//
+// These tests assert that REVEAL_ITEM_GAS_ESTIMATE and SETTLE_ITEM_GAS_ESTIMATE
+// stay consistent with the measured-threshold constants in
+// `gas_compute_thresholds.rs`, so that a future threshold change (e.g., after
+// an optimization lowers THRESHOLD_CREATE_TOKEN) is caught here instead of
+// silently making the scheduler's estimates stale.
+//
+// Run:
+//   cargo test -p token-factory batch_scheduler gas_compute -- --nocapture
+#[cfg(test)]
+mod batch_scheduler_gas_consistency {
+    use super::{REVEAL_ITEM_GAS_ESTIMATE, SETTLE_ITEM_GAS_ESTIMATE};
+    use crate::gas_compute_thresholds::{
+        THRESHOLD_CREATE_TOKEN, THRESHOLD_GET_TOKEN_INFO, THRESHOLD_PAUSE_TOKEN,
+    };
+
+    /// REVEAL_ITEM_GAS_ESTIMATE must equal THRESHOLD_CREATE_TOKEN.
+    ///
+    /// A batch-reveal item performs exactly one `create_token_internal` call,
+    /// so its gas estimate must not fall below the measured threshold for that
+    /// operation — otherwise the scheduler could allow a chunk whose real cost
+    /// exceeds the ledger's gas budget.
+    #[test]
+    fn batch_scheduler_reveal_estimate_matches_create_token_threshold() {
+        assert_eq!(
+            REVEAL_ITEM_GAS_ESTIMATE,
+            THRESHOLD_CREATE_TOKEN,
+            "REVEAL_ITEM_GAS_ESTIMATE ({}) must equal THRESHOLD_CREATE_TOKEN ({}).  \
+             If THRESHOLD_CREATE_TOKEN was lowered after an optimization, update \
+             REVEAL_ITEM_GAS_ESTIMATE in batch_scheduler.rs to match.",
+            REVEAL_ITEM_GAS_ESTIMATE,
+            THRESHOLD_CREATE_TOKEN,
+        );
+    }
+
+    /// SETTLE_ITEM_GAS_ESTIMATE must be at least as large as both
+    /// THRESHOLD_PAUSE_TOKEN and THRESHOLD_GET_TOKEN_INFO (the bracket
+    /// described in the module doc comment), so the estimate always covers
+    /// the storage read-modify-write cost of a settle item.
+    #[test]
+    fn batch_scheduler_settle_estimate_above_threshold_bracket() {
+        let bracket_max = THRESHOLD_PAUSE_TOKEN.max(THRESHOLD_GET_TOKEN_INFO);
+        assert!(
+            SETTLE_ITEM_GAS_ESTIMATE >= bracket_max,
+            "SETTLE_ITEM_GAS_ESTIMATE ({}) must be >= max(THRESHOLD_PAUSE_TOKEN, \
+             THRESHOLD_GET_TOKEN_INFO) = {}.  \
+             If the thresholds were lowered, review SETTLE_ITEM_GAS_ESTIMATE in \
+             batch_scheduler.rs and update accordingly.",
+            SETTLE_ITEM_GAS_ESTIMATE,
+            bracket_max,
+        );
+    }
+
+    /// Sanity-check: the DEFAULT_LEDGER_GAS_BUDGET must be large enough to
+    /// execute at least one reveal item and one settle item per ledger so the
+    /// scheduler is never permanently stalled.
+    #[test]
+    fn batch_scheduler_default_budget_fits_at_least_one_item_each() {
+        use super::DEFAULT_LEDGER_GAS_BUDGET;
+        assert!(
+            DEFAULT_LEDGER_GAS_BUDGET >= REVEAL_ITEM_GAS_ESTIMATE,
+            "DEFAULT_LEDGER_GAS_BUDGET ({}) is smaller than REVEAL_ITEM_GAS_ESTIMATE ({}). \
+             The scheduler would never be able to execute a single reveal item.",
+            DEFAULT_LEDGER_GAS_BUDGET,
+            REVEAL_ITEM_GAS_ESTIMATE,
+        );
+        assert!(
+            DEFAULT_LEDGER_GAS_BUDGET >= SETTLE_ITEM_GAS_ESTIMATE,
+            "DEFAULT_LEDGER_GAS_BUDGET ({}) is smaller than SETTLE_ITEM_GAS_ESTIMATE ({}). \
+             The scheduler would never be able to execute a single settle item.",
+            DEFAULT_LEDGER_GAS_BUDGET,
+            SETTLE_ITEM_GAS_ESTIMATE,
+        );
+    }
+}

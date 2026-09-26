@@ -78,6 +78,38 @@ const DEFAULT_OPTIONS: PinataQueueOptions = {
 /**
  * Token-bucket + concurrency-limited queue for outgoing Pinata API calls.
  *
+ * ## Why PinataQueue doesn't reuse WorkerPool
+ *
+ * `WorkerPool` (see `../../lib/WorkerPool.ts`) is the project's established
+ * generic bounded-concurrency primitive used, e.g., by `webhookDeliveryService.ts`
+ * for fan-out work.  PinataQueue solves a related but strictly *super-set* problem:
+ *
+ *   1. **Token-bucket rate limiting** — WorkerPool caps *concurrency*; a
+ *      token-bucket limits *throughput* (requests per second). These are
+ *      orthogonal concerns.  Pinata's API enforces an rps ceiling independent
+ *      of how many requests are in-flight, so both constraints must be applied
+ *      simultaneously.
+ *
+ *   2. **HTTP 429 retry with exponential back-off** — WorkerPool has no
+ *      concept of 429 responses; it resolves/rejects immediately when the
+ *      worker function settles.  PinataQueue intercepts 429 errors and
+ *      re-queues the task with jittered exponential back-off, capped at
+ *      `retryCapMs`, without surfacing the transient failure to the caller.
+ *
+ *   3. **Observable metrics** — `queueDepth`, `inFlight`, `throttledCount`,
+ *      `retried429Count`, and `avgLatencyMs` are tracked here for Pinata-specific
+ *      monitoring.  WorkerPool exposes only depth and running-count; it has no
+ *      awareness of 429 retries.
+ *
+ * **Future consolidation path** — if WorkerPool is extended with a
+ * pluggable "should-retry" hook (similar to `OutboundHttpClient`'s retry
+ * predicate) and a pluggable rate-gate (à la a token-bucket `acquire()`), the
+ * concurrency half of PinataQueue could be collapsed onto it, keeping only
+ * the token-bucket layer here.  Until then, the two implementations MUST
+ * remain consistent in their drain-loop shape: any bug found in one should be
+ * reviewed in the other.  Cross-reference: `WorkerPool.drain()` ↔
+ * `PinataQueue.drain()`.
+ *
  * Usage
  * ─────
  *   const result = await pinataQueue.enqueue(() => pinata.pinJSONToIPFS(data));

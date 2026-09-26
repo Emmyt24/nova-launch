@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockTx = {
   refreshToken: {
     findUnique: vi.fn(),
-    update: vi.fn(),
+    updateMany: vi.fn(),
     create: vi.fn(),
     deleteMany: vi.fn(),
   },
@@ -29,7 +29,7 @@ const mockPrisma = {
   ),
 };
 
-vi.mock("../lib/prisma", () => ({ default: mockPrisma, prisma: mockPrisma }));
+vi.mock("../../lib/prisma", () => ({ default: mockPrisma, prisma: mockPrisma }));
 
 import {
   createTokenFamily,
@@ -37,7 +37,7 @@ import {
   invalidateFamily,
   pruneExpiredFamilies,
   TokenFamilyError,
-} from "../auth/refresh-token-family.service";
+} from "../refresh-token-family.service";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +86,12 @@ describe("createTokenFamily", () => {
     );
   });
 
+  it("propagates persistence failures", async () => {
+    mockPrisma.refreshToken.create.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(createTokenFamily("tok-abc", new Date())).rejects.toThrow("database unavailable");
+  });
+
   it("each call generates a unique familyId", async () => {
     mockPrisma.refreshToken.create.mockResolvedValue({});
     const { familyId: id1 } = await createTokenFamily("tok-1", new Date());
@@ -103,20 +109,23 @@ describe("rotateTokenFamily — normal rotation", () => {
 
   it("marks the current token as used", async () => {
     mockTx.refreshToken.findUnique.mockResolvedValue(makeRecord());
-    mockTx.refreshToken.update.mockResolvedValue({});
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 1 });
     mockTx.refreshToken.create.mockResolvedValue({});
 
     await rotateTokenFamily("tok-current", "tok-next", new Date());
 
-    expect(mockTx.refreshToken.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { used: true } })
+    expect(mockTx.refreshToken.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { token: "tok-current", used: false },
+        data: { used: true },
+      })
     );
   });
 
   it("creates the next token in the same family", async () => {
     const record = makeRecord();
     mockTx.refreshToken.findUnique.mockResolvedValue(record);
-    mockTx.refreshToken.update.mockResolvedValue({});
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 1 });
     mockTx.refreshToken.create.mockResolvedValue({});
 
     const result = await rotateTokenFamily("tok-current", "tok-next", new Date());
@@ -134,7 +143,7 @@ describe("rotateTokenFamily — normal rotation", () => {
 
   it("wraps all operations in a single DB transaction", async () => {
     mockTx.refreshToken.findUnique.mockResolvedValue(makeRecord());
-    mockTx.refreshToken.update.mockResolvedValue({});
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 1 });
     mockTx.refreshToken.create.mockResolvedValue({});
 
     await rotateTokenFamily("tok-current", "tok-next", new Date());
@@ -151,6 +160,7 @@ describe("rotateTokenFamily — reuse detection", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("throws TokenFamilyError with code REUSE_DETECTED when a used token is presented", async () => {
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
     mockTx.refreshToken.findUnique.mockResolvedValue(makeRecord({ used: true }));
     mockTx.refreshToken.deleteMany.mockResolvedValue({ count: 2 });
 
@@ -165,6 +175,7 @@ describe("rotateTokenFamily — reuse detection", () => {
   });
 
   it("deletes all tokens in the family on reuse detection", async () => {
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
     mockTx.refreshToken.findUnique.mockResolvedValue(makeRecord({ used: true }));
     mockTx.refreshToken.deleteMany.mockResolvedValue({ count: 3 });
 
@@ -176,6 +187,7 @@ describe("rotateTokenFamily — reuse detection", () => {
   });
 
   it("throws TokenFamilyError with code INVALID_TOKEN when token is not found", async () => {
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
     mockTx.refreshToken.findUnique.mockResolvedValue(null);
 
     const err = await rotateTokenFamily(
@@ -189,6 +201,7 @@ describe("rotateTokenFamily — reuse detection", () => {
   });
 
   it("does not create a new token record when reuse is detected", async () => {
+    mockTx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
     mockTx.refreshToken.findUnique.mockResolvedValue(makeRecord({ used: true }));
     mockTx.refreshToken.deleteMany.mockResolvedValue({ count: 1 });
 
@@ -211,6 +224,12 @@ describe("invalidateFamily", () => {
     expect(mockPrisma.refreshToken.deleteMany).toHaveBeenCalledWith({
       where: { familyId: "family-xyz" },
     });
+  });
+
+  it("propagates deletion failures", async () => {
+    mockPrisma.refreshToken.deleteMany.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(invalidateFamily("family-xyz")).rejects.toThrow("database unavailable");
   });
 });
 
@@ -242,6 +261,12 @@ describe("pruneExpiredFamilies", () => {
     const cutoff: Date = callArgs.where.expiresAt.lt;
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     expect(Math.abs(cutoff.getTime() - thirtyDaysAgo)).toBeLessThan(5000);
+  });
+
+  it("propagates pruning failures", async () => {
+    mockPrisma.refreshToken.deleteMany.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(pruneExpiredFamilies()).rejects.toThrow("database unavailable");
   });
 });
 

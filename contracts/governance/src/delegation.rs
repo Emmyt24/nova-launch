@@ -70,6 +70,12 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
         if existing.delegatee == delegator {
             return Err(Error::CircularDelegation);
         }
+        // Enforce MAX_CHAIN_DEPTH: if the delegatee already has an active outgoing
+        // delegation (to anyone), accepting this delegation would create a chain of
+        // depth 2, violating the documented MAX_CHAIN_DEPTH = 1 invariant.
+        // Using the same storage::get_delegation lookup pattern for consistency.
+        let _ = MAX_CHAIN_DEPTH; // make the constant readable at this enforcement point
+        return Err(Error::DelegationChainTooDeep);
     }
 
     let delegator_balance = storage::get_balance(env, &delegator);

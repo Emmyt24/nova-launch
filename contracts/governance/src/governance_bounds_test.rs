@@ -203,6 +203,7 @@ fn test_finalize_proposal_overflow_returns_typed_error() {
         votes_against: 1,
         payload: Bytes::new(&env),
         status: ProposalStatus::Active,
+        disbursement: None,
     };
 
     // Write directly to storage inside the contract's context

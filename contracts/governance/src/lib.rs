@@ -662,3 +662,12 @@ mod governance_property_test;
 
 #[cfg(test)]
 mod governance_bounds_test;
+
+#[cfg(test)]
+mod test;
+
+#[cfg(test)]
+mod vote_accounting_test;
+
+#[cfg(test)]
+mod settlement_test;

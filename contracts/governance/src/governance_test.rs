@@ -220,6 +220,66 @@ fn delegate_rejects_circular_delegation() {
     c.delegate(&bob, &alice); // must panic
 }
 
+// ─── [DEL-CHAIN] Delegation chain depth enforcement — issue #1826 ──────────
+
+/// Delegating to an address that has already delegated elsewhere must be
+/// rejected with DelegationChainTooDeep.  MAX_CHAIN_DEPTH = 1 means the
+/// delegation graph can only ever be one hop deep.
+#[test]
+fn delegate_rejects_chain_deeper_than_max_chain_depth() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+
+    fund(&env, &contract_id, &admin, &alice, 500_i128);
+    fund(&env, &contract_id, &admin, &bob, 500_i128);
+
+    // Bob delegates to Carol — Bob now has an active outgoing delegation.
+    c.delegate(&bob, &carol);
+
+    // Alice tries to delegate to Bob.  Since Bob already has an outgoing
+    // delegation this would form a chain of depth 2, violating MAX_CHAIN_DEPTH.
+    let result = c.try_delegate(&alice, &bob);
+    assert!(
+        result.is_err(),
+        "delegating to a delegatee that already delegated should fail"
+    );
+}
+
+/// After the delegatee undelegates (removing their outgoing record), a fresh
+/// delegation to them must succeed — the chain depth restriction only applies
+/// while the outgoing record is active.
+#[test]
+fn delegate_succeeds_after_delegatee_undelegates() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+
+    fund(&env, &contract_id, &admin, &alice, 300_i128);
+    fund(&env, &contract_id, &admin, &bob, 300_i128);
+
+    // Bob delegates to Carol.
+    c.delegate(&bob, &carol);
+    // Alice → Bob must fail while Bob has an active delegation.
+    let fail_result = c.try_delegate(&alice, &bob);
+    assert!(fail_result.is_err(), "should still fail with chain too deep");
+
+    // Bob revokes his delegation — outgoing record is gone.
+    c.undelegate(&bob);
+
+    // Now Alice → Bob should succeed.
+    c.delegate(&alice, &bob);
+    assert_eq!(
+        c.get_vote_power(&bob),
+        300_i128,
+        "alice's vote power should flow to bob after his undelegation"
+    );
+}
+
 // ─── [UNDEL] Undelegation ─────────────────────────────────────────────────
 
 #[test]

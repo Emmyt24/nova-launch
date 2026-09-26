@@ -11,6 +11,7 @@
 //! 6. Mismatched pre-image rejection
 
 use crate::commit_reveal::CommitRevealStatus;
+use crate::types::Error;
 use crate::{TokenFactory, TokenFactoryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -199,6 +200,7 @@ fn test_commit_reveal_all_forfeit_has_no_valid_reveals() {
         result.is_err(),
         "finalising a session where every bidder forfeited must fail"
     );
+    assert_eq!(result, Err(Ok(Error::NoValidReveals)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

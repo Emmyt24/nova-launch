@@ -19,6 +19,8 @@ mod ipfs_pinning;
 mod amm;
 mod batch_operations;
 mod batch_scheduler;
+#[cfg(test)]
+mod batch_scheduler_test;
 mod bridge;
 #[cfg(test)]
 mod bridge_test;
@@ -1564,6 +1566,110 @@ impl TokenFactory {
     /// fair-share gas allocation on the next eligible ledger.
     pub fn get_pending_batch_tenants(env: Env) -> Vec<Address> {
         batch_scheduler::pending_tenants(&env)
+    }
+
+    // ── Commit-reveal sessions ──────────────────────────────────────────
+
+    pub fn create_commit_reveal_session(
+        env: Env,
+        admin: Address,
+        auction_id: u64,
+        commit_start: u64,
+        commit_end: u64,
+        reveal_end: u64,
+    ) -> Result<u64, Error> {
+        commit_reveal::create_commit_reveal_session(
+            &env,
+            &admin,
+            auction_id,
+            commit_start,
+            commit_end,
+            reveal_end,
+        )
+    }
+
+    pub fn submit_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        commitment: BytesN<32>,
+    ) -> Result<u32, Error> {
+        commit_reveal::submit_commitment(&env, session_id, &bidder, commitment)
+    }
+
+    pub fn reveal_pre_image(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+        pre_image: BytesN<32>,
+    ) -> Result<(), Error> {
+        commit_reveal::reveal_pre_image(&env, session_id, &bidder, pre_image)
+    }
+
+    pub fn finalise_commit_reveal_session(env: Env, session_id: u64) -> Result<BytesN<32>, Error> {
+        commit_reveal::finalise_session(&env, session_id)
+    }
+
+    pub fn get_commit_reveal_session(
+        env: Env,
+        session_id: u64,
+    ) -> Option<commit_reveal::CommitRevealSession> {
+        commit_reveal::get_session(&env, session_id)
+    }
+
+    pub fn get_commitment(
+        env: Env,
+        session_id: u64,
+        bidder: Address,
+    ) -> Option<commit_reveal::CommitRecord> {
+        commit_reveal::get_commitment(&env, session_id, &bidder)
+    }
+
+    // ── Fractionalized assets ───────────────────────────────────────────
+
+    pub fn fractionalize(
+        env: Env,
+        owner: Address,
+        params: types::FractionalizationParams,
+    ) -> Result<u64, Error> {
+        fractionalization::fractionalize(&env, owner, params)
+    }
+
+    pub fn redeem_fractional_asset(
+        env: Env,
+        caller: Address,
+        vault_id: u64,
+    ) -> Result<(), Error> {
+        fractionalization::redeem(&env, caller, vault_id)
+    }
+
+    pub fn transfer_fractional_shares(
+        env: Env,
+        vault_id: u64,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        fractionalization::transfer_shares(&env, vault_id, from, to, amount)
+    }
+
+    pub fn is_asset_fractionalized(env: Env, vault_id: u64) -> bool {
+        fractionalization::is_fractionalized(&env, vault_id)
+    }
+
+    pub fn get_fractional_vault(
+        env: Env,
+        vault_id: u64,
+    ) -> Option<types::FractionalVault> {
+        storage::get_fractional_vault(&env, vault_id)
+    }
+
+    pub fn get_fractional_share_balance(
+        env: Env,
+        vault_id: u64,
+        holder: Address,
+    ) -> i128 {
+        storage::get_fractional_share_balance(&env, vault_id, &holder)
     }
 
     // ── Cross-contract atomic settlement (#1624) ─────────────────────────

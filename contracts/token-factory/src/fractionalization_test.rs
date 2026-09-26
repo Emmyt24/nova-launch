@@ -123,6 +123,38 @@ fn test_fractionalize_and_redeem_happy_path() {
     assert_eq!(vault.status, FractionalStatus::Redeemed);
 }
 
+#[test]
+fn test_transferred_shares_can_reaccumulate_for_redemption() {
+    let ctx = setup();
+    let client = ctx.client();
+    let asset_token = token::Client::new(&ctx.env, &ctx.asset_contract);
+    let vault_id = client.fractionalize(&ctx.owner, &ctx.params(1_000));
+    let second_holder = Address::generate(&ctx.env);
+
+    client.transfer_fractional_shares(&vault_id, &ctx.owner, &second_holder, &400);
+    assert_eq!(
+        client.get_fractional_share_balance(&vault_id, &ctx.owner),
+        600
+    );
+    assert_eq!(
+        client.get_fractional_share_balance(&vault_id, &second_holder),
+        400
+    );
+
+    client.transfer_fractional_shares(&vault_id, &second_holder, &ctx.owner, &400);
+    assert_eq!(
+        client.get_fractional_share_balance(&vault_id, &ctx.owner),
+        1_000
+    );
+    client.redeem_fractional_asset(&ctx.owner, &vault_id);
+
+    assert_eq!(asset_token.balance(&ctx.owner), 1);
+    assert_eq!(
+        client.get_fractional_share_balance(&vault_id, &ctx.owner),
+        0
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Double-fractionalization rejection
 // ════════════════════════════════════════════════════════════════════════
@@ -215,16 +247,8 @@ fn test_partial_shares_redemption_rejected() {
 
     let vault_id = client.fractionalize(&ctx.owner, &ctx.params(1_000));
 
-    // Simulate some shares moving to another holder. There is no public
-    // transfer entry point for fractional shares (mirroring how this
-    // crate's other test suites, e.g. burn/vault tests, adjust balances
-    // directly in storage rather than via a transfer entry point), so the
-    // split is applied directly in storage here.
     let other_holder = Address::generate(&ctx.env);
-    ctx.env.as_contract(&ctx.contract_id, || {
-        crate::storage::set_fractional_share_balance(&ctx.env, vault_id, &ctx.owner, 600);
-        crate::storage::set_fractional_share_balance(&ctx.env, vault_id, &other_holder, 400);
-    });
+    client.transfer_fractional_shares(&vault_id, &ctx.owner, &other_holder, &400);
 
     let result = client.try_redeem_fractional_asset(&ctx.owner, &vault_id);
     assert_eq!(result, Err(Ok(Error::InsufficientShares)));

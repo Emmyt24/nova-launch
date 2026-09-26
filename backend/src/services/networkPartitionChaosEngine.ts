@@ -79,6 +79,8 @@ export interface ProjectionVerifier {
 export interface EventReplayBuffer {
   /** Returns all events that were buffered during the partition. */
   getBufferedEvents(): Promise<string[]>;
+  /** Add an event to the replay buffer while its route is partitioned. */
+  bufferEvent(event: string): Promise<void>;
   /** Replay buffered events into the pipeline. */
   replayAll(): Promise<void>;
   /** Return the number of events buffered since the last clear. */
@@ -193,21 +195,24 @@ export class NetworkPartitionChaosEngine extends ChaosEngine {
     // Simulate event delivery during partition:
     // Events from the severed direction go to the buffer
     let deliveredImmediately = 0;
-    for (const _event of events) {
-      if (this.proxy.isPartitioned(spec.from, spec.to)) {
-        // Buffered
-        await this.buffer.clear(); // we'll track via count below
-      } else {
-        deliveredImmediately++;
+    try {
+      for (const event of events) {
+        if (this.proxy.isPartitioned(spec.from, spec.to)) {
+          const serializedEvent = JSON.stringify(event, (_key, value) =>
+            typeof value === "bigint" ? value.toString() : value
+          );
+          await this.buffer.bufferEvent(serializedEvent);
+        } else {
+          deliveredImmediately++;
+        }
       }
+    } finally {
+      active.heal();
     }
 
     // Wait for partition duration (in tests: clock is mocked, so we just use
     // the durationMs conceptually; we always heal immediately in unit tests)
     const _ = partitionStart; // used for calculation below
-
-    // Heal the partition
-    active.heal();
 
     // Replay buffered events
     const bufferedCount = await this.buffer.bufferedCount();

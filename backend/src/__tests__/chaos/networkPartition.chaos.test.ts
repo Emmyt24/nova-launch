@@ -37,6 +37,7 @@ class InMemoryEventReplayBuffer implements EventReplayBuffer {
   }
 
   async getBufferedEvents(): Promise<string[]> { return [...this.events]; }
+  async bufferEvent(event: string): Promise<void> { this.events.push(event); }
   async replayAll(): Promise<void> { this.replayed += this.events.length; this.events = []; }
   async bufferedCount(): Promise<number> { return this.events.length; }
   async clear(): Promise<void> { this.events = []; }

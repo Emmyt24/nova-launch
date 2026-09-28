@@ -139,5 +139,17 @@
     "loading": "Ana lodi...",
     "processing": "Ana aiki...",
     "pleaseWait": "Don Allah jira..."
+  },
+  "governance": {
+    "title": "Shugabanci",
+    "statusFilter": {
+      "all": "Duka",
+      "active": "Masu aiki",
+      "passed": "An amince",
+      "rejected": "An ƙi",
+      "executed": "An aiwatar",
+      "cancelled": "An soke",
+      "expired": "Sun ƙare"
+    }
   }
 }

@@ -86,7 +86,28 @@ import {
 } from "./subscriptions";
 import { tenantComplexityBudgetService } from "../services/tenantComplexityBudgetService";
 
-const MAX_DEPTH = parseInt(process.env.GRAPHQL_MAX_DEPTH ?? "6", 10);
+/** Documented default query-depth limit, used when GRAPHQL_MAX_DEPTH is unset or malformed. */
+export const DEFAULT_MAX_DEPTH = 6;
+
+/**
+ * Parses GRAPHQL_MAX_DEPTH. A non-numeric value would otherwise yield NaN,
+ * and `depth > NaN` is false for every depth — silently disabling the
+ * depth limit. Malformed values fall back to DEFAULT_MAX_DEPTH with a
+ * loud warning instead.
+ */
+export function resolveMaxDepth(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_MAX_DEPTH;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    console.warn(
+      `[GraphQL] Invalid GRAPHQL_MAX_DEPTH "${raw}" — falling back to default depth limit of ${DEFAULT_MAX_DEPTH}`
+    );
+    return DEFAULT_MAX_DEPTH;
+  }
+  return parsed;
+}
+
+const MAX_DEPTH = resolveMaxDepth(process.env.GRAPHQL_MAX_DEPTH);
 const MAX_COMPLEXITY = parseInt(
   process.env.GRAPHQL_MAX_COMPLEXITY ?? "100",
   10

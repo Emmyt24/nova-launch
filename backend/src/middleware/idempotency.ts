@@ -236,17 +236,51 @@ export function createIdempotencyMiddleware(
         return;
       }
 
+      // Set once the in-flight lock has been completed or cleared, so the
+      // res.json path and the finish/close fallback never both act on it.
+      let settled = false;
+      const isSuccess = () => res.statusCode >= 200 && res.statusCode < 300;
+
       // Intercept res.json to capture the response for future replays
       const originalJson = res.json.bind(res) as (body: unknown) => Response;
       res.json = (body: unknown): Response => {
+        settled = true;
         // Only cache successful (2xx) responses
-        if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (isSuccess()) {
           void store.complete(key, res.statusCode, body);
         } else {
           void store.clearInFlight(key);
         }
         return originalJson(body);
       };
+
+      // Capture bodies sent via res.send() so a 2xx non-JSON response can
+      // still be stored for replay. res.json() also routes through send(),
+      // but by then `settled` is already set and the fallback below no-ops.
+      let sentBody: unknown = null;
+      const originalSend = res.send.bind(res) as (body?: unknown) => Response;
+      res.send = (body?: unknown): Response => {
+        if (!settled && body !== undefined) {
+          sentBody = Buffer.isBuffer(body) ? body.toString("utf8") : body;
+        }
+        return originalSend(body);
+      };
+
+      // Fallback for responses that never go through res.json — res.send(),
+      // res.end(), res.sendStatus(), Express's default error handler, or a
+      // client disconnect. Without this the lock would stay held until the
+      // window expires and every retry would get 409 PROCESSING.
+      const settleOnEnd = (): void => {
+        if (settled) return;
+        settled = true;
+        if (res.writableFinished && isSuccess()) {
+          void store.complete(key, res.statusCode, sentBody);
+        } else {
+          void store.clearInFlight(key);
+        }
+      };
+      res.once("finish", settleOnEnd);
+      res.once("close", settleOnEnd);
 
       next();
     };

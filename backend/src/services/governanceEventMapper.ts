@@ -270,12 +270,20 @@ export class GovernanceEventMapper {
    */
   private mapProposalType(type: string | number): ProposalType {
     if (typeof type === 'number') {
+      // ⚠️  SYNC GUARD — This array MUST stay in the same ordinal order as the
+      //     `ProposalType` enum in `contracts/token-factory/src/types.rs` (or
+      //     the governance contract's equivalent).  If a new variant is ever
+      //     added to the Rust enum, it MUST be appended HERE in the same
+      //     position.  Adding a variant anywhere other than the end will silently
+      //     mis-map every subsequent ordinal.  The pinned-ordinal test in
+      //     `backend/src/services/__tests__/governanceEventMapper.spec.ts`
+      //     exists specifically to catch such drift — update that file too.
       const types = [
-        ProposalType.PARAMETER_CHANGE,
-        ProposalType.ADMIN_TRANSFER,
-        ProposalType.TREASURY_SPEND,
-        ProposalType.CONTRACT_UPGRADE,
-        ProposalType.CUSTOM,
+        ProposalType.PARAMETER_CHANGE,  // 0
+        ProposalType.ADMIN_TRANSFER,    // 1
+        ProposalType.TREASURY_SPEND,    // 2
+        ProposalType.CONTRACT_UPGRADE,  // 3
+        ProposalType.CUSTOM,            // 4
       ];
       return types[type] || ProposalType.CUSTOM;
     }
@@ -296,14 +304,20 @@ export class GovernanceEventMapper {
    */
   private mapProposalStatus(status: string | number): ProposalStatus {
     if (typeof status === 'number') {
+      // ⚠️  SYNC GUARD — This array MUST stay in the same ordinal order as the
+      //     `ProposalStatus` (or `ProposalState`) enum in the governance
+      //     contract source (`contracts/governance/src/...`).  If a variant is
+      //     ever inserted or reordered in the Rust enum, update this array AND
+      //     the pinned-ordinal test in
+      //     `backend/src/services/__tests__/governanceEventMapper.spec.ts`.
       const statuses = [
-        ProposalStatus.ACTIVE,
-        ProposalStatus.PASSED,
-        ProposalStatus.REJECTED,
-        ProposalStatus.QUEUED,
-        ProposalStatus.EXECUTED,
-        ProposalStatus.CANCELLED,
-        ProposalStatus.EXPIRED,
+        ProposalStatus.ACTIVE,      // 0
+        ProposalStatus.PASSED,      // 1
+        ProposalStatus.REJECTED,    // 2
+        ProposalStatus.QUEUED,      // 3
+        ProposalStatus.EXECUTED,    // 4
+        ProposalStatus.CANCELLED,   // 5
+        ProposalStatus.EXPIRED,     // 6
       ];
       return statuses[status] || ProposalStatus.ACTIVE;
     }

@@ -40,9 +40,18 @@ const POLL_INTERVAL_MS = 5000;
 /**
  * Maximum number of ledgers the cursor may lag before a full catchup is
  * triggered on reconnect. Configurable via MAX_CATCHUP_LEDGERS env var.
+ * Falls back to 1000 when the env var is absent or malformed.
  */
-export const MAX_CATCHUP_LEDGERS =
-  parseInt(process.env.MAX_CATCHUP_LEDGERS ?? "1000", 10);
+const _rawMaxCatchup = parseInt(process.env.MAX_CATCHUP_LEDGERS ?? "1000", 10);
+export const MAX_CATCHUP_LEDGERS: number = (Number.isFinite(_rawMaxCatchup) && _rawMaxCatchup > 0)
+  ? _rawMaxCatchup
+  : (() => {
+      console.warn(
+        `[StellarEventListener] MAX_CATCHUP_LEDGERS env var is malformed ` +
+        `("${process.env.MAX_CATCHUP_LEDGERS}") — falling back to default of 1000`
+      );
+      return 1000;
+    })();
 
 /** Prometheus gauge: how many ledgers behind the live ledger the cursor is. */
 const cursorLagGauge = new Gauge({

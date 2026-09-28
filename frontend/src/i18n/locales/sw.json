@@ -139,5 +139,17 @@
     "loading": "Inapakia...",
     "processing": "Inaendelea...",
     "pleaseWait": "Tafadhali subiri..."
+  },
+  "governance": {
+    "title": "Utawala",
+    "statusFilter": {
+      "all": "Zote",
+      "active": "Hai",
+      "passed": "Zimepitishwa",
+      "rejected": "Zimekataliwa",
+      "executed": "Zimetekelezwa",
+      "cancelled": "Zimeghairiwa",
+      "expired": "Zimeisha muda"
+    }
   }
 }

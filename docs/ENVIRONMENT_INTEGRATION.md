@@ -115,6 +115,28 @@ backend (`backend/src/config/env.ts`).
 | `STELLAR_SOROBAN_RPC_URL` | No (derived) | Override default Soroban RPC URL |
 | `FACTORY_CONTRACT_ID` | **Yes in prod** | Deployed contract address |
 | `PORT` | No (defaults to `3001`) | HTTP server port |
+| `STELLAR_REQUEST_TIMEOUT` | No (default: `30000`) | Per-request RPC timeout in ms |
+| `STELLAR_RETRY_MAX_ATTEMPTS` | No (default: `3`) | Max retry attempts for transient RPC errors |
+| `STELLAR_RETRY_INITIAL_DELAY` | No (default: `1000`) | Initial backoff delay in ms before first retry |
+| `STELLAR_RETRY_MAX_DELAY` | No (default: `10000`) | Max backoff delay cap in ms |
+| `STELLAR_RETRY_BACKOFF_FACTOR` | No (default: `2`) | Exponential backoff multiplier between retries |
+| `STELLAR_RATE_LIMIT_MAX` | No (default: `100`) | Max outbound RPC requests per window |
+| `STELLAR_RATE_LIMIT_WINDOW_MS` | No (default: `60000`) | Rate-limit window in ms |
+| `STELLAR_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | No (default: `5`) | Consecutive failures before circuit opens |
+| `STELLAR_CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | No (default: `2`) | Consecutive successes in half-open before closing |
+| `STELLAR_CIRCUIT_BREAKER_TIMEOUT_MS` | No (default: `60000`) | Time circuit stays open before retrying in ms |
+
+### ELK Stack (`docker-compose.elk.yml`)
+
+| Variable | Required | Description |
+|---|---|---|
+| `ELASTICSEARCH_PASSWORD` | **Yes — change before deploying** | Password for the `elastic` superuser. The Docker Compose file defaults to `changeme` when this variable is unset. **Never use the default in any non-local environment.** Set this in your shell or `.env` before running `docker compose … -f docker-compose.elk.yml`. |
+
+> **Security note:** `docker-compose.elk.yml` uses `${ELASTICSEARCH_PASSWORD:-changeme}` as a
+> fallback.  A contributor who launches the ELK stack without explicitly setting this variable
+> will silently run with the default `changeme` password for Elasticsearch, Logstash, and Kibana.
+> Always set `ELASTICSEARCH_PASSWORD` in `.env` (see root `.env.example`) before starting the
+> ELK services.
 
 ---
 

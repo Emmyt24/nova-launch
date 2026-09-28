@@ -105,9 +105,33 @@ export function validateEnv(): BackendEnv {
     throw new Error('JWT_SECRET must be set to a secure value in production.');
   }
 
+  const adminJwtSecret =
+    process.env.ADMIN_JWT_SECRET ||
+    (isProduction ? '' : 'dev-admin-secret-key-change-me');
+  if (
+    isProduction &&
+    (!adminJwtSecret || INSECURE_SECRET_VALUES.has(adminJwtSecret))
+  ) {
+    throw new Error('ADMIN_JWT_SECRET must be set to a secure value in production.');
+  }
+
+  const rawPort = process.env.PORT || '3001';
+  const parsedPort = parseInt(rawPort, 10);
+  if (
+    !Number.isFinite(parsedPort) ||
+    !Number.isInteger(parsedPort) ||
+    parsedPort < 1 ||
+    parsedPort > 65535
+  ) {
+    throw new Error(
+      `PORT must be a valid integer between 1 and 65535, got "${rawPort}". ` +
+      'Check your environment configuration.'
+    );
+  }
+
   return {
     NODE_ENV: nodeEnv,
-    PORT: parseInt(process.env.PORT || '3001', 10),
+    PORT: parsedPort,
     STELLAR_NETWORK: network,
     STELLAR_HORIZON_URL: process.env.STELLAR_HORIZON_URL || defaults.horizonUrl,
     STELLAR_SOROBAN_RPC_URL: process.env.STELLAR_SOROBAN_RPC_URL || defaults.sorobanRpcUrl,

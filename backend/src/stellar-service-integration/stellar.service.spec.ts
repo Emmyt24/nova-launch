@@ -390,4 +390,150 @@ describe("StellarService", () => {
       expect(result.status).toBe("pending");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // getAccountWithSequence (#1718)
+  // -------------------------------------------------------------------------
+  describe("getAccountWithSequence", () => {
+    it("throws StellarInvalidAddressException for an invalid address", async () => {
+      const { StellarInvalidAddressException: Ex } = require("./stellar.exceptions");
+      await expect(service.getAccountWithSequence("bad-address")).rejects.toThrow(Ex);
+    });
+
+    it("returns the account from Horizon on success", async () => {
+      const StellarSdk = require("@stellar/stellar-sdk");
+
+      // Rebuild the Horizon mock to expose loadAccount on the instance
+      const mockLoadAccount = jest.fn().mockResolvedValue({
+        accountId: () => VALID_G_ADDRESS,
+        sequenceNumber: () => "1234",
+        incrementSequenceNumber: jest.fn(),
+      });
+
+      StellarSdk.Horizon.Server.mockImplementation(() => ({
+        transactions: jest.fn().mockReturnValue({
+          transaction: jest.fn().mockReturnValue({
+            call: mockTransactionCall,
+          }),
+        }),
+        loadAccount: mockLoadAccount,
+        submitTransaction: jest.fn(),
+      }));
+
+      // Re-init so the new mock is wired up
+      service.onModuleInit();
+
+      const account = await service.getAccountWithSequence(VALID_G_ADDRESS);
+      expect(mockLoadAccount).toHaveBeenCalledWith(VALID_G_ADDRESS);
+      expect(account).toBeDefined();
+    });
+
+    it("propagates errors thrown by Horizon.loadAccount", async () => {
+      const StellarSdk = require("@stellar/stellar-sdk");
+
+      StellarSdk.Horizon.Server.mockImplementation(() => ({
+        transactions: jest.fn().mockReturnValue({
+          transaction: jest.fn().mockReturnValue({ call: mockTransactionCall }),
+        }),
+        loadAccount: jest.fn().mockRejectedValue(new Error("Horizon unavailable")),
+        submitTransaction: jest.fn(),
+      }));
+
+      service.onModuleInit();
+
+      await expect(
+        service.getAccountWithSequence(VALID_G_ADDRESS)
+      ).rejects.toThrow("Horizon unavailable");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // executeTransaction (#1718)
+  // -------------------------------------------------------------------------
+  describe("executeTransaction", () => {
+    it("throws StellarInvalidAddressException for an invalid account", async () => {
+      const { StellarInvalidAddressException: Ex } = require("./stellar.exceptions");
+      await expect(
+        service.executeTransaction("bad-address", async (acc) => acc as any)
+      ).rejects.toThrow(Ex);
+    });
+
+    it("returns hash and result on a successful submission", async () => {
+      const StellarSdk = require("@stellar/stellar-sdk");
+
+      const fakeTransaction = { sign: jest.fn() };
+      const buildTransaction = jest.fn().mockResolvedValue(fakeTransaction);
+      const mockSubmitTransaction = jest.fn().mockResolvedValue({
+        hash: TX_HASH,
+        successful: true,
+      });
+      const mockLoadAccount = jest.fn().mockResolvedValue({
+        accountId: () => VALID_G_ADDRESS,
+        sequenceNumber: () => "5678",
+        incrementSequenceNumber: jest.fn(),
+      });
+
+      StellarSdk.Horizon.Server.mockImplementation(() => ({
+        transactions: jest.fn().mockReturnValue({
+          transaction: jest.fn().mockReturnValue({ call: mockTransactionCall }),
+        }),
+        loadAccount: mockLoadAccount,
+        submitTransaction: mockSubmitTransaction,
+      }));
+
+      service.onModuleInit();
+
+      const result = await service.executeTransaction(VALID_G_ADDRESS, buildTransaction);
+
+      expect(buildTransaction).toHaveBeenCalled();
+      expect(mockSubmitTransaction).toHaveBeenCalledWith(fakeTransaction);
+      expect(result.hash).toBe(TX_HASH);
+    });
+
+    it("propagates errors thrown during transaction build", async () => {
+      const StellarSdk = require("@stellar/stellar-sdk");
+
+      StellarSdk.Horizon.Server.mockImplementation(() => ({
+        transactions: jest.fn().mockReturnValue({
+          transaction: jest.fn().mockReturnValue({ call: mockTransactionCall }),
+        }),
+        loadAccount: jest.fn().mockResolvedValue({
+          accountId: () => VALID_G_ADDRESS,
+          sequenceNumber: () => "9999",
+          incrementSequenceNumber: jest.fn(),
+        }),
+        submitTransaction: jest.fn(),
+      }));
+
+      service.onModuleInit();
+
+      await expect(
+        service.executeTransaction(VALID_G_ADDRESS, async () => {
+          throw new Error("build failed");
+        })
+      ).rejects.toThrow("build failed");
+    });
+
+    it("propagates errors thrown by Horizon.submitTransaction", async () => {
+      const StellarSdk = require("@stellar/stellar-sdk");
+
+      StellarSdk.Horizon.Server.mockImplementation(() => ({
+        transactions: jest.fn().mockReturnValue({
+          transaction: jest.fn().mockReturnValue({ call: mockTransactionCall }),
+        }),
+        loadAccount: jest.fn().mockResolvedValue({
+          accountId: () => VALID_G_ADDRESS,
+          sequenceNumber: () => "9999",
+          incrementSequenceNumber: jest.fn(),
+        }),
+        submitTransaction: jest.fn().mockRejectedValue(new Error("submission failed")),
+      }));
+
+      service.onModuleInit();
+
+      await expect(
+        service.executeTransaction(VALID_G_ADDRESS, async (acc) => ({}) as any)
+      ).rejects.toThrow("submission failed");
+    });
+  });
 });

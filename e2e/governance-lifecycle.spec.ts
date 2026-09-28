@@ -30,6 +30,14 @@ const SEL = {
   proposalCard: '[data-testid="proposal-card"]',
 };
 
+// Titles of the lifecycle proposals seeded by
+// backend/src/__tests__/utils/seedIntegration.ts (lifecycleProposals).
+const SEEDED = {
+  passed: "Seeded Passed Proposal",
+  queued: "Seeded Queued Proposal",
+  executed: "Seeded Executed Proposal",
+};
+
 const BASE = "http://localhost:5173";
 const GOVERNANCE_URL = `${BASE}/governance`;
 
@@ -159,28 +167,31 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
   test("passed proposal can be queued and status chip updates to 'queued'", async ({
     page,
   }) => {
-    // Navigate directly to a proposal that is in "passed" state (seeded)
+    // Navigate directly to the seeded "passed" proposal
+    // (backend/src/__tests__/utils/seedIntegration.ts → lifecycleProposals)
     await page.goto(`${GOVERNANCE_URL}?status=passed`);
     await page.waitForLoadState("networkidle");
 
-    const passedCard = page.locator(SEL.proposalCard).first();
-    await passedCard.waitFor({ timeout: 10_000 });
-    const cardText = await passedCard.textContent();
-    const proposalTitle = cardText?.split("\n")[0] || "";
+    const passedCard = page
+      .locator(SEL.proposalCard)
+      .filter({ hasText: SEEDED.passed })
+      .first();
+    await expect(
+      passedCard,
+      `seeded proposal "${SEEDED.passed}" must be listed`
+    ).toBeVisible({ timeout: 10_000 });
     await passedCard.click();
 
+    // Seed data guarantees an eligible proposal — a missing button is a failure
     const queueBtn = page.locator(SEL.queueProposalBtn);
-    // Only present for eligible proposals — skip if not rendered
-    if (await queueBtn.isVisible()) {
-      await queueBtn.click();
-      // Scoped to the specific proposal
-      await waitForStatusChip(page, "queued", proposalTitle);
-      await expect(page.locator(SEL.toastSuccess)).toBeVisible({
-        timeout: 8_000,
-      });
-    } else {
-      test.skip(); // no passed proposal seeded in this environment
-    }
+    await expect(queueBtn).toBeVisible({ timeout: 10_000 });
+    await queueBtn.click();
+
+    // Scoped to the specific proposal
+    await waitForStatusChip(page, "queued", SEEDED.passed);
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
   });
 
   // -- 4. Execute ------------------------------------------------------------
@@ -191,23 +202,26 @@ test.describe("Governance Proposal Lifecycle (#1299)", () => {
     await page.goto(`${GOVERNANCE_URL}?status=queued`);
     await page.waitForLoadState("networkidle");
 
-    const queuedCard = page.locator(SEL.proposalCard).first();
-    await queuedCard.waitFor({ timeout: 10_000 });
-    const cardText = await queuedCard.textContent();
-    const proposalTitle = cardText?.split("\n")[0] || "";
+    const queuedCard = page
+      .locator(SEL.proposalCard)
+      .filter({ hasText: SEEDED.queued })
+      .first();
+    await expect(
+      queuedCard,
+      `seeded proposal "${SEEDED.queued}" must be listed`
+    ).toBeVisible({ timeout: 10_000 });
     await queuedCard.click();
 
+    // Seed data guarantees a queued proposal — a missing button is a failure
     const executeBtn = page.locator(SEL.executeProposalBtn);
-    if (await executeBtn.isVisible()) {
-      await executeBtn.click();
-      // Scoped to the specific proposal
-      await waitForStatusChip(page, "executed", proposalTitle);
-      await expect(page.locator(SEL.toastSuccess)).toBeVisible({
-        timeout: 8_000,
-      });
-    } else {
-      test.skip();
-    }
+    await expect(executeBtn).toBeVisible({ timeout: 10_000 });
+    await executeBtn.click();
+
+    // Scoped to the specific proposal
+    await waitForStatusChip(page, "executed", SEEDED.queued);
+    await expect(page.locator(SEL.toastSuccess)).toBeVisible({
+      timeout: 8_000,
+    });
   });
 
   // -- 5. Real-time update via WebSocket/subscription -----------------------

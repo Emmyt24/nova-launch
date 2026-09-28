@@ -74,8 +74,95 @@ const EXPECTED = {
   },
 } satisfies Record<Locale, Record<string, string>>;
 
-/** Governance status values rendered by ProposalList STATUS_OPTIONS */
-const GOVERNANCE_STATUS_LABELS = ["All", "Draft", "Active", "Passed", "Failed", "Executed", "Cancelled"];
+/**
+ * Governance heading + status filter labels per locale, mirroring
+ * frontend/src/i18n/locales/*.json → governance.*
+ */
+const GOVERNANCE_EXPECTED = {
+  en: {
+    title: "Governance",
+    statusFilter: {
+      all: "All",
+      active: "Active",
+      passed: "Passed",
+      rejected: "Rejected",
+      executed: "Executed",
+      cancelled: "Cancelled",
+      expired: "Expired",
+    },
+  },
+  es: {
+    title: "Gobernanza",
+    statusFilter: {
+      all: "Todas",
+      active: "Activas",
+      passed: "Aprobadas",
+      rejected: "Rechazadas",
+      executed: "Ejecutadas",
+      cancelled: "Canceladas",
+      expired: "Expiradas",
+    },
+  },
+  fr: {
+    title: "Gouvernance",
+    statusFilter: {
+      all: "Toutes",
+      active: "Actives",
+      passed: "Adoptées",
+      rejected: "Rejetées",
+      executed: "Exécutées",
+      cancelled: "Annulées",
+      expired: "Expirées",
+    },
+  },
+  ha: {
+    title: "Shugabanci",
+    statusFilter: {
+      all: "Duka",
+      active: "Masu aiki",
+      passed: "An amince",
+      rejected: "An ƙi",
+      executed: "An aiwatar",
+      cancelled: "An soke",
+      expired: "Sun ƙare",
+    },
+  },
+  pt: {
+    title: "Governança",
+    statusFilter: {
+      all: "Todas",
+      active: "Ativas",
+      passed: "Aprovadas",
+      rejected: "Rejeitadas",
+      executed: "Executadas",
+      cancelled: "Canceladas",
+      expired: "Expiradas",
+    },
+  },
+  sw: {
+    title: "Utawala",
+    statusFilter: {
+      all: "Zote",
+      active: "Hai",
+      passed: "Zimepitishwa",
+      rejected: "Zimekataliwa",
+      executed: "Zimetekelezwa",
+      cancelled: "Zimeghairiwa",
+      expired: "Zimeisha muda",
+    },
+  },
+} satisfies Record<Locale, { title: string; statusFilter: Record<string, string> }>;
+
+/** Status filter keys rendered by ProposalList STATUS_OPTIONS (data-testid="status-filter-<key>") */
+const GOVERNANCE_STATUS_FILTER_KEYS = [
+  "all",
+  "active",
+  "passed",
+  "rejected",
+  "executed",
+  "cancelled",
+  "expired",
+] as const;
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:5173";
 
@@ -310,27 +397,23 @@ for (const locale of LOCALES) {
         await page.waitForLoadState("domcontentloaded");
       });
 
-      test("governance page renders without crashing", async () => {
-        // The page heading "Governance" is hardcoded (not i18n) — assert page loaded.
-        const body = page.locator("body");
-        await expect(body).toBeVisible();
-        const bodyText = (await body.textContent()) ?? "";
-        expect(bodyText.length).toBeGreaterThan(0);
+      test("governance heading is translated for the active locale", async () => {
+        const heading = page.locator('[data-testid="governance-heading"]');
+        await expect(heading).toBeVisible({ timeout: 10_000 });
+        await expect(heading).toHaveText(GOVERNANCE_EXPECTED[locale].title);
+        const text = (await heading.textContent())?.trim() ?? "";
+        expect(RAW_KEY_RE.test(text)).toBe(false);
       });
 
-      test("status filter buttons are present and show resolved strings", async () => {
-        // STATUS_OPTIONS in ProposalList are currently English-hardcoded strings.
-        // Assert they appear as-is (resolved) and not as dot-key patterns.
-        for (const label of GOVERNANCE_STATUS_LABELS) {
-          const locator = page.getByRole("button", { name: label, exact: true }).or(
-            page.locator(`[data-testid="status-filter-${label.toLowerCase()}"]`)
+      test("status filter buttons show translated labels", async () => {
+        for (const key of GOVERNANCE_STATUS_FILTER_KEYS) {
+          const button = page.locator(`[data-testid="status-filter-${key}"]`);
+          await expect(button).toBeVisible({ timeout: 10_000 });
+          await expect(button).toHaveText(
+            GOVERNANCE_EXPECTED[locale].statusFilter[key]
           );
-          const count = await locator.count();
-          if (count > 0) {
-            const text = (await locator.first().textContent())?.trim() ?? "";
-            expect(RAW_KEY_RE.test(text)).toBe(false);
-            expect(text.length).toBeGreaterThan(0);
-          }
+          const text = (await button.textContent())?.trim() ?? "";
+          expect(RAW_KEY_RE.test(text)).toBe(false);
         }
       });
 
@@ -375,16 +458,40 @@ for (const locale of LOCALES) {
 
       test("loading message translation resolves to localised string", async () => {
         const expected = EXPECTED[locale].loadingMsg;
-        // loading strings appear in aria-labels of spinners and sr-only spans
-        const loadingLocator = page
-          .locator(`[aria-label*="${expected}"], .sr-only`)
-          .filter({ hasText: expected });
-        // Not guaranteed to be visible during smoke run, so only assert if present.
-        const count = await loadingLocator.count();
-        if (count > 0) {
-          const text = (await loadingLocator.first().textContent())?.trim() ?? "";
+
+        // The Suspense PageLoader is only shown while a lazy page chunk is in
+        // flight, so hold the LandingPage chunk back to make the loader render
+        // deterministically instead of skipping the assertion when it's missed.
+        const chunkPattern = /LandingPage/;
+        let releaseChunk: () => void = () => {};
+        const chunkGate = new Promise<void>((resolve) => {
+          releaseChunk = resolve;
+        });
+        await page.route(chunkPattern, async (route) => {
+          await chunkGate;
+          await route.continue();
+        });
+
+        try {
+          await page.goto("/", { waitUntil: "commit" });
+
+          // Fails (rather than silently passing) if the loader never renders.
+          const loadingMessage = page.locator('[data-testid="page-loader-message"]');
+          await expect(loadingMessage).toBeAttached({ timeout: 10_000 });
+
+          // Fails if the message reverts to untranslated / raw-key text.
+          await expect(loadingMessage).toHaveText(expected);
+          const text = (await loadingMessage.textContent())?.trim() ?? "";
           expect(RAW_KEY_RE.test(text)).toBe(false);
+        } finally {
+          releaseChunk();
+          await page.unroute(chunkPattern);
         }
+
+        // Once the chunk is released, the loader must give way to the page.
+        await expect(page.locator('[data-testid="page-loader"]')).toHaveCount(0, {
+          timeout: 10_000,
+        });
       });
 
       test("error messages in DOM are fully resolved strings", async () => {

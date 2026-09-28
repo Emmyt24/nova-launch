@@ -25,7 +25,16 @@ import {
   MetricsCollector,
 } from "./index";
 
-const MAX_POOL_SIZE = parseInt(process.env.DB_POOL_SIZE ?? "10", 10);
+const _rawPoolSize = parseInt(process.env.DB_POOL_SIZE ?? "10", 10);
+const MAX_POOL_SIZE: number = (Number.isFinite(_rawPoolSize) && _rawPoolSize > 0)
+  ? _rawPoolSize
+  : (() => {
+      console.warn(
+        `[poolMetrics] DB_POOL_SIZE env var is malformed ` +
+        `("${process.env.DB_POOL_SIZE}") — falling back to default of 10`
+      );
+      return 10;
+    })();
 
 let inflightCount = 0;
 

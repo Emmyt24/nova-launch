@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card } from '../UI/Card';
 import { Spinner } from '../UI/Spinner';
 import { Button } from '../UI/Button';
@@ -31,14 +32,14 @@ export interface ProposalListProps {
 /**
  * Status filter options
  */
-const STATUS_OPTIONS: { value: ProposalStatus | ''; label: string }[] = [
-    { value: '', label: 'All' },
-    { value: ProposalStatus.ACTIVE, label: 'Active' },
-    { value: ProposalStatus.PASSED, label: 'Passed' },
-    { value: ProposalStatus.REJECTED, label: 'Rejected' },
-    { value: ProposalStatus.EXECUTED, label: 'Executed' },
-    { value: ProposalStatus.CANCELLED, label: 'Cancelled' },
-    { value: ProposalStatus.EXPIRED, label: 'Expired' },
+const STATUS_OPTIONS: { value: ProposalStatus | ''; labelKey: string }[] = [
+    { value: '', labelKey: 'governance.statusFilter.all' },
+    { value: ProposalStatus.ACTIVE, labelKey: 'governance.statusFilter.active' },
+    { value: ProposalStatus.PASSED, labelKey: 'governance.statusFilter.passed' },
+    { value: ProposalStatus.REJECTED, labelKey: 'governance.statusFilter.rejected' },
+    { value: ProposalStatus.EXECUTED, labelKey: 'governance.statusFilter.executed' },
+    { value: ProposalStatus.CANCELLED, labelKey: 'governance.statusFilter.cancelled' },
+    { value: ProposalStatus.EXPIRED, labelKey: 'governance.statusFilter.expired' },
 ];
 
 /**
@@ -92,6 +93,7 @@ export function ProposalList({
     limit = 10,
     onProposalSelect,
 }: ProposalListProps) {
+    const { t } = useTranslation();
     const [proposals, setProposals] = useState<GovernanceProposal[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -207,6 +209,7 @@ export function ProposalList({
                 {STATUS_OPTIONS.map((opt) => (
                     <button
                         key={opt.value}
+                        data-testid={`status-filter-${opt.value ? opt.value.toLowerCase() : 'all'}`}
                         onClick={() => setStatusFilter(opt.value)}
                         className={`px-3 py-1 text-sm rounded-full transition-colors ${
                             statusFilter === opt.value
@@ -214,7 +217,7 @@ export function ProposalList({
                                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                         }`}
                     >
-                        {opt.label}
+                        {t(opt.labelKey)}
                     </button>
                 ))}
             </div>

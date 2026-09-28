@@ -35,7 +35,25 @@ const RETRY_DELAY_MS = parseInt(process.env.WEBHOOK_RETRY_DELAY_MS || "1000");
 // this many deliveries at once; everything beyond that waits in the pool's
 // internal queue, which is what provides back-pressure under high
 // subscription counts instead of unbounded `Promise.allSettled` fan-out.
-const WORKER_CONCURRENCY = parseInt(process.env.WEBHOOK_WORKER_CONCURRENCY || "10");
+const DEFAULT_WORKER_CONCURRENCY = "10";
+
+/**
+ * Parse WEBHOOK_WORKER_CONCURRENCY, failing fast with an error that names the
+ * misconfigured env var rather than letting WorkerPool throw a generic
+ * "concurrency must be >= 1" error during module load.
+ */
+export function parseWorkerConcurrency(
+  raw: string | undefined = process.env.WEBHOOK_WORKER_CONCURRENCY
+): number {
+  const value = (raw || DEFAULT_WORKER_CONCURRENCY).trim();
+  const parsed = Number.parseInt(value, 10);
+  if (!/^\d+$/.test(value) || !Number.isFinite(parsed) || parsed < 1) {
+    throw new Error(
+      `WEBHOOK_WORKER_CONCURRENCY must be a positive integer (got "${raw}")`
+    );
+  }
+  return parsed;
+}
 
 // Per-tenant delivery rate limit, enforced inside each pool worker (not as
 // HTTP middleware, since this code path is not a request handler).
@@ -82,7 +100,7 @@ export class WebhookDeliveryService {
       process.env.WEBHOOK_COMPRESSION_THRESHOLD_BYTES || "1024"
     );
     this.pool = new WorkerPool<DeliveryTask>({
-      concurrency: WORKER_CONCURRENCY,
+      concurrency: parseWorkerConcurrency(),
       worker: async (task) => {
         await this.deliverWebhook(
           task.subscription,

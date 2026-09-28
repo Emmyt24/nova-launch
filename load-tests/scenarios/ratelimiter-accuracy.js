@@ -4,9 +4,17 @@
  * Fires concurrent requests well above the configured rate-limit budget and
  * asserts that the allow/deny counts match the budget within tolerance.
  *
- * Concurrency  : 50 VUs (RATELIMIT_VUS, default 50) — ~5× the default budget
- * Window       : 60 s (matches the gateway sliding-window default)
- * Budget       : 100 req/min (RATELIMIT_BUDGET, mirrors config.rateLimit.requestsPerMinute)
+ * Concurrency  : 50 VUs (RATELIMIT_VUS, default 50)
+ * Window       : 15 min (RATELIMIT_WINDOW_MS, default 900000 — matches the
+ *                gateway's RATE_LIMIT_WINDOW_MS default in
+ *                backend/src/middleware/rateLimiter.ts)
+ * Budget       : 100 req/window (RATELIMIT_BUDGET, matches the gateway's
+ *                RATE_LIMIT_MAX_REQUESTS default)
+ *
+ * Defaults are sourced from config/gateway-defaults.js so they cannot drift
+ * independently of the runbook/test config. If the gateway under test is
+ * started with non-default RATE_LIMIT_* env vars, pass the same values via
+ * RATELIMIT_WINDOW_MS / RATELIMIT_BUDGET.
  * Tolerance    : ±5 % of budget for allowed-request count
  * Denied status: asserted to be HTTP 429
  *
@@ -14,6 +22,7 @@
  *   BASE_URL          API base URL (default: http://localhost:3001)
  *   RATELIMIT_VUS     Virtual users fired concurrently (default: 50)
  *   RATELIMIT_BUDGET  Configured per-window budget (default: 100)
+ *   RATELIMIT_WINDOW_MS  Configured window length in ms (default: 900000)
  *   RATELIMIT_TOLERANCE_PCT  Tolerance in % (default: 5)
  */
 
@@ -21,6 +30,7 @@ import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Rate } from 'k6/metrics';
 import { config } from '../config/test-config.js';
+import { buildWindowStages } from '../lib/ratelimiter-helpers.js';
 
 // ── Custom metrics ─────────────────────────────────────────────────────────
 
@@ -32,19 +42,16 @@ const deniedRate     = new Rate('rl_denied_rate');
 // ── Parameters ─────────────────────────────────────────────────────────────
 
 const VUS             = parseInt(__ENV.RATELIMIT_VUS          || '50');
-const BUDGET          = parseInt(__ENV.RATELIMIT_BUDGET       || String(config.rateLimit.requestsPerMinute));
+const BUDGET          = parseInt(__ENV.RATELIMIT_BUDGET       || String(config.rateLimit.maxRequests));
+const WINDOW_MS       = parseInt(__ENV.RATELIMIT_WINDOW_MS    || String(config.rateLimit.windowMs));
 const TOLERANCE_PCT   = parseFloat(__ENV.RATELIMIT_TOLERANCE_PCT || '5') / 100;
 const BASE_URL        = __ENV.BASE_URL || config.baseUrl;
 
 // ── Options ────────────────────────────────────────────────────────────────
 
 export const options = {
-  // One burst: ramp to VUS instantly, hold for one window, then ramp down.
-  stages: [
-    { duration: '5s',  target: VUS },
-    { duration: '60s', target: VUS },
-    { duration: '5s',  target: 0 },
-  ],
+  // One burst: ramp to VUS, hold for exactly one gateway window, then ramp down.
+  stages: buildWindowStages(VUS, WINDOW_MS),
   thresholds: {
     // All denied requests must be 429 — verified via check failures
     checks: ['rate>0.90'],
@@ -96,6 +103,7 @@ export function handleSummary(data) {
     timestamp: new Date().toISOString(),
     concurrency: VUS,
     budget: BUDGET,
+    windowMs: WINDOW_MS,
     tolerancePct: TOLERANCE_PCT * 100,
     counts: { allowed, denied, errors },
     assertions: {
@@ -109,7 +117,7 @@ export function handleSummary(data) {
     `=== Rate-Limiter Accuracy Load Test — ${status} ===`,
     `  Timestamp   : ${summary.timestamp}`,
     `  Concurrency : ${VUS} VUs (≈${VUS}× concurrency)`,
-    `  Budget      : ${BUDGET} req/window`,
+    `  Budget      : ${BUDGET} req / ${WINDOW_MS / 60000} min window`,
     `  Tolerance   : ±${TOLERANCE_PCT * 100}%`,
     '',
     '  Counts:',

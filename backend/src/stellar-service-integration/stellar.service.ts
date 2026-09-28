@@ -33,6 +33,7 @@ import {
   isValidAddress,
 } from "./stellar.utils";
 import { SequenceNumberCache } from "./sequence-number-cache";
+import { CacheStellarRead } from "./stellar-cache.decorator";
 
 @Injectable()
 export class StellarService implements OnModuleInit {
@@ -188,7 +189,10 @@ export class StellarService implements OnModuleInit {
 
   /**
    * Fetches token details from a Soroban token contract.
+   * Results are cached for the default TTL to reduce RPC load.
+   * Pass `fresh: true` in the decorator options at the call site to bypass.
    */
+  @CacheStellarRead('tokenInfo')
   async getTokenInfo(tokenAddress: string): Promise<TokenInfo> {
     assertValidAddress(tokenAddress);
     this.logger.log(`Fetching token info for: ${tokenAddress}`);
@@ -264,7 +268,9 @@ export class StellarService implements OnModuleInit {
 
   /**
    * Gets the factory contract state.
+   * Results are cached for the default TTL to reduce RPC load.
    */
+  @CacheStellarRead('factoryState')
   async getFactoryState(): Promise<FactoryState> {
     if (!this.config.factoryContractId) {
       throw new StellarContractException(
@@ -344,7 +350,10 @@ export class StellarService implements OnModuleInit {
 
   /**
    * Retrieves full transaction details from Horizon.
+   * Results are cached for the default TTL — transactions are immutable once
+   * confirmed so this is safe for successful lookups.
    */
+  @CacheStellarRead('transaction')
   async getTransaction(txHash: string): Promise<TransactionDetails> {
     if (!txHash || typeof txHash !== "string") {
       throw new StellarNotFoundException("Transaction", txHash);

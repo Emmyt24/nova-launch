@@ -17,7 +17,9 @@
     "test:all": "npm run test:normal && npm run test:peak && npm run test:stress",
     "test:unit": "vitest run",
     "test:unit:coverage": "vitest run --coverage",
-    "report": "node scripts/generate-report.js"
+    "report": "node scripts/generate-report.js",
+    "test:ratelimiter": "k6 run scenarios/ratelimiter-accuracy.js",
+    "test:ratelimiter:dry-run": "node scripts/ratelimiter-dry-run.js"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^1.6.1",

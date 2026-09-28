@@ -32,7 +32,16 @@ export class VaultClient {
     this.addr       = process.env.VAULT_ADDR       ?? 'http://127.0.0.1:8200';
     this.roleId     = process.env.VAULT_ROLE_ID    ?? '';
     this.secretId   = process.env.VAULT_SECRET_ID  ?? '';
-    this.cacheTtlMs = parseInt(process.env.VAULT_CACHE_TTL_MS ?? '300000', 10); // 5 min
+    const _rawTtl   = parseInt(process.env.VAULT_CACHE_TTL_MS ?? '300000', 10);
+    if (Number.isFinite(_rawTtl) && _rawTtl > 0) {
+      this.cacheTtlMs = _rawTtl;
+    } else {
+      console.warn(
+        `[VaultClient] VAULT_CACHE_TTL_MS env var is malformed ` +
+        `("${process.env.VAULT_CACHE_TTL_MS}") — falling back to default of 300000ms`
+      );
+      this.cacheTtlMs = 300000;
+    }
     this.mountPath  = process.env.VAULT_MOUNT_PATH ?? 'nova';
   }
 

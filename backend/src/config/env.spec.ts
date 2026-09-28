@@ -1,5 +1,7 @@
 /**
- * Tests for validateEnv()'s production JWT-secret guard.
+ * Tests for validateEnv()'s production JWT-secret guard and PORT validation.
+ * Issue: #1999 — Fix the Backend Crashing at Startup Instead of Reporting a
+ * Clear Error on a Malformed PORT.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -43,5 +45,86 @@ describe("validateEnv — production JWT secret guard", () => {
     delete process.env.JWT_SECRET;
     expect(() => validateEnv()).not.toThrow();
     expect(validateEnv().JWT_SECRET).toBe("dev-secret-key-change-me");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PORT validation — Issue #1999
+// ---------------------------------------------------------------------------
+
+describe("validateEnv — PORT validation", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  beforeEach(() => {
+    // Use a non-production environment so JWT/DATABASE guards don't interfere
+    process.env.NODE_ENV = "development";
+    delete process.env.FACTORY_CONTRACT_ID;
+    delete process.env.DATABASE_URL;
+    delete process.env.JWT_SECRET;
+    delete process.env.ADMIN_JWT_SECRET;
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("uses default port 3001 when PORT is unset", () => {
+    delete process.env.PORT;
+    const env = validateEnv();
+    expect(env.PORT).toBe(3001);
+  });
+
+  it("parses a valid numeric PORT correctly", () => {
+    process.env.PORT = "8080";
+    const env = validateEnv();
+    expect(env.PORT).toBe(8080);
+  });
+
+  it("throws a clear error when PORT is a non-numeric string", () => {
+    process.env.PORT = "not-a-port";
+    expect(() => validateEnv()).toThrow(
+      'PORT must be a valid integer between 1 and 65535, got "not-a-port"'
+    );
+  });
+
+  it("throws a clear error when PORT is an empty string", () => {
+    process.env.PORT = "";
+    // Empty string falls through to the default "3001" path, so no throw expected
+    // (empty string is falsy, so `process.env.PORT || '3001'` gives '3001')
+    expect(() => validateEnv()).not.toThrow();
+    expect(validateEnv().PORT).toBe(3001);
+  });
+
+  it("throws a clear error when PORT is 0", () => {
+    process.env.PORT = "0";
+    expect(() => validateEnv()).toThrow(
+      'PORT must be a valid integer between 1 and 65535, got "0"'
+    );
+  });
+
+  it("throws a clear error when PORT is 65536 (out of range)", () => {
+    process.env.PORT = "65536";
+    expect(() => validateEnv()).toThrow(
+      'PORT must be a valid integer between 1 and 65535, got "65536"'
+    );
+  });
+
+  it("throws a clear error when PORT is negative", () => {
+    process.env.PORT = "-1";
+    expect(() => validateEnv()).toThrow(
+      'PORT must be a valid integer between 1 and 65535, got "-1"'
+    );
+  });
+
+  it("accepts PORT=1 (minimum valid port)", () => {
+    process.env.PORT = "1";
+    expect(() => validateEnv()).not.toThrow();
+    expect(validateEnv().PORT).toBe(1);
+  });
+
+  it("accepts PORT=65535 (maximum valid port)", () => {
+    process.env.PORT = "65535";
+    expect(() => validateEnv()).not.toThrow();
+    expect(validateEnv().PORT).toBe(65535);
   });
 });

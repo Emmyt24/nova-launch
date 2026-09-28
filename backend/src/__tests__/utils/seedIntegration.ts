@@ -3,6 +3,7 @@ export const compatibilityEnums = {
     ACTIVE: "ACTIVE",
     PASSED: "PASSED",
     REJECTED: "REJECTED",
+    QUEUED: "QUEUED",
     EXECUTED: "EXECUTED",
     CANCELLED: "CANCELLED",
     EXPIRED: "EXPIRED",
@@ -179,7 +180,43 @@ const baseDates = {
   campaignStart: new Date("2026-03-11T00:00:00.000Z"),
   campaignExecution: new Date("2026-03-12T15:30:00.000Z"),
   campaignCompleted: new Date("2026-03-13T18:30:00.000Z"),
+  governanceQueued: new Date("2026-03-19T12:00:00.000Z"),
+  governanceExecuted: new Date("2026-03-21T12:00:00.000Z"),
 };
+
+/**
+ * Build a seeded proposal row for a given lifecycle status. Shared shape keeps
+ * each lifecycle fixture focused on the fields that differ per status.
+ */
+function lifecycleProposal(
+  proposalId: number,
+  status: string,
+  title: string,
+  overrides: Partial<ProposalRow> = {}
+): ProposalRow {
+  const slug = status.toLowerCase();
+  return {
+    id: `proposal-lifecycle-${slug}`,
+    proposalId,
+    tokenId: "CTOKENLEGACY001",
+    proposer: "GPROPOSERLIFECYCLE001",
+    title,
+    description: `Seeded ${slug} proposal for governance lifecycle e2e coverage`,
+    proposalType: compatibilityEnums.ProposalType.PARAMETER_CHANGE,
+    status,
+    startTime: baseDates.governanceStart,
+    endTime: baseDates.governanceEnd,
+    quorum: BigInt("50000"),
+    threshold: BigInt("25000"),
+    metadata: null,
+    txHash: `tx-proposal-lifecycle-${slug}`,
+    createdAt: baseDates.governanceStart,
+    updatedAt: baseDates.governanceEnd,
+    executedAt: null,
+    cancelledAt: null,
+    ...overrides,
+  };
+}
 
 export const compatibilitySeedData = {
   legacy: {
@@ -265,6 +302,49 @@ export const compatibilitySeedData = {
       updatedAt: baseDates.governanceStart,
       executedAt: null,
       cancelledAt: null,
+    },
+    /**
+     * One proposal per non-ACTIVE lifecycle status exercised by
+     * e2e/governance-lifecycle.spec.ts (passed → queue, queued → execute) plus
+     * the terminal states, so those paths run against real seed data instead
+     * of being skipped.
+     */
+    lifecycleProposals: [
+      lifecycleProposal(
+        7310,
+        compatibilityEnums.ProposalStatus.PASSED,
+        "Seeded Passed Proposal"
+      ),
+      lifecycleProposal(
+        7311,
+        compatibilityEnums.ProposalStatus.QUEUED,
+        "Seeded Queued Proposal",
+        { updatedAt: baseDates.governanceQueued }
+      ),
+      lifecycleProposal(
+        7312,
+        compatibilityEnums.ProposalStatus.EXECUTED,
+        "Seeded Executed Proposal",
+        {
+          updatedAt: baseDates.governanceExecuted,
+          executedAt: baseDates.governanceExecuted,
+        }
+      ),
+      lifecycleProposal(
+        7313,
+        compatibilityEnums.ProposalStatus.REJECTED,
+        "Seeded Rejected Proposal"
+      ),
+    ],
+    lifecycleProposalExecution: {
+      id: "proposal-exec-lifecycle-executed",
+      proposalId: "proposal-lifecycle-executed",
+      executor: "GEXECUTORLIFECYCLE001",
+      success: true,
+      returnData: null,
+      gasUsed: BigInt("48000"),
+      txHash: "tx-proposal-exec-lifecycle-executed",
+      executedAt: baseDates.governanceExecuted,
     },
     vote: {
       id: "vote-legacy-001",
@@ -603,6 +683,12 @@ function seedLegacyProjectionState(state: CompatibilityState) {
     cloneValue(compatibilitySeedData.legacy.campaignExecution)
   );
   state.proposals.push(cloneValue(compatibilitySeedData.legacy.proposal));
+  for (const proposal of compatibilitySeedData.legacy.lifecycleProposals) {
+    state.proposals.push(cloneValue(proposal));
+  }
+  state.proposalExecutions.push(
+    cloneValue(compatibilitySeedData.legacy.lifecycleProposalExecution)
+  );
   state.votes.push(cloneValue(compatibilitySeedData.legacy.vote));
   state.streams.push(cloneValue(compatibilitySeedData.legacy.stream));
 }
@@ -1198,6 +1284,17 @@ export function createCompatibilityHarness(
         }
         return cloned;
       },
+      findMany: async ({
+        where,
+      }: {
+        where?: { status?: string };
+      } = {}) =>
+        state.proposals
+          .filter(
+            (proposal) =>
+              where?.status === undefined || proposal.status === where.status
+          )
+          .map((proposal) => cloneValue(proposal)),
       update: async ({
         where,
         data,

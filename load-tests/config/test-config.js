@@ -1,8 +1,15 @@
 // Load test configuration
+import {
+  BACKEND_DEFAULT_BASE_URL,
+  RATE_LIMIT_WINDOW_MS,
+  RATE_LIMIT_MAX_REQUESTS,
+} from './gateway-defaults.js';
+
 export const config = {
   // Base URL for API
-  // NOTE: Backend runs on port 3001 (see backend configuration). Override with BASE_URL env var if needed.
-  baseUrl: __ENV.BASE_URL || 'http://localhost:3001',
+  // Port is sourced from gateway-defaults.js (mirrors backend/src/config/env.ts).
+  // Override with BASE_URL env var if needed.
+  baseUrl: __ENV.BASE_URL || BACKEND_DEFAULT_BASE_URL,
   
   // Test data
   testData: {
@@ -44,9 +51,11 @@ export const config = {
     },
   },
   
-  // Rate limiting
+  // Rate limiting — mirrors the gateway's default tier
+  // (backend/src/middleware/rateLimiter.ts): 100 requests per 15 minutes.
   rateLimit: {
-    requestsPerMinute: 100,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxRequests: RATE_LIMIT_MAX_REQUESTS,
     burstSize: 20,
   },
 };

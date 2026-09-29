@@ -575,4 +575,82 @@ mod tests {
         let result = env.as_contract(&contract_id, || cancel_recurring_stream(&env, &creator, id));
         assert_eq!(result, Err(Error::RecurringStreamCancelled));
     }
+
+    /// Verify that a finite, non-zero `total_periods` cap is respected even
+    /// when `auto_renew: true` is set.
+    ///
+    /// The `within_total` guard in `trigger_recurring_period` is:
+    ///   `recurring.total_periods == 0 || recurring.periods_created < recurring.total_periods`
+    ///
+    /// `auto_renew` only bypasses the *unbounded* (`total_periods == 0`) case's
+    /// absence of an upper limit — it does **not** override an explicit finite
+    /// cap. This test creates a stream with `total_periods: 3` and
+    /// `auto_renew: true`, successfully triggers the remaining two periods
+    /// (period 0 is created at construction time), and then asserts that a
+    /// fourth `trigger_recurring_period` call returns
+    /// `Err(Error::RecurringStreamLimitReached)` despite `auto_renew_enabled`
+    /// being `true`.
+    #[test]
+    fn finite_total_periods_with_auto_renew_stops_at_cap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+
+        // Create a stream with total_periods=3 and auto_renew=true.
+        env.ledger().with_mut(|li| li.sequence_number = 0);
+        let (creator, id) = env.as_contract(&contract_id, || {
+            let token_index = setup(&env);
+            let creator = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let p = RecurringStreamParams {
+                recipient: recipient.clone(),
+                amount_per_period: 100,
+                period_ledgers: 10,
+                total_periods: 3,
+                auto_renew: true,
+            };
+            let id = create_recurring_stream(&env, &creator, &p, token_index).unwrap();
+
+            // Sanity: construction creates period 1 (periods_created == 1),
+            // and auto_renew_enabled should be true.
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 1);
+            assert!(recurring.auto_renew_enabled);
+
+            (creator, id)
+        });
+
+        // Trigger period 2 of 3 — must succeed.
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        });
+
+        // Trigger period 3 of 3 — must succeed.
+        env.ledger().with_mut(|li| li.sequence_number = 20);
+        env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id).unwrap()
+        });
+
+        // Confirm we have reached the cap.
+        env.as_contract(&contract_id, || {
+            let recurring = storage::get_recurring_stream(&env, id).unwrap();
+            assert_eq!(recurring.periods_created, 3);
+            assert!(recurring.auto_renew_enabled,
+                "auto_renew_enabled must still be true — the cap is enforced by \
+                 within_total, not by toggling auto_renew_enabled");
+        });
+
+        // A fourth trigger must fail with RecurringStreamLimitReached even
+        // though auto_renew_enabled is still true.
+        env.ledger().with_mut(|li| li.sequence_number = 30);
+        let result = env.as_contract(&contract_id, || {
+            trigger_recurring_period(&env, &creator, id)
+        });
+        assert_eq!(
+            result,
+            Err(Error::RecurringStreamLimitReached),
+            "auto_renew must not allow exceeding a finite total_periods cap"
+        );
+    }
 }

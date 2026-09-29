@@ -8,6 +8,17 @@
  *  - Fully testable (injectable delay / clock)
  *
  * Issue: #845
+ *
+ * ## Multiple retry implementations — which one to use
+ *
+ * The backend has three independent retry/backoff implementations. This one
+ * (`WebhookRetryService`) is **for webhook delivery to tenant-owned endpoints
+ * only**. See `docs/RETRY_BACKOFF_GUIDE.md` for a full comparison and
+ * guidance on which implementation a new outbound integration should use:
+ *
+ *   - Outbound HTTP calls to external APIs → `src/lib/outboundHttpClient.ts`
+ *   - Stellar event-listener reconnect    → `src/services/listenerBackoff.ts`
+ *   - Webhook delivery (this file)        → `src/services/webhookRetry.ts`
  */
 
 // ---------------------------------------------------------------------------

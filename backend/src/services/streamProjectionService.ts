@@ -1,5 +1,32 @@
 import { PrismaClient, StreamStatus, StreamWithdrawalType } from "@prisma/client";
 
+/**
+ * @file streamProjectionService.ts
+ *
+ * Builds the `Stream` read-model projection from the persisted `Stream` table.
+ *
+ * ## Relationship to off-chain stream metadata
+ *
+ * There is a **second, similarly-named concept** in this codebase:
+ * `PaymentStreamMetadata` (managed by `streamMetadataService.ts`). It is
+ * entirely separate from the projection maintained here:
+ *
+ * - **This file** (`streamProjectionService.ts`) is the **on-chain stream
+ *   projection** — it maps stored `Stream` rows (financial terms: amount,
+ *   creator, recipient, status, txHash, timestamps) into the
+ *   `StreamProjection` shape consumed by API handlers. These rows are derived
+ *   from contract events processed by `streamEventParser.ts`.
+ *
+ * - **`streamMetadataService.ts`** manages **off-chain, descriptive metadata**
+ *   (title, description, tags) keyed by the same `streamId`, stored in the
+ *   separate `PaymentStreamMetadata` Prisma model. It is a distinct feature
+ *   from this Vaults ingestion pipeline and must not be confused with it.
+ *
+ * A contributor starting from this file should be aware that a second
+ * `streamId`-keyed concept exists alongside — see `streamMetadataService.ts`
+ * for the full explanation of the distinction.
+ */
+
 const prisma = new PrismaClient();
 
 /**

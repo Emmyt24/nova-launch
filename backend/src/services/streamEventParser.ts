@@ -1,6 +1,32 @@
 import { PrismaClient, StreamStatus, StreamWithdrawalType } from '@prisma/client';
 import { StreamCreatedEvent, StreamClaimedEvent, StreamCancelledEvent, StreamMetadataUpdatedEvent } from '../types/stream';
 
+/**
+ * @file streamEventParser.ts
+ *
+ * Parses on-chain stream lifecycle events (created / claimed / cancelled /
+ * metadata_updated) and projects them into the `Stream` Prisma model.
+ *
+ * ## Relationship to off-chain stream metadata
+ *
+ * There is a **second, similarly-named concept** in this codebase:
+ * `PaymentStreamMetadata` (managed by `streamMetadataService.ts`). It is
+ * entirely separate from the `Stream` projection built here:
+ *
+ * - **This file** (`streamEventParser.ts`) maintains the **on-chain stream
+ *   projection** — financial terms (amount, creator, recipient, status) derived
+ *   from contract events. The `streamId` here is the token-factory contract's
+ *   streaming-module stream id.
+ *
+ * - **`streamMetadataService.ts`** manages **off-chain, descriptive metadata**
+ *   (title, description, tags) for the same streams, stored in the
+ *   `PaymentStreamMetadata` Prisma model. It is a distinct feature from this
+ *   Vaults ingestion pipeline and must not be confused with it.
+ *
+ * See `streamMetadataService.ts` for a full explanation of the distinction and
+ * the authorization model for off-chain metadata updates.
+ */
+
 export class StreamEventParser {
   constructor(private prisma: PrismaClient) {}
 

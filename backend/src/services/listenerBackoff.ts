@@ -13,6 +13,18 @@
  * variance while staying within deterministic bounds, ensuring no single retry window
  * dominates the retry pattern. Decorrelated jitter alternatives add more complexity
  * without significant benefit for a 2-factor exponential backoff schedule.
+ *
+ * ## Multiple retry implementations — which one to use
+ *
+ * The backend has three independent retry/backoff implementations. This one
+ * (`ListenerBackoffState` / `calculateReconnectDelay`) is **for the Stellar
+ * event-listener reconnect loop only** — persistent streaming connections
+ * that must always attempt to reconnect rather than circuit-break. See
+ * `docs/RETRY_BACKOFF_GUIDE.md` for a full comparison:
+ *
+ *   - Outbound HTTP calls to external APIs → `src/lib/outboundHttpClient.ts`
+ *   - Stellar event-listener reconnect    → `src/services/listenerBackoff.ts` ← you are here
+ *   - Webhook delivery                    → `src/services/webhookRetry.ts`
  */
 
 /** Type for injectable random number generator */

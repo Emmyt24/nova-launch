@@ -278,6 +278,20 @@ model Stream {
   claimedAt   DateTime?
   cancelledAt DateTime?
 
+  /// NOTE — two separate stream-related concepts exist in this codebase:
+  ///
+  /// 1. **This model (`Stream`)** — the on-chain stream projection built by
+  ///    `streamEventParser.ts` and queried by `streamProjectionService.ts`.
+  ///    It stores the financial terms (amount, creator, recipient, status)
+  ///    derived from contract events. `streamId` is the token-factory
+  ///    contract's streaming-module u64 stream id, stored as Int here.
+  ///
+  /// 2. **`PaymentStreamMetadata`** — off-chain, descriptive data
+  ///    (title/description/tags) managed by `streamMetadataService.ts`.
+  ///    It is keyed by the same `streamId` value but lives in a completely
+  ///    separate table and is a distinct feature from this Vaults ingestion
+  ///    pipeline. See `streamMetadataService.ts` for the full explanation.
+
   @@index([creator])
   @@index([recipient])
   @@index([status])

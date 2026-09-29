@@ -30,6 +30,26 @@
  *  - Query parameters are always passed as bound values (Prisma handles this).
  *  - Pool size is capped to prevent resource exhaustion.
  *  - Health-check uses a read-only probe (`SELECT 1`) with a short timeout.
+ *
+ * ## Two parallel database layers — which one to use
+ *
+ * This is **one of two independent database access layers** in the backend.
+ * The table below summarizes when to use each:
+ *
+ * | Layer | File | Technology | When to use |
+ * |-------|------|------------|-------------|
+ * | Prisma ORM | `backend/src/lib/db.ts` ← you are here | Prisma singleton | **Default for all new code** |
+ * | Raw pg | `backend/src/database/db.ts` | `pg.Pool` | Direct SQL, bulk ops, raw-transaction control |
+ *
+ * **New code should default to this file (Prisma).** The CRUD helpers exported
+ * below (`createToken`, `createBurnRecord`, `upsertUser`, etc.) cover the
+ * common cases. Use `backend/src/database/db.ts` only when you need
+ * capabilities that Prisma does not expose (e.g. `COPY`, advisory locks,
+ * `LISTEN`/`NOTIFY`, or explicit `BEGIN`/`COMMIT` transaction control).
+ *
+ * Subsystems that intentionally use the raw-pg layer are documented in
+ * `backend/src/database/db.ts` — open that file if you need to understand
+ * which services bypass Prisma and why.
  */
 
 import { prisma } from "./prisma";

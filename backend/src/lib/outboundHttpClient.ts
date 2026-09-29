@@ -26,6 +26,17 @@
  *
  *   const client = new OutboundHttpClient({ serviceName: 'horizon' });
  *   const events = await client.execute(() => axios.get(url, { params }));
+ *
+ * ## Multiple retry implementations — which one to use
+ *
+ * The backend has three independent retry/backoff implementations. This one
+ * (`OutboundHttpClient.execute`) is **the default for outbound HTTP calls to
+ * external APIs and internal services**. See `docs/RETRY_BACKOFF_GUIDE.md`
+ * for a full comparison:
+ *
+ *   - Outbound HTTP calls to external APIs → `src/lib/outboundHttpClient.ts` ← you are here
+ *   - Stellar event-listener reconnect    → `src/services/listenerBackoff.ts`
+ *   - Webhook delivery                    → `src/services/webhookRetry.ts`
  */
 
 import { context, propagation } from '@opentelemetry/api';

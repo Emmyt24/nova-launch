@@ -1,3 +1,50 @@
+/**
+ * Raw PostgreSQL access layer — `backend/src/database/db.ts`
+ *
+ * This module wraps a raw `pg.Pool` and exposes three helpers:
+ *   - `query(text, params)` — execute a parameterized SQL query
+ *   - `getClient()` — acquire a `PoolClient` for multi-statement transactions
+ *   - `closePool()` — drain and close the pool (used in tests / graceful shutdown)
+ *
+ * ## Why two database layers exist
+ *
+ * The backend has **two independent database access layers** that coexist by
+ * design, each serving a different purpose:
+ *
+ * | Layer | File | Technology | When to use |
+ * |-------|------|------------|-------------|
+ * | Raw pg | `backend/src/database/db.ts` ← you are here | `pg.Pool` | Direct SQL, bulk operations, raw-transaction control |
+ * | Prisma ORM | `backend/src/lib/db.ts` | Prisma singleton | All new feature code; type-safe CRUD helpers |
+ *
+ * ### Default for new code: use `backend/src/lib/db.ts` (Prisma)
+ *
+ * `backend/src/lib/db.ts` is the **default layer for new code**. It wraps the
+ * Prisma singleton (`lib/prisma.ts`) and re-exports typed CRUD helpers such as
+ * `createToken`, `createBurnRecord`, `upsertUser`, and `upsertDailyAnalytics`.
+ * Prisma handles parameterization, type safety, and connection pooling
+ * automatically. Prefer it for all application-level reads and writes.
+ *
+ * ### Deliberate exceptions: subsystems that use this raw-pg layer
+ *
+ * A handful of subsystems intentionally bypass Prisma and use this raw-pg pool
+ * because they need capabilities that Prisma's query engine does not expose:
+ *
+ * - **`webhookDeadLetterService.ts`** — uses `query()` for bulk dead-letter
+ *   inserts and transactional batch processing where explicit `BEGIN`/`COMMIT`
+ *   via `getClient()` gives finer control over error isolation per batch row.
+ *
+ * - **`database/schema.sql`** — DDL-level schema bootstrap that runs outside
+ *   Prisma migrations (legacy tables pre-dating the Prisma migration history).
+ *
+ * If you are adding a new subsystem that requires raw SQL (e.g. `COPY`,
+ * advisory locks, `LISTEN`/`NOTIFY`, or full-text-search-specific syntax),
+ * use this layer. Otherwise, default to `backend/src/lib/db.ts`.
+ *
+ * ## Cross-reference
+ * See `backend/src/lib/db.ts` for the Prisma-based layer, pool stats, and the
+ * `checkDatabaseHealth()` health-check surface used by `/health/ready`.
+ */
+
 import { Pool, PoolClient } from "pg";
 import dotenv from "dotenv";
 

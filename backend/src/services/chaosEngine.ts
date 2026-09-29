@@ -1,3 +1,32 @@
+/**
+ * General-purpose fault-injection engine for campaign-consistency chaos tests.
+ *
+ * ## Relationship to NetworkPartitionChaosEngine
+ *
+ * `ChaosEngine` is the **base class** for all chaos testing in this codebase.
+ * It provides seeded-random fault generation (indexer lag, duplicate events,
+ * backend outages, retry storms) that are applicable to any integration
+ * scenario.
+ *
+ * `NetworkPartitionChaosEngine` (in `./networkPartitionChaosEngine.ts`) is a
+ * **specialization** of this class: it `extends ChaosEngine` and adds
+ * network-partition primitives (a `PartitionProxy`, an `EventReplayBuffer`,
+ * and a `ProjectionVerifier`) on top of the base fault types.
+ *
+ * A partition-specific engine was built as a subclass rather than as a fault
+ * type registered with this class because partitions require injectable
+ * infrastructure dependencies (proxy, buffer, verifier, clock) that are
+ * fundamentally different in kind from the statistical fault types here, and
+ * because partition scenarios need their own async `runPartitionScenario`
+ * lifecycle that would not fit naturally into the synchronous fault-injection
+ * API below.
+ *
+ * ## Usage
+ *
+ * Instantiate with a deterministic seed for reproducible test runs. All
+ * pseudo-random choices derive from the same LCG state so a failing scenario
+ * can always be reproduced by replaying the same seed.
+ */
 export interface ChaosScenario {
   seed: number;
   campaigns: number;

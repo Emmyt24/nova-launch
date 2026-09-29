@@ -4,6 +4,34 @@ import { logger } from "../lib/logger";
 import { stellarConfig } from "../lib/stellar";
 import { eventBus } from "./eventBus";
 
+/**
+ * Stream reconciliation — the second half of the stream projection pipeline.
+ *
+ * `streamProjectionService.ts` builds the `Stream` projection (the `prisma.stream`
+ * rows) from on-chain events. This service is deliberately kept separate from
+ * that projection builder: it does not build or mutate the projection, it only
+ * *reads* it and checks it against a second source of truth.
+ *
+ * What "divergence" means here: for each stream in a non-terminal status
+ * (`CREATED` or `CLAIMED`), the projected balance is derived from the projection
+ * row (`calculateProjectedBalance`: `0` once `CLAIMED`, otherwise `amount`), and
+ * that value is compared against the balance read back from the chain
+ * (`fetchOnChainBalance`, via Horizon contract events). A divergence is recorded
+ * whenever the two disagree — i.e. the projection built by
+ * `streamProjectionService.ts` no longer matches on-chain state. Divergences are
+ * surfaced as `StreamDivergence` records and published on the eventBus as
+ * `"stream.divergence_detected"` (consumed by `streamDivergenceAlerting.ts`).
+ *
+ * Deliberate exceptions to the "compare projection against chain" convention:
+ * - Streams in terminal statuses (e.g. `CANCELLED`) are not queried at all, so
+ *   they are never reconciled.
+ * - When no on-chain balance can be resolved (`fetchOnChainBalance` returns
+ *   `null`, e.g. no `factoryContractId` configured or the event lookup fails),
+ *   the stream is skipped rather than reported as a divergence.
+ * - The projection is never repaired here; reconciliation only detects and
+ *   reports, leaving any correction to the projection builder.
+ */
+
 export interface StreamDivergence {
   streamId: number;
   creator: string;
@@ -263,34 +291,6 @@ export class StreamReconciliationService {
     lines.push(`  Duration:         ${result.reconciliationTime}ms`);
     lines.push(`  Total Streams:    ${result.totalStreams}`);
     lines.push(`  Checked:          ${result.streamsChecked}`);
-    lines.push(`  Divergences:      ${result.divergences.length}`);
-    lines.push(`  Errors:           ${result.errors.length}`);
-    lines.push("───────────────────────────────────────────────────────");
+    lines.push(`
 
-    if (result.errors.length > 0) {
-      lines.push("  ERRORS:");
-      result.errors.forEach((err) => {
-        lines.push(`    ⚠ ${err}`);
-      });
-      lines.push("");
-    }
-
-    if (result.divergences.length > 0) {
-      lines.push("  DIVERGENCES:");
-      result.divergences.forEach((div) => {
-        lines.push(`    ❌ Stream ${div.streamId} (${div.field})`);
-        lines.push(`       Projected: ${div.projectedValue}`);
-        lines.push(`       On-chain:  ${div.onChainValue}`);
-      });
-    } else {
-      lines.push("  ✅ All streams reconciled successfully");
-    }
-
-    lines.push("═══════════════════════════════════════════════════════");
-    return lines.join("\n");
-  }
-}
-
-export const streamReconciliationService = new StreamReconciliationService(
-  new PrismaClient()
-);
+/* … truncated 986 chars — edit only what you need near the top … */

@@ -2,6 +2,15 @@ import { PrismaClient, StreamStatus, StreamWithdrawalType } from "@prisma/client
 
 const prisma = new PrismaClient();
 
+/**
+ * Read model for a single stream, derived from the `Stream` table.
+ *
+ * This is the projection that `streamReconciliation.ts` treats as the
+ * "expected" side of its comparison: reconciliation reads these rows and
+ * checks them against a second source of truth (the on-chain / event-derived
+ * state) to detect divergence. See `streamReconciliation.ts` for the exact
+ * definition of "divergence" and how it is reported.
+ */
 export interface StreamProjection {
   id: string;
   streamId: number;
@@ -55,6 +64,27 @@ export interface StreamWithdrawalRecord {
 /** Hard upper bound on page size for keyset-paginated stream listings. */
 const MAX_KEYSET_PAGE_SIZE = 50;
 
+/**
+ * Builds the `Stream` read projection from the persisted `Stream` table.
+ *
+ * This service is the projection-building half of the stream read path: it
+ * maps stored rows into the `StreamProjection` shape consumed by API handlers
+ * and clients. It does not verify that the stored rows match on-chain state.
+ *
+ * That verification is deliberately a separate concern, implemented in
+ * `streamReconciliation.ts`. Reconciliation reads the projection produced
+ * here and compares it against a second source of truth (the on-chain /
+ * event-derived stream state); when the two disagree it publishes a
+ * `"stream.divergence_detected"` event (see `streamDivergenceAlerting.ts`).
+ * The two files are kept separate so that projection reads stay cheap and
+ * side-effect free, while reconciliation can run on its own schedule and
+ * emit alerts without coupling alerting logic into every read.
+ *
+ * Deliberate exception: reconciliation only covers streams that have been
+ * indexed into the `Stream` table. Streams that exist on-chain but have not
+ * yet been projected here are out of scope for divergence detection, since
+ * there is no projection row to compare against.
+ */
 export class StreamProjectionService {
   async getStreamById(streamId: number): Promise<StreamProjection | null> {
     const stream = await prisma.stream.findUnique({ where: { streamId } });

@@ -4,6 +4,47 @@
 //! Every transition is authorized (campaign owner or contract admin),
 //! replay-resistant, and rejected with a dedicated error when illegal.
 //!
+//! ## Authorization model
+//!
+//! This module and `campaign_breaker.rs` together define a **three-tier
+//! authority split** over campaign controls:
+//!
+//! | Operation                               | Required authority          |
+//! |-----------------------------------------|-----------------------------|
+//! | `pause_campaign`                        | Campaign owner **or** admin |
+//! | `resume_campaign`                       | Campaign owner **or** admin |
+//! | `cancel_campaign`                       | Campaign owner **or** admin |
+//! | `finalize_campaign`                     | Campaign owner **or** admin |
+//! | `retry_finalize_campaign`               | Campaign owner **or** admin |
+//! | `emergency_halt_campaign` (breaker)     | Governance contract **only** |
+//! | `clear_emergency_halt` (breaker)        | Governance contract **only** |
+//! | `set_breaker_config` (breaker)          | Governance contract **only** |
+//!
+//! The authority levels from weakest to strongest are:
+//! - **Owner/admin (`require_owner_or_admin`)** — day-to-day lifecycle
+//!   operations that an individual campaign creator or the platform
+//!   operator needs to manage normally (pause for maintenance, cancel a
+//!   failed campaign, finalize a completed one).
+//! - **Governance-only (`assert_governance` in `campaign_breaker.rs`)** —
+//!   safety-critical emergency controls that must only be triggered through
+//!   the on-chain governance process, never unilaterally by an owner or the
+//!   platform admin. This separation ensures that an operator compromise
+//!   cannot lift a governance-imposed emergency halt.
+//!
+//! **Consequence:** a campaign owner can pause their own campaign, but
+//! **cannot** clear an emergency halt placed on it — only the governance
+//! contract address can do that.
+//!
+//! ### Adding a new campaign-control entrypoint
+//!
+//! - Use `require_owner_or_admin` for operational controls that a campaign
+//!   owner should be able to invoke during normal lifecycle management.
+//! - Use `assert_governance` (from `campaign_breaker.rs`) for anything
+//!   classified as a safety-critical emergency intervention or a change to
+//!   global protocol parameters. The criterion is: "would lifting this
+//!   restriction allow an individual actor to cause systemic harm?" If yes,
+//!   gate it on governance.
+//!
 //! ## State machine
 //!
 //! ```text

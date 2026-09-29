@@ -75,6 +75,28 @@ export class InMemoryEventStore implements EventStore {
   }
 }
 
+/**
+ * General-purpose, in-memory event-sourcing utility.
+ *
+ * ## ⚠️  This is NOT the projection snapshot system
+ *
+ * This codebase has two unrelated concepts both called "snapshot":
+ *
+ * 1. **`EventSourcingService.createSnapshot` / `AggregateSnapshot`** (this
+ *    file) — a generic, in-memory utility keyed by `aggregateId`. It is a
+ *    standalone event-sourcing building block and is **not** used in
+ *    production by any live feature today.
+ *
+ * 2. **`projectionSnapshot.ts` / `ProjectionSnapshot`** — a
+ *    Prisma-persisted, ledger-keyed snapshot of the campaign, governance,
+ *    stream, and vault projection tables. This is the system that
+ *    actually backs event replay and projection restore in production (see
+ *    `eventReplayService.ts` and `projectionConsistencyCheck.ts`). It is
+ *    documented in full in `docs/PROJECTION_SNAPSHOTS.md`.
+ *
+ * If you arrived here looking for the replay/restore mechanism, you want
+ * `projectionSnapshot.ts` and `eventReplayService.ts`, not this class.
+ */
 export class EventSourcingService {
   private eventStore: EventStore;
   private auditTrail: AuditTrail[] = [];

@@ -102,9 +102,33 @@ pub fn lock_tokens(
 
 /// Release `amount` of `token` to `recipient`, authorizing with `nonce`.
 ///
+/// ## Why there is no local `BridgeLock` check here
+///
+/// `release_tokens` deliberately does **not** look up or validate against a
+/// local [`BridgeLock`] record. In a real deployment this contract runs
+/// independently on the **destination chain**, where no lock record exists —
+/// the lock was recorded on the source-chain instance of this contract by
+/// `lock_tokens`. Cross-checking against a local `BridgeLock` would
+/// therefore always fail on the destination side, making `release_tokens`
+/// unusable for its primary purpose.
+///
+/// Replay protection is provided entirely by `nonce`, which must be supplied
+/// verbatim (obtained off-chain from the source-chain `lock_tokens`
+/// call/event) and can only be consumed once (see [`Error::BridgeNonceAlreadyReleased`]).
+///
+/// The admin is trusted to have verified the corresponding source-chain lock
+/// before calling this function. Hardening options for follow-up:
+/// - **Multisig approval:** require M-of-N authorized signers to approve the
+///   release before it executes.
+/// - **Signed source-chain attestation:** verify a cryptographic proof (e.g.
+///   a Merkle proof of the lock event) supplied by the relayer, removing the
+///   single-admin trust assumption entirely.
+///
+/// See the module-level doc for the full cross-chain design context.
+///
 /// `nonce` must not have been released before (replay protection); it is
-/// otherwise not cross-checked against any local `BridgeLock` — see the
-/// module docs above for why.
+/// otherwise not cross-checked against any local `BridgeLock` — see above
+/// for why.
 ///
 /// # Safety Guarantees
 /// - `admin` must authorize the call and must match the configured factory admin.

@@ -3,8 +3,46 @@
 //! A high-severity safety control that can halt buyback execution during
 //! abnormal market or protocol conditions.
 //!
-//! Three automatic circuit-breaker triggers are evaluated from telemetry
-//! reported by the execution engine / oracles:
+//! ## Authorization model
+//!
+//! This module and `campaign.rs` together define a **three-tier authority
+//! split** over campaign controls:
+//!
+//! | Operation                               | Required authority          |
+//! |-----------------------------------------|-----------------------------|
+//! | `pause_campaign` (campaign.rs)          | Campaign owner **or** admin |
+//! | `resume_campaign` (campaign.rs)         | Campaign owner **or** admin |
+//! | `cancel_campaign` (campaign.rs)         | Campaign owner **or** admin |
+//! | `finalize_campaign` (campaign.rs)       | Campaign owner **or** admin |
+//! | `emergency_halt_campaign`               | Governance contract **only** |
+//! | `clear_emergency_halt`                  | Governance contract **only** |
+//! | `set_breaker_config`                    | Governance contract **only** |
+//!
+//! The three tiers in order of increasing authority:
+//! - **Owner/admin** — day-to-day lifecycle management (see `campaign.rs`).
+//! - **Governance-only (`assert_governance`)** — safety-critical emergency
+//!   controls that must only be invoked through the on-chain governance
+//!   process, not unilaterally by the platform admin or a campaign owner.
+//!   This separation prevents a single compromised key from lifting an
+//!   emergency halt.
+//!
+//! **Key consequence:** a campaign owner can pause their own campaign
+//! (via `campaign.rs`) but **cannot** clear an emergency halt placed on it
+//! — only the configured governance contract address can do that.
+//!
+//! ### Adding a new campaign-control entrypoint
+//!
+//! - Use `require_owner_or_admin` (from `campaign.rs`) for normal lifecycle
+//!   operations that campaign owners should be able to invoke.
+//! - Use `assert_governance` (this module) for anything safety-critical or
+//!   that changes global protocol parameters. Ask: "could lifting this
+//!   restriction allow an individual actor to cause systemic harm?" If yes,
+//!   it belongs behind governance.
+//!
+//! ## Automatic circuit-breaker triggers
+//!
+//! Three automatic triggers are evaluated from telemetry reported by the
+//! execution engine / oracles:
 //!
 //! 1. **Volatility spikes** — consecutive price observations for a campaign
 //!    moving further apart than `volatility_threshold_bps`.

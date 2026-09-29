@@ -192,7 +192,70 @@ export class WebhookDeliveryService {
   }
 
   /**
-   * Deliver webhook to a single subscription with circuit breaker and retry logic
+   * Deliver webhook to a single subscription with circuit breaker and retry logic.
+   *
+   * ## Two-tier rate limiting design
+   *
+   * Every delivery passes through **two independent rate limiters applied in
+   * sequence**. Understanding both is essential when tuning the related env
+   * vars, especially in multi-instance deployments.
+   *
+   * ### Tier 1 — Redis sliding-window limiter (`isWithinTenantRateLimit`)
+   *
+   * - **What it protects against:** Bursty per-tenant delivery volume at the
+   *   infrastructure level across the entire fleet. The window tracks how many
+   *   deliveries a tenant has triggered within `WEBHOOK_TENANT_RATE_LIMIT_WINDOW_MS`
+   *   (default 60 000 ms) and rejects deliveries that would exceed
+   *   `WEBHOOK_TENANT_RATE_LIMIT_MAX` (default 60) within that window.
+   * - **Failure mode — fail-open:** If Redis is unavailable (connection error,
+   *   timeout, or `REDIS_URL` is not set) the check resolves `true`
+   *   (allowed). A Redis outage therefore does **not** stop webhook delivery;
+   *   it temporarily lifts this limiter only.
+   * - **Multi-instance behavior:** The Redis key is shared across all running
+   *   delivery-worker instances. Counts are global: 10 instances each firing
+   *   6 deliveries/min for the same tenant all count toward the same window.
+   *   This makes Tier 1 the authoritative cross-process bound.
+   * - **Behavior on excess:** A single one-shot retry (after a brief back-off)
+   *   is attempted before the delivery is skipped and logged as rate-limited.
+   *   The delivery is **not** queued for later — it is dropped.
+   *
+   * ### Tier 2 — In-memory token-bucket limiter (`this.rateLimiter.acquire`)
+   *
+   * - **What it protects against:** Per-tenant delivery pacing within a single
+   *   worker process. The bucket smooths out short bursts and prevents one
+   *   active tenant from monopolizing outbound HTTP concurrency at the process
+   *   level.
+   * - **Failure mode — queue-not-drop:** `acquire()` never rejects. If the
+   *   bucket is empty, the call suspends until a token refills. Deliveries are
+   *   always eventually attempted; they are paced, not dropped.
+   * - **Multi-instance caveat:** `TenantWebhookRateLimiter` is an in-memory
+   *   `Map` (see `tenantWebhookRateLimiter.ts`). Each delivery-worker process
+   *   maintains its own independent set of buckets. If N instances run in
+   *   parallel, the effective throughput permitted by Tier 2 alone is
+   *   `N × ratePerMinute`. Tier 1 (Redis) is therefore the cross-instance
+   *   ceiling; Tier 2 is a per-process shaping layer beneath it.
+   * - **Configuration:** `WEBHOOK_RATE_LIMIT_PER_MINUTE` (default 100) and
+   *   `WEBHOOK_RATE_LIMIT_BURST` (default 20).
+   *
+   * ### Operator guidance — keeping the limits consistent
+   *
+   * To reason about effective limits:
+   *
+   * ```
+   * Tier 1 Redis limit  : WEBHOOK_TENANT_RATE_LIMIT_MAX per WEBHOOK_TENANT_RATE_LIMIT_WINDOW_MS
+   * Tier 2 bucket limit : WEBHOOK_RATE_LIMIT_PER_MINUTE (× number of worker instances)
+   * ```
+   *
+   * - Set `WEBHOOK_TENANT_RATE_LIMIT_MAX` ≥ `WEBHOOK_RATE_LIMIT_PER_MINUTE × N` so
+   *   that the Redis limit is the effective ceiling and the bucket limiter only
+   *   shapes intra-process pacing. If the Redis limit is tighter than the
+   *   per-process bucket, deliveries will be silently dropped at Tier 1 even
+   *   though Tier 2 has capacity.
+   * - If delivery workers are never run as more than one instance, the Tier 2
+   *   config is the de-facto pacing control and the Redis limit acts as a
+   *   safety ceiling — either configuration is valid as long as they are set
+   *   consciously.
+   *
    * @internal
    */
   async deliverWebhook(

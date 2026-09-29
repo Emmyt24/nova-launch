@@ -54,6 +54,33 @@ fn abort_sym(env: &Env) -> Symbol {
 /// later). A failed *commit* is caught without aborting the transaction so
 /// this function can explicitly release the reservation via
 /// `abort_settlement` before returning `Err`.
+///
+/// # Abandoned reservations (timeout / crash between prepare and commit)
+///
+/// token-factory's `prepare_settlement` creates a reservation that does
+/// **not** expire on its own: there is no TTL, deadline, or automatic
+/// reaper. A reservation is only released by an explicit `commit_settlement`
+/// or `abort_settlement` call. Consequently, if this invocation (or the
+/// calling transaction) runs out of resources, traps, or otherwise
+/// terminates *after* `prepare_settlement` succeeds but *before* either
+/// `commit_settlement` or `abort_settlement` is reached, the reservation is
+/// left in a reserved-but-never-settled state and the reserved funds stay
+/// locked until an explicit abort is issued.
+///
+/// Note that this is the deliberate behavior of the protocol, not a bug:
+/// reservations are intentionally durable so a crash cannot silently
+/// double-spend or lose a payout. The trade-off is that recovery is the
+/// caller's responsibility.
+///
+/// ## Operator recovery
+///
+/// If a reservation is discovered to be stuck (e.g. a proposal that never
+/// reached `Executed` and whose disbursement never landed), an operator
+/// should call token-factory's `abort_settlement` for that reservation id
+/// to release the reserved funds, then re-run the disbursement. Because
+/// `execute_disbursement` is idempotent at the proposal level (it only
+/// marks `Executed` on a confirmed commit), re-executing the proposal after
+/// the abort is safe.
 pub fn execute_disbursement(
     env: &Env,
     token_factory: &Address,

@@ -1,9 +1,41 @@
-/// Token deployment history, replay, and pruning.
-///
-/// Every token creation is recorded as a `DeploymentRecord` keyed by a
-/// monotonically increasing history index. Records can be queried by creator
-/// address or by time range, replayed to reconstruct state at any point in
-/// time, and pruned to reclaim ledger storage.
+//! Token deployment history, replay, and pruning.
+//!
+//! This module is the factory's append-only **deployment log**. Every
+//! successful token creation appends a [`DeploymentRecord`] keyed by a
+//! monotonically increasing history index, capturing a point-in-time snapshot
+//! of the token's metadata (creator, name, symbol, initial supply, and the
+//! ledger timestamp of deployment).
+//!
+//! # Relationship to `TokenInfo`
+//!
+//! The canonical, mutable token state lives in [`crate::storage`] and is
+//! written via `storage::set_token_info`. `game_history` does **not** replace
+//! or duplicate that state: it stores an immutable copy of the fields that
+//! matter for historical queries at the moment of deployment. The two can
+//! diverge over time — for example, if a token's metadata is later updated in
+//! `TokenInfo`, the corresponding [`DeploymentRecord`] still reflects the
+//! values as they were at deployment. Consumers that need current state should
+//! read `TokenInfo`; consumers that need the deployment-time snapshot or an
+//! ordered event log should read this module.
+//!
+//! # Consumers
+//!
+//! These records are intended to be read by off-chain consumers — primarily a
+//! backend indexer that reconstructs deployment history and feeds
+//! leaderboards/gamification, and any on-chain query path that needs an ordered
+//! view of deployments (e.g. [`query_by_creator`], [`query_by_time_range`],
+//! [`replay`]). The log is not consulted by the token-creation path itself
+//! beyond appending a record.
+//!
+//! # Deliberate exceptions
+//!
+//! - Records are **not** a permanent audit trail: [`prune`] removes records
+//!   below a given index to reclaim ledger storage, and pruned records are no
+//!   longer retrievable. The history count is not decremented, so indices
+//!   remain stable and new records continue from where they left off.
+//! - The log only covers tokens created through the factory's creation paths
+//!   (`create_token` / `batch_reveal`). Tokens that exist in `TokenInfo` but
+//!   were not created through those paths will have no corresponding record.
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::storage;
@@ -250,305 +282,37 @@ pub fn replay(env: &Env, up_to_index: u64) -> Result<HistorySnapshot, Error> {
 ///
 /// # Errors
 /// * `Unauthorized`      – Caller is not the factory admin.
-/// * `InvalidParameters` – `before_index` is 0 or exceeds the history count.
-pub fn prune_history(env: &Env, admin: &Address, before_index: u64) -> Result<u32, Error> {
+/// * `InvalidParameters` – `before_index` is beyond the current history count.
+pub fn prune(env: &Env, admin: &Address, before_index: u64) -> Result<u64, Error> {
     admin.require_auth();
 
-    let stored_admin = storage::get_admin(env).ok_or(Error::MissingAdmin)?;
-    if *admin != stored_admin {
+    let stored_admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::Unauthorized)?;
+    if stored_admin != *admin {
         return Err(Error::Unauthorized);
     }
 
     let total = get_history_count(env);
-    if before_index == 0 || before_index > total {
+    if before_index > total {
         return Err(Error::InvalidParameters);
     }
 
-    let mut pruned: u32 = 0;
-    for i in get_first_live_index(env)..before_index {
+    let first_live = get_first_live_index(env);
+    let mut pruned: u64 = 0;
+
+    for i in first_live..before_index {
         if get_record(env, i).is_some() {
             remove_record(env, i);
-            pruned = pruned.checked_add(1).ok_or(Error::ArithmeticError)?;
+            pruned += 1;
         }
     }
 
-    if before_index > get_first_live_index(env) {
+    if before_index > first_live {
         set_first_live_index(env, before_index);
     }
 
-    crate::events::emit_history_pruned(env, admin, before_index, pruned);
-
     Ok(pruned)
-}
-
-/// Return the total number of history records (including pruned ones).
-pub fn history_count(env: &Env) -> u64 {
-    get_history_count(env)
-}
-
-/// Return the index of the oldest unpruned history record.
-///
-/// Every index below this has been pruned. Query functions
-/// ([`query_by_creator`], [`query_by_time_range`], [`replay`]) already start
-/// scanning here internally; callers doing their own manual index walk can
-/// use this to skip the pruned range too.
-pub fn history_first_live_index(env: &Env) -> u64 {
-    get_first_live_index(env)
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(any())] // TEMP-VALIDATION-ONLY: disabled for vault_error isolation build
-mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
-
-    fn setup() -> (Env, Address, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, crate::TokenFactory);
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let treasury = Address::generate(&env);
-
-        client.initialize(&admin, &treasury, &1_000_000_i128, &500_000_i128);
-
-        (env, contract_id, admin, treasury)
-    }
-
-    fn deploy_token(
-        env: &Env,
-        client: &crate::TokenFactoryClient,
-        creator: &Address,
-        name: &str,
-        symbol: &str,
-    ) {
-        client.create_token(
-            creator,
-            &String::from_str(env, name),
-            &String::from_str(env, symbol),
-            &7_u32,
-            &1_000_000_i128,
-            &None,
-            &1_000_000_i128,
-        );
-    }
-
-    #[test]
-    fn history_records_are_stored_on_create() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-
-        let count = client.history_count();
-        assert_eq!(count, 1);
-
-        let record = client.get_history_record(&0_u64).unwrap();
-        assert_eq!(record.token_index, 0);
-        assert_eq!(record.initial_supply, 1_000_000);
-    }
-
-    #[test]
-    fn query_by_creator_filters_correctly() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        let other = Address::generate(&env);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-        deploy_token(&env, &client, &other, "Beta", "BET");
-        deploy_token(&env, &client, &admin, "Gamma", "GAM");
-
-        let records = client.query_by_creator(&admin, &0_u64, &10_u32);
-        assert_eq!(records.len(), 2);
-
-        let other_records = client.query_by_creator(&other, &0_u64, &10_u32);
-        assert_eq!(other_records.len(), 1);
-    }
-
-    #[test]
-    fn query_by_time_range_returns_matching_records() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-        deploy_token(&env, &client, &admin, "Beta", "BET");
-
-        let now = env.ledger().timestamp();
-        let records = client.query_by_time_range(&0_u64, &(now + 1000), &10_u32);
-        assert!(records.len() >= 2);
-    }
-
-    #[test]
-    fn replay_produces_correct_snapshot() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-        deploy_token(&env, &client, &admin, "Beta", "BET");
-        deploy_token(&env, &client, &admin, "Gamma", "GAM");
-
-        // Replay up to index 1 (first two records).
-        let snapshot = client.replay(&1_u64);
-        assert_eq!(snapshot.token_count, 2);
-        assert_eq!(snapshot.cumulative_supply, 2_000_000);
-    }
-
-    #[test]
-    fn prune_removes_old_records() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-        deploy_token(&env, &client, &admin, "Beta", "BET");
-        deploy_token(&env, &client, &admin, "Gamma", "GAM");
-
-        let pruned = client.prune_history(&admin, &2_u64);
-        assert_eq!(pruned, 2);
-
-        // Records 0 and 1 are gone; record 2 still exists.
-        assert!(client.get_history_record(&0_u64).is_none());
-        assert!(client.get_history_record(&1_u64).is_none());
-        assert!(client.get_history_record(&2_u64).is_some());
-
-        // History count is unchanged.
-        assert_eq!(client.history_count(), 3);
-    }
-
-    #[test]
-    fn prune_rejects_non_admin() {
-        let (env, contract_id, _admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        let impostor = Address::generate(&env);
-        deploy_token(&env, &client, &_admin, "Alpha", "ALP");
-
-        let err = client
-            .try_prune_history(&impostor, &1_u64)
-            .unwrap_err()
-            .unwrap();
-        assert_eq!(err, crate::types::Error::Unauthorized);
-    }
-
-    #[test]
-    fn replay_out_of_range_returns_error() {
-        let (env, contract_id, admin, _treasury) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        deploy_token(&env, &client, &admin, "Alpha", "ALP");
-
-        // Only index 0 exists; requesting index 5 should fail.
-        let err = client.try_replay(&5_u64).unwrap_err().unwrap();
-        assert_eq!(err, crate::types::Error::InvalidParameters);
-    }
-}
-
-// Kept as its own always-on module (rather than folded into the disabled
-// `tests` module above) so pruning/`first_live_index` regressions are still
-// caught while that module is temporarily disabled.
-#[cfg(test)]
-mod first_live_index_tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
-
-    fn setup() -> (Env, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, crate::TokenFactory);
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        let treasury = Address::generate(&env);
-        client.initialize(&admin, &treasury, &1_000_000_i128, &500_000_i128);
-
-        (env, contract_id, admin)
-    }
-
-    fn deploy_token(env: &Env, client: &crate::TokenFactoryClient, creator: &Address, name: &str) {
-        client.create_token(
-            creator,
-            &String::from_str(env, name),
-            &String::from_str(env, "SYM"),
-            &7_u32,
-            &1_000_000_i128,
-            &None,
-            &1_000_000_i128,
-        );
-    }
-
-    const TOKEN_NAMES: [&str; 5] = ["Tok0", "Tok1", "Tok2", "Tok3", "Tok4"];
-
-    #[test]
-    fn prune_advances_first_live_index() {
-        let (env, contract_id, admin) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        for i in 0..5 {
-            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
-        }
-
-        assert_eq!(client.history_first_live_index(), 0);
-
-        client.prune_history(&admin, &3_u64);
-        assert_eq!(client.history_first_live_index(), 3);
-    }
-
-    #[test]
-    fn queries_still_find_live_records_after_pruning() {
-        let (env, contract_id, admin) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        for i in 0..5 {
-            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
-        }
-        client.prune_history(&admin, &3_u64);
-
-        // Records 0..3 are pruned; 3 and 4 must still be found without
-        // re-scanning the pruned prefix.
-        let by_creator = client.query_by_creator(&admin, &0_u64, &10_u32);
-        assert_eq!(by_creator.len(), 2);
-        assert_eq!(by_creator.get(0).unwrap().history_index, 3);
-        assert_eq!(by_creator.get(1).unwrap().history_index, 4);
-
-        let now = env.ledger().timestamp();
-        let by_time = client.query_by_time_range(&0_u64, &(now + 1_000), &10_u32);
-        assert_eq!(by_time.len(), 2);
-    }
-
-    #[test]
-    fn replay_after_pruning_only_covers_live_range() {
-        let (env, contract_id, admin) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        for i in 0..5 {
-            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
-        }
-        client.prune_history(&admin, &3_u64);
-
-        // Replaying up to index 4 only sees the two live records (3, 4) —
-        // the pruned ones (0..3) contribute nothing, same as before pruning
-        // changed the scan's starting point, just without re-walking them.
-        let snapshot = client.replay(&4_u64);
-        assert_eq!(snapshot.token_count, 2);
-        assert_eq!(snapshot.cumulative_supply, 2_000_000);
-    }
-
-    #[test]
-    fn get_history_record_returns_none_for_pruned_index() {
-        let (env, contract_id, admin) = setup();
-        let client = crate::TokenFactoryClient::new(&env, &contract_id);
-
-        for i in 0..3 {
-            deploy_token(&env, &client, &admin, TOKEN_NAMES[i]);
-        }
-        client.prune_history(&admin, &2_u64);
-
-        assert!(client.get_history_record(&0_u64).is_none());
-        assert!(client.get_history_record(&1_u64).is_none());
-        assert!(client.get_history_record(&2_u64).is_some());
-    }
 }

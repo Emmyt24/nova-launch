@@ -5,6 +5,43 @@
  * and processed by the backend for analytics and tracking.
  */
 
+/**
+ * Governance percentage fields and the shared validator
+ * (`src/lib/validation/governancePercentage.ts`).
+ *
+ * The shared percentage validator is the single source of truth for
+ * governance percentage fields that are expressed as a fraction of the
+ * total voting power and are therefore bounded to the inclusive range
+ * `[0, 100]`. The following fields in this codebase are expected to
+ * route through that validator:
+ *
+ * - `quorum_percent` — minimum participation required for a proposal to
+ *   be valid; a fraction of total voting power, so `[0, 100]`.
+ * - `approval_percent` — share of cast votes that must support a
+ *   proposal; a fraction of cast votes, so `[0, 100]`.
+ * - `threshold` (see `ProposalCreatedEvent`) — the approval threshold
+ *   recorded on a proposal; same `[0, 100]` fraction semantics as
+ *   `approval_percent`.
+ * - `quorum` (see `ProposalCreatedEvent`) — the quorum recorded on a
+ *   proposal; same `[0, 100]` fraction semantics as `quorum_percent`.
+ *
+ * Deliberate exceptions — percentage-like fields that intentionally do
+ * NOT use the shared validator:
+ *
+ * - `participationRate` (`ProposalAnalytics`, `VoterStats`) and
+ *   `averageParticipation` (`GovernanceStats`) are derived analytics
+ *   values computed by the backend, not user-supplied governance
+ *   parameters. They are not validated on input and are not routed
+ *   through the shared validator.
+ * - `quorumRequired` (`ProposalStateSnapshotEvent`) is a contract-emitted
+ *   snapshot value reported by the chain, not an input parameter, so it
+ *   is not validated by the backend.
+ *
+ * If a new governance percentage field is added, route it through the
+ * shared validator unless it has genuinely different bounds; if so,
+ * document the exception here with the reason.
+ */
+
 export enum ProposalType {
   PARAMETER_CHANGE = 'PARAMETER_CHANGE',
   ADMIN_TRANSFER = 'ADMIN_TRANSFER',

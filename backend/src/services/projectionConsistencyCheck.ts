@@ -23,12 +23,21 @@ export interface ProjectionConsistencyResult {
 }
 
 /**
+ * ⚠️ WARNING: DESTRUCTIVE OPERATION — clears and rebuilds ALL projection
+ * tables as part of its second pass (via `EventReplayService.clearAndRebuild`).
+ * This permanently removes all current projection data and replaces it with a
+ * full replay from ledger zero. ONLY run this against a disposable or
+ * dedicated verification database — NEVER against a shared staging or
+ * production database.
+ *
  * Runs both replay strategies against the given `prisma`/`replayService` and
  * compares the resulting projection state for every projection type.
  *
- * WARNING: destructive — this clears and rebuilds all projection tables
- * (via `EventReplayService.clearAndRebuild`) as its second pass. Only run
- * against a disposable database.
+ * Pass 1 (non-destructive): replays from the nearest usable snapshot up to
+ * `targetLedger` and captures the resulting state.
+ * Pass 2 (DESTRUCTIVE): clears all projection tables and rebuilds them from
+ * ledger zero up to `targetLedger`, then captures the resulting state for
+ * comparison.
  */
 export async function verifyProjectionSnapshotConsistency(
   replayService: EventReplayService,
@@ -39,7 +48,9 @@ export async function verifyProjectionSnapshotConsistency(
   await replayService.replayFromLedger(targetLedger);
   const fromSnapshotState = await captureAllProjectionData(prisma);
 
-  // Pass 2: full rebuild from ledger zero, for comparison.
+  // ⚠️ DESTRUCTIVE STEP: the following call clears all projection tables and
+  // rebuilds them from ledger zero. This is the operation that makes this
+  // function unsafe to run against any non-disposable database.
   await replayService.clearAndRebuild({ endLedger: targetLedger });
   const fromZeroState = await captureAllProjectionData(prisma);
 

@@ -11,6 +11,13 @@
  *
  * The service accepts a HorizonServer interface so callers (and tests) can
  * inject any compatible implementation without importing the SDK directly.
+ *
+ * Layering (#2063): this module is the single lower-level fee-bump
+ * implementation. Higher-level, flow-specific entry points (for example
+ * `services/feeBumpIntegration.ts`'s `submitDeploymentWithFeeBump`) are thin
+ * wrappers that delegate here. New fee-bump-eligible flows should follow that
+ * same wrapper pattern rather than calling `submitFeeBump` directly, so the
+ * polling/race-guard logic stays in one place.
  */
 
 import { sleep } from "./rate-limiter";
@@ -95,6 +102,12 @@ async function pollUntilConfirmedOrStuck(
 
 /**
  * Submit a fee-bump wrapping the given inner transaction.
+ *
+ * This is the lower-level primitive shared by all fee-bump flows. Prefer
+ * calling a flow-specific wrapper (e.g. `submitDeploymentWithFeeBump` in
+ * `services/feeBumpIntegration.ts`) instead of invoking this directly, so the
+ * wrapper can own flow-specific concerns while this function owns the
+ * polling/race-guard/submission logic.
  *
  * @param innerTx          The original (inner) transaction object
  * @param originalHash     Hex hash of the inner transaction

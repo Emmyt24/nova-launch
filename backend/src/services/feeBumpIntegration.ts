@@ -6,6 +6,21 @@
  * the sponsor account (STELLAR_FEE_BUMP_SPONSOR_ACCOUNT).
  *
  * The sponsor is fully transparent to the user — no UI changes required.
+ *
+ * ## Layering (#2063)
+ *
+ * This module is a thin, deployment-specific wrapper around the lower-level
+ * `submitFeeBump` exported by `stellar-service-integration/feeBump.service.ts`.
+ * It owns only the deployment-pipeline policy — reading the balance threshold
+ * and sponsor account from the environment, deciding whether a bump is needed,
+ * and shaping the `{ feeBumped, result }` return value — while the actual
+ * fee-bump construction and submission live in the lower-level service.
+ *
+ * New fee-bump-eligible flows should follow this same wrapper pattern: add a
+ * thin, flow-specific module that decides *whether* to bump and then delegates
+ * to `submitFeeBump`, rather than calling `submitFeeBump` directly. Keeping the
+ * policy at the wrapper layer and the mechanics in the service avoids
+ * duplicating submission logic across flows.
  */
 
 import {
@@ -40,6 +55,10 @@ export function needsFeeBump(userBalanceXLM: number): boolean {
 /**
  * Submit a deployment transaction, automatically applying a fee-bump when
  * the user's balance is below the configured threshold.
+ *
+ * Thin wrapper over `submitFeeBump` (see the layering note above): it applies
+ * the deployment-specific eligibility check and delegates the actual fee-bump
+ * submission to the lower-level service.
  *
  * Returns `{ feeBumped: true, result }` when a fee-bump was applied,
  * or `{ feeBumped: false, result: null }` when balance was sufficient.

@@ -157,6 +157,26 @@ export class EventBus {
    * down a live publish path — production payload drift is instead expected
    * to be caught by the CI codegen-sync check and by non-prod testing.
    *
+   * Naming convention with `event-schemas/` (#2087): `eventSchemaValidator.ts`
+   * loads every `*.schema.json` file from the monorepo-root `event-schemas/`
+   * directory and keys each one by its own `eventType` field. For a
+   * `publish("token.burned", ...)` call to have a chance of being
+   * schema-validated, the string literal passed as `type` must exactly match
+   * the `eventType` field of a schema file — same casing, same dot-separated
+   * segments, no aliases or wildcards. The file name itself is irrelevant to
+   * lookup; only the `eventType` value matters. If a contributor adds a new
+   * `publish` call and forgets to add a matching schema file, the event is
+   * simply skipped (not an error) and will silently go unvalidated in
+   * non-production. Deliberate exceptions: the wildcard subscription type
+   * `"*"` is never published and therefore never schema-validated, and any
+   * event type intentionally left schema-less (e.g. internal-only or
+   * transitional events) is likewise skipped by design.
+   *
+   * Suggested follow-up (#2087): a lint rule or test could enumerate every
+   * string literal passed to `eventBus.publish` across the codebase and flag
+   * ones with no corresponding schema file, turning the silent skip above
+   * into an actionable CI signal. Not implemented in this change.
+   *
    * @returns The fully constructed `BusEvent` that was dispatched.
    * @throws {EventSchemaValidationError} if `payload` fails schema validation
    *   outside production.
@@ -250,7 +270,7 @@ export class EventBus {
       };
       this.deadLetterQueue.push(entry);
       console.error(
-        `[EventBus] Handler ${subscriptionId} failed for event "${event.type}":`,
+        `[EventBus] Handler ${subscriptionId} failed for event ${event.type}:`,
         err
       );
     }
@@ -259,14 +279,10 @@ export class EventBus {
   private recordHistory(event: BusEvent): void {
     this.history.push(event);
     if (this.maxHistory > 0 && this.history.length > this.maxHistory) {
-      this.history.shift();
+      this.history = this.history.slice(-this.maxHistory);
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Singleton instance (shared across the application)
-// ---------------------------------------------------------------------------
-
+/** Singleton event bus instance shared across the backend. */
 export const eventBus = new EventBus();
-export default eventBus;

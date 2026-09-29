@@ -7,12 +7,49 @@
  * environments — see `eventBus.ts` for how this module is wired into
  * `EventBus.publish()`.
  *
+ * ## Naming convention: `eventBus.publish` strings ↔ `event-schemas/` files
+ *
+ * Schemas are keyed by each file's own `eventType` field (not by filename),
+ * and `EventBus.publish(eventType, payload)` looks up a validator by the exact
+ * string literal it is passed. For a publish call to have a chance of being
+ * schema-validated, the string literal passed to `eventBus.publish(...)` must
+ * be byte-for-byte identical to the `eventType` field of some
+ * `event-schemas/*.schema.json` file — same casing, same separators, no
+ * whitespace. The convention used throughout the codebase is a dotted,
+ * lower-case, `<domain>.<action>` form (e.g. `"token.burned"`), and the
+ * corresponding file is conventionally named after that event type (e.g.
+ * `event-schemas/token.burned.schema.json`), though only the `eventType`
+ * field is authoritative for lookup.
+ *
+ * ## What happens when a schema is missing
+ *
  * Schemas without a registered entry are treated as "unschematized" and are
  * skipped (logged at debug level) rather than failing — the registry is
  * expected to grow incrementally and should never block publishing of an
- * event type that simply hasn't been schematized yet.
+ * event type that simply hasn't been schematized yet. So a contributor who
+ * adds a new `eventBus.publish("foo.bar", ...)` call but forgets to add a
+ * matching `event-schemas/foo.bar.schema.json` will not see an error: the
+ * event publishes normally and is silently unvalidated. Adding the schema
+ * file (with a matching `eventType`) is what opts the event into validation.
  *
- * Issue: #1406
+ * ## Deliberate exceptions
+ *
+ * - Validation only runs in non-production environments (see
+ *   `EventBus.publish`), so production publishes are never schema-checked
+ *   regardless of whether a schema exists.
+ * - Event types that are intentionally unschematized (e.g. internal or
+ *   best-effort telemetry events) are left without a schema file on purpose;
+ *   the skip-not-fail behavior above is what makes that safe.
+ *
+ * ## Suggested follow-up
+ *
+ * A lint rule or test could enumerate every string literal passed to
+ * `eventBus.publish(...)` across the codebase and flag any that has no
+ * corresponding `eventType` in `event-schemas/`, catching the "forgot to add
+ * a schema" case at CI time instead of relying on this documentation. Not
+ * implemented here.
+ *
+ * Issue: #1406, #2087
  */
 
 import { readFileSync, readdirSync } from "fs";

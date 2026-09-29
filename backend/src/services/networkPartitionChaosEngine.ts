@@ -1,6 +1,32 @@
 /**
  * Network-Partition Chaos Framework (#1629)
  *
+ * ## Relationship to ChaosEngine
+ *
+ * This module provides `NetworkPartitionChaosEngine`, which **extends**
+ * `ChaosEngine` (from `./chaosEngine.ts`).  `ChaosEngine` is the base class
+ * that supplies seeded-random, statistical fault injection (indexer lag,
+ * duplicate events, backend outages, retry storms).
+ *
+ * `NetworkPartitionChaosEngine` is a deliberate specialization rather than a
+ * new fault type registered with the general engine for two reasons:
+ *
+ * 1. **Injectable infrastructure**: partitions need a `PartitionProxy`, an
+ *    `EventReplayBuffer`, and a `ProjectionVerifier` that are passed in as
+ *    constructor dependencies.  These are fundamentally different from the
+ *    stateless probability parameters used by the base fault types.
+ *
+ * 2. **Async lifecycle**: partition scenarios run as an async
+ *    `runPartitionScenario` flow (inject → route events → heal → replay →
+ *    verify convergence) that does not map onto the synchronous
+ *    `shouldInjectFault` / `inject*` API of `ChaosEngine`.
+ *
+ * The two classes therefore co-exist as parent and child: `ChaosEngine`
+ * handles the general case and `NetworkPartitionChaosEngine` composes it
+ * with the partition-specific infrastructure.
+ *
+ * ## What this module adds on top of ChaosEngine
+ *
  * Extends the existing ChaosEngine with partition-injection primitives that
  * can sever connectivity between any two of:
  *

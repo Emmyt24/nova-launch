@@ -11,6 +11,7 @@ import {
 import { validateEnv } from "../../config/env";
 import { getCircuitBreakerRegistrySnapshot } from "../circuitBreaker";
 import { dispatchAlert } from "../pagerduty";
+import { checkDatabaseHealth } from "../db";
 
 const _env = validateEnv();
 
@@ -211,15 +212,24 @@ export class HealthService {
   }
 
   /**
-   * Check database connectivity
+   * Check database connectivity.
+   *
+   * Delegates to the single canonical Prisma `SELECT 1` probe in
+   * `lib/db.ts` (`checkDatabaseHealth`) so the timeout/race logic and error
+   * formatting live in exactly one place (#2062).
    */
   private async checkDatabase(timeout: number): Promise<ServiceHealth> {
     const start = Date.now();
     try {
-      await Promise.race([
-        prisma.$queryRaw`SELECT 1`,
-        this.timeoutPromise(timeout, "Database check timeout"),
-      ]);
+      const result = await checkDatabaseHealth({ timeout });
+
+      if (!result.healthy) {
+        return {
+          status: "down",
+          responseTime: Date.now() - start,
+          error: result.error ?? "Database check failed",
+        };
+      }
 
       return {
         status: "up",
@@ -293,219 +303,6 @@ export class HealthService {
       if (response.ok) {
         return {
           status: "up",
-          responseTime: Date.now() - start,
-        };
-      }
+          responseTime: Date
 
-      return {
-        status: "degraded",
-        responseTime: Date.now() - start,
-        message: `HTTP ${response.status}`,
-      };
-    } catch (error) {
-      return {
-        status: "down",
-        responseTime: Date.now() - start,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  /**
-   * Check IPFS gateway availability
-   */
-  private async checkIpfs(timeout: number): Promise<ServiceHealth> {
-    const start = Date.now();
-    const ipfsGateway = process.env.IPFS_GATEWAY_URL || "https://ipfs.io";
-
-    try {
-      const response = await Promise.race([
-        fetch(ipfsGateway),
-        this.timeoutPromise(timeout, "IPFS check timeout"),
-      ]);
-
-      if (response.ok || response.status === 404) {
-        // 404 is acceptable for gateway root
-        return {
-          status: "up",
-          responseTime: Date.now() - start,
-        };
-      }
-
-      return {
-        status: "degraded",
-        responseTime: Date.now() - start,
-        message: `HTTP ${response.status}`,
-      };
-    } catch (error) {
-      return {
-        status: "down",
-        responseTime: Date.now() - start,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  /**
-   * Check cache functionality
-   */
-  private async checkCache(timeout: number): Promise<ServiceHealth> {
-    const start = Date.now();
-    const testKey = "__health_check__";
-    const testValue = Date.now().toString();
-
-    try {
-      await Promise.race([
-        (async () => {
-          this.cache.set<string>(testKey, testValue);
-          const retrieved = this.cache.get<string>(testKey);
-          if (retrieved !== testValue) {
-            throw new Error("Cache value mismatch");
-          }
-          this.cache.delete(testKey);
-        })(),
-        this.timeoutPromise(timeout, "Cache check timeout"),
-      ]);
-
-      return {
-        status: "up",
-        responseTime: Date.now() - start,
-      };
-    } catch (error) {
-      return {
-        status: "down",
-        responseTime: Date.now() - start,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  /**
-   * Collect system and application metrics
-   */
-  private async collectMetrics(): Promise<
-    DetailedHealthCheckResult["metrics"]
-  > {
-    const memUsage = process.memoryUsage();
-    const totalMemory = memUsage.heapTotal;
-    const usedMemory = memUsage.heapUsed;
-
-    // Get database pool stats if available
-    let dbPoolStats = {};
-    try {
-      // Prisma doesn't expose pool stats directly, but we can check connection
-      const result = await prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT COUNT(*)::bigint AS count
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-      `;
-      dbPoolStats = {
-        poolSize: 1,
-        activeConnections: result ? 1 : 0,
-        idleConnections: 0,
-      };
-    } catch {
-      // Silently fail if we can't get pool stats
-    }
-
-    return {
-      memory: {
-        used: usedMemory,
-        total: totalMemory,
-        percentage: Math.round((usedMemory / totalMemory) * 100),
-      },
-      cpu: {
-        usage: this.getCpuUsage(),
-      },
-      database: dbPoolStats,
-      requests: {
-        total: this.requestCount,
-        errorRate:
-          this.requestCount > 0
-            ? Math.round((this.errorCount / this.requestCount) * 100)
-            : 0,
-      },
-    };
-  }
-
-  /**
-   * Get CPU usage percentage
-   */
-  private getCpuUsage(): number {
-    const cpuUsage = process.cpuUsage();
-    const totalUsage = cpuUsage.user + cpuUsage.system;
-    const uptime = this.getUptime() * 1000000; // Convert to microseconds
-
-    if (uptime === 0) return 0;
-
-    return Math.round((totalUsage / uptime) * 100);
-  }
-
-  /**
-   * Determine overall health status based on service statuses
-   */
-  private determineOverallStatus(
-    services: HealthCheckResult["services"]
-  ): HealthStatus {
-    const statuses = Object.values(services).map((s) => s.status);
-
-    // If any critical service is down, overall is unhealthy
-    if (services.database.status === "down") {
-      return "unhealthy";
-    }
-
-    // If any service is down, overall is unhealthy
-    if (statuses.includes("down")) {
-      return "unhealthy";
-    }
-
-    // If any service is degraded, overall is degraded
-    if (statuses.includes("degraded")) {
-      return "degraded";
-    }
-
-    return "healthy";
-  }
-
-  /**
-   * Create a timeout promise
-   */
-  private timeoutPromise(ms: number, message: string): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(message)), ms);
-    });
-  }
-}
-
-class TTLCache {
-  private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
-
-  constructor(private readonly ttlMs: number) {}
-
-  get<T = unknown>(key: string): T | undefined {
-    const entry = this.entries.get(key);
-    if (!entry) {
-      return undefined;
-    }
-
-    if (Date.now() >= entry.expiresAt) {
-      this.entries.delete(key);
-      return undefined;
-    }
-
-    return entry.value as T;
-  }
-
-  set<T = unknown>(key: string, value: T): void {
-    this.entries.set(key, {
-      value,
-      expiresAt: Date.now() + this.ttlMs,
-    });
-  }
-
-  delete(key: string): void {
-    this.entries.delete(key);
-  }
-}
-
-export const healthService = HealthService.getInstance();
+/* … truncated 5407 chars — edit only what you need near the top … */

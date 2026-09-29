@@ -425,3 +425,163 @@ fn check_invariants(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage;
+    use crate::types::{CampaignStatus, TokenInfo};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn setup(env: &Env) -> (Address, Address) {
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+        let admin = Address::generate(env);
+        let treasury = Address::generate(env);
+        storage::set_admin(env, &admin);
+        storage::set_treasury(env, &treasury);
+        storage::set_base_fee(env, 1_000_000);
+        storage::set_metadata_fee(env, 500_000);
+        (admin, treasury)
+    }
+
+    fn seed_token(env: &Env, token_index: u32, creator: &Address, supply: i128) {
+        let info = TokenInfo {
+            address: Address::generate(env),
+            creator: creator.clone(),
+            name: String::from_str(env, "TestToken"),
+            symbol: String::from_str(env, "TT"),
+            decimals: 7,
+            total_supply: supply,
+            initial_supply: supply,
+            max_supply: None,
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: env.ledger().timestamp(),
+            is_paused: false,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        };
+        storage::set_token_info(env, token_index, &info);
+    }
+
+    /// Seed a minimal Active campaign directly into storage.
+    fn seed_active_campaign(
+        env: &Env,
+        campaign_id: u64,
+        owner: &Address,
+        budget: i128,
+        max_spend_per_step: i128,
+        max_slippage_bps: u32,
+    ) {
+        let now = env.ledger().timestamp();
+        let campaign = BuybackCampaign {
+            id: campaign_id,
+            token_index: 0,
+            budget,
+            spent: 0,
+            tokens_bought: 0,
+            tokens_burned: 0,
+            max_spend_per_step,
+            execution_count: 0,
+            start_time: 0,
+            end_time: now + 86_400,
+            min_interval: 0,
+            max_slippage_bps,
+            source_token: Address::generate(env),
+            target_token: Address::generate(env),
+            owner: owner.clone(),
+            status: CampaignStatus::Active,
+            created_at: now,
+            updated_at: now,
+            trigger_price: 0,
+            last_executed_at: 0,
+        };
+        storage::set_campaign(env, campaign_id, &campaign);
+        storage::set_active_campaign_count(env, 1);
+    }
+
+    // ── #2041: slippage-floor boundary tests ──────────────────────────────────
+
+    /// A fill that lands exactly at the slippage floor must succeed.
+    /// This proves the comparison in `execute_buyback_step` is `<` (strict),
+    /// not `<=`.
+    ///
+    /// Setup:
+    ///   quoted_tokens_out = 10_000, max_slippage_bps = 100 (1%)
+    ///   floor = apply_slippage_tolerance(10_000, 100)
+    ///         = 10_000 * (10_000 - 100) / 10_000
+    ///         = 10_000 * 9_900 / 10_000 = 9_900
+    ///
+    /// We pass quoted_tokens_out = 9_900 so execute_swap returns exactly 9_900,
+    /// which equals the floor. The step must succeed (not SlippageExceeded).
+    #[test]
+    fn test_execute_buyback_step_at_exact_slippage_floor_succeeds() {
+        let env = Env::default();
+        let (admin, _treasury) = setup(&env);
+
+        seed_token(&env, 0, &admin, 1_000_000);
+
+        let quoted_out: i128 = 10_000;
+        let slippage_bps: u32 = 100; // 1%
+        let floor =
+            apply_slippage_tolerance(quoted_out, slippage_bps).expect("floor must be computable");
+        // floor == 9_900
+
+        // Seed a campaign whose budget and step cap comfortably cover the spend.
+        let budget: i128 = 100_000;
+        let spend: i128 = 1_000; // quote_amount
+        seed_active_campaign(&env, 1, &admin, budget, spend, slippage_bps);
+
+        // Pass quoted_tokens_out = floor so execute_swap returns exactly floor.
+        let result = execute_buyback_step(&env, &admin, 1, spend, floor, floor);
+
+        assert!(
+            result.is_ok(),
+            "A fill at exactly the slippage floor must succeed, got: {:?}",
+            result.err()
+        );
+        let report = result.unwrap();
+        assert_eq!(report.bought, floor);
+        assert_eq!(report.burned, floor);
+    }
+
+    /// A fill one unit below the slippage floor must be rejected with
+    /// `Error::SlippageExceeded`.
+    ///
+    /// Same parameters as above but quoted_tokens_out = floor - 1 = 9_899.
+    #[test]
+    fn test_execute_buyback_step_one_below_slippage_floor_rejected() {
+        let env = Env::default();
+        let (admin, _treasury) = setup(&env);
+
+        seed_token(&env, 0, &admin, 1_000_000);
+
+        let quoted_out: i128 = 10_000;
+        let slippage_bps: u32 = 100; // 1%
+        let floor =
+            apply_slippage_tolerance(quoted_out, slippage_bps).expect("floor must be computable");
+        let below_floor = floor - 1; // 9_899
+
+        let budget: i128 = 100_000;
+        let spend: i128 = 1_000;
+        seed_active_campaign(&env, 1, &admin, budget, spend, slippage_bps);
+
+        // Pass quoted_tokens_out = below_floor so execute_swap returns below_floor,
+        // which is strictly less than the floor computed from the original quote.
+        // min_tokens_out is also set to below_floor so only the campaign floor
+        // is the binding constraint.
+        let result = execute_buyback_step(&env, &admin, 1, spend, below_floor, 1);
+
+        assert_eq!(
+            result,
+            Err(Error::SlippageExceeded),
+            "A fill one unit below the slippage floor must be rejected"
+        );
+    }
+}

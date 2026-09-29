@@ -24,6 +24,26 @@
 //! finalised. No refund advantage is granted to non-revealers — this module
 //! only tracks randomness contribution, not funds.
 //!
+//! ## Fund handling for non-revealers (consuming auction module's responsibility)
+//! This module is explicitly out-of-scope for fund management. "Forfeiture"
+//! in the context of this primitive means **loss of randomness influence
+//! only** — a non-revealer cannot steer the tie-break seed, but whether they
+//! also lose their bid deposit is entirely up to the consuming auction module.
+//!
+//! **Recommended behaviour for a typical auction integration:** a bidder who
+//! committed but never revealed should still receive a full refund of any
+//! locked bid funds from the auction's own escrow logic. Withholding funds
+//! solely because a reveal was missed is not implied or enforced here, and
+//! would require an explicit, separate policy decision in the auction module.
+//!
+//! Concretely:
+//! * This module emits no fund-transfer instructions and holds no balances.
+//! * The consuming auction module is solely responsible for deciding its
+//!   refund policy for non-revealers and must document that policy clearly.
+//! * If the auction *does* choose to slash non-revealers financially, that
+//!   slashing logic must live in the auction module, not here, since this
+//!   primitive provides no way to enforce or verify it.
+//!
 //! ## Tie-break randomness derivation
 //! ```text
 //! state_0 = 32 zero bytes

@@ -30,9 +30,17 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Vec};
 /// * `generated_at`    – Ledger timestamp when the report was created.
 /// * `generated_by`    – Admin address that triggered generation.
 /// * `token_count`     – Total number of tokens registered in the factory.
-/// * `total_supply`    – Aggregate circulating supply across all tokens.
-/// * `total_burned`    – Aggregate tokens burned across all tokens.
-/// * `total_burn_ops`  – Total number of individual burn operations.
+/// * `total_supply`    – Aggregate circulating supply across the scanned
+///   window of tokens. **When produced via [`generate_report`]** (the default
+///   path) this reflects only the most recent [`DEFAULT_REPORT_WINDOW`] (100)
+///   tokens, not the true lifetime aggregate. Use [`generate_report_full`] to
+///   obtain a value that covers all tokens ever created.
+/// * `total_burned`    – Aggregate tokens burned across the scanned window.
+///   **Windowed** when produced via [`generate_report`]; see `total_supply`
+///   note above.
+/// * `total_burn_ops`  – Total number of individual burn operations across
+///   the scanned window. **Windowed** when produced via [`generate_report`];
+///   see `total_supply` note above.
 /// * `governance_quorum_percent`  – Current governance quorum threshold.
 /// * `governance_approval_percent`– Current governance approval threshold.
 /// * `contract_paused` – Whether the factory was paused at report time.
@@ -66,6 +74,21 @@ pub enum ComplianceKey {
 
 /// A single pluggable compliance check evaluated before a transfer.
 ///
+/// # ⚠️ Enforcement Status — defined as data, not yet wired into any transfer path
+///
+/// These variants are **defined and storable** but are **not currently
+/// enforced at transfer time**. Registering a `ComplianceRule` via
+/// [`add_compliance_rule`] today persists the rule as on-chain data only;
+/// no transfer path in this contract reads or enforces it before allowing
+/// a transfer to proceed.
+///
+/// A contributor implementing transfer-time enforcement must:
+/// 1. Call the compliance-rule lookup (see [`get_compliance_rules`]) inside
+///    the token transfer path (e.g. in `lib.rs::transfer` or equivalent).
+/// 2. Evaluate each registered rule against a [`TransferParams`] value and
+///    return an error before the transfer when a rule is violated.
+/// 3. Update this doc comment to point at the enforcing call site once wired.
+///
 /// # Variants
 /// * `MaxTransferAmount(i128)` – Rejects transfers whose `amount` exceeds the
 ///   given cap. Used by jurisdictions with per-transaction reporting
@@ -86,6 +109,10 @@ pub enum ComplianceRuleType {
 }
 
 /// A compliance rule scoped to a single jurisdiction.
+///
+/// # ⚠️ Enforcement Status
+/// Storing a `ComplianceRule` has no effect on transfers today; see the
+/// [`ComplianceRuleType`] doc comment for the full enforcement-status note.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComplianceRule {
@@ -119,6 +146,15 @@ pub const DEFAULT_REPORT_WINDOW: u32 = 100;
 /// Scans at most [`DEFAULT_REPORT_WINDOW`] of the most recently created
 /// tokens (indices `max(0, token_count - window)..token_count`).  This keeps
 /// the CPU cost fixed regardless of total token count.
+///
+/// **Important:** once a factory has created more than [`DEFAULT_REPORT_WINDOW`]
+/// (100) tokens, the `total_supply`, `total_burned`, and `total_burn_ops`
+/// fields in the returned report will reflect only the most recent 100 tokens,
+/// **not** the true lifetime aggregate. For example, a factory that has
+/// deployed 250 tokens will have its report cover only tokens 150–249; the
+/// supply/burn figures for tokens 0–149 are excluded. If you need an accurate
+/// lifetime total, call [`generate_report_full`] instead (accepting the higher
+/// CPU cost).
 ///
 /// Use [`generate_report_full`] when you need exact lifetime totals and the
 /// factory is still small enough to afford the full scan.

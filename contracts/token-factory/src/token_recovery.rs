@@ -705,4 +705,84 @@ mod tests {
             .unwrap();
         assert_eq!(req.status, RecoveryStatus::Executed);
     }
+
+    // ── #2042: balance re-validation across overlapping requests ─────────────
+
+    /// Two overlapping recovery requests are initiated against the same `from`
+    /// address whose combined amount exceeds the balance.  After the first
+    /// request is executed (which reduces `from`'s balance), the second must
+    /// fail with `Error::InsufficientBalance` rather than over-recovering.
+    ///
+    /// This validates the re-check of `source_balance < request.amount` inside
+    /// `execute_recovery`, which is explicitly documented as guarding against
+    /// "source balance changed since initiation".
+    #[test]
+    fn test_overlapping_recovery_second_request_fails_after_balance_drained() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        let (_, admin, contract_id) = setup(&env);
+
+        let from = Address::generate(&env);
+        let to1 = Address::generate(&env);
+        let to2 = Address::generate(&env);
+
+        // from has 1_000 tokens total.
+        let total_balance: i128 = 1_000;
+        seed_token_with_balance(&env, &contract_id, 0, &from, total_balance);
+
+        // Request 1: recover 700 (leaves 300 — individually valid at initiation).
+        let amount1: i128 = 700;
+        // Request 2: recover 500 (individually valid at initiation because
+        // balance is still 1_000 when initiated, but combined they exceed it).
+        let amount2: i128 = 500;
+
+        let request_id_1 = env.as_contract(&contract_id, || {
+            initiate_recovery(&env, &admin, 0, &from, &to1, amount1).unwrap()
+        });
+        let request_id_2 = env.as_contract(&contract_id, || {
+            initiate_recovery(&env, &admin, 0, &from, &to2, amount2).unwrap()
+        });
+
+        // Advance time past the timelock for both requests.
+        env.ledger()
+            .with_mut(|l| l.timestamp = 1_000_000 + RECOVERY_TIMELOCK_SECONDS + 1);
+
+        // Execute the first request — succeeds and drains 700 from `from`.
+        env.as_contract(&contract_id, || {
+            execute_recovery(&env, &admin, request_id_1)
+                .expect("first recovery must succeed")
+        });
+
+        // `from` now holds 300, which is less than amount2 (500).
+        let remaining = env.as_contract(&contract_id, || {
+            storage::get_balance(&env, 0, &from)
+        });
+        assert_eq!(
+            remaining,
+            total_balance - amount1,
+            "from balance must reflect the first recovery"
+        );
+
+        // The second request must be rejected because the balance is now
+        // insufficient — it must NOT silently over-recover.
+        let result = env.as_contract(&contract_id, || {
+            execute_recovery(&env, &admin, request_id_2)
+        });
+        assert_eq!(
+            result,
+            Err(Error::InsufficientBalance),
+            "executing the second overlapping request must fail with InsufficientBalance \
+             once the first has already reduced the source balance below the requested amount"
+        );
+
+        // Confirm `from` balance was not touched by the failed second request.
+        let balance_after_fail = env.as_contract(&contract_id, || {
+            storage::get_balance(&env, 0, &from)
+        });
+        assert_eq!(
+            balance_after_fail, remaining,
+            "from balance must be unchanged after the rejected second recovery"
+        );
+    }
 }

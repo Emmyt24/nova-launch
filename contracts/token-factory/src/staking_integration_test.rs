@@ -398,4 +398,80 @@ mod staking_integration_tests {
         assert_eq!(staking::pending_rewards(&env, user1, pool_id).unwrap(), 0);
         assert_eq!(staking::pending_rewards(&env, user2, pool_id).unwrap(), 0);
     }
+
+    /// #2040 – rewards that accrue while `total_staked == 0` (the zero-staker
+    /// gap) must never be attributed to a staker who joins afterwards.
+    ///
+    /// Timeline:
+    ///   t=0      pool created, user1 stakes 500
+    ///   t=100    user1 fully unstakes → total_staked == 0, gap begins
+    ///   t=1100   user2 stakes 500 (gap = 1000 s, reward_rate = 10 → 10 000
+    ///            reward units were NOT accrued because the pool was empty)
+    ///   t=1110   10 s elapses with user2 as sole staker
+    ///
+    /// Expected: user2's pending_rewards == 100 (10 s × 10), NOT 10 100.
+    #[test]
+    fn test_reward_accrual_skips_zero_staker_gap() {
+        let (env, admin, _creator, user1) = setup();
+        let user2 = Address::generate(&env);
+        // Give user2 tokens to stake (user1 already has 1000 from setup).
+        storage::set_balance(&env, 0, &user2, 1000);
+
+        let reward_rate = 10_i128;
+        let pool_id = staking::create_staking_pool(&env, admin, 0, 1, reward_rate).unwrap();
+
+        // ── Phase 1: user1 stakes and earns for 100 s ────────────────────────
+        staking::stake(&env, user1.clone(), pool_id, 500).unwrap();
+        env.ledger().with_mut(|li| li.timestamp += 100);
+
+        // Fully unstake → total_staked drops to 0, gap begins.
+        staking::unstake(&env, user1.clone(), pool_id, 500).unwrap();
+
+        let pool_after_unstake = storage::get_staking_pool(&env, pool_id).unwrap();
+        assert_eq!(
+            pool_after_unstake.total_staked, 0,
+            "Pool must be empty after full unstake"
+        );
+        // user1 earned 100 s × 10 = 1 000 reward units.
+        assert_eq!(storage::get_balance(&env, 1, &user1), 1000);
+
+        // ── Phase 2: zero-staker gap of 1 000 s ──────────────────────────────
+        env.ledger().with_mut(|li| li.timestamp += 1000);
+
+        // ── Phase 3: user2 joins as the first (new) staker ───────────────────
+        staking::stake(&env, user2.clone(), pool_id, 500).unwrap();
+
+        // Immediately after staking, before any time passes, pending must be 0.
+        let pending_at_entry = staking::pending_rewards(&env, user2.clone(), pool_id).unwrap();
+        assert_eq!(
+            pending_at_entry, 0,
+            "user2 must have zero pending rewards at the moment they join"
+        );
+
+        // ── Phase 4: 10 s passes with user2 as the sole staker ───────────────
+        let active_window = 10_u64;
+        env.ledger()
+            .with_mut(|li| li.timestamp += active_window);
+
+        let pending_after_active = staking::pending_rewards(&env, user2.clone(), pool_id).unwrap();
+        let expected = active_window as i128 * reward_rate; // 10 × 10 = 100
+        assert_eq!(
+            pending_after_active, expected,
+            "user2's pending_rewards should only reflect the {active_window} s they were \
+             actually staked, not the {}-s zero-staker gap",
+            1000
+        );
+
+        // ── Sanity: the gap did not inflate acc_reward_per_share ─────────────
+        // If the gap had been incorrectly accrued, acc_reward_per_share would
+        // be far larger and user2 would appear to have earned gap rewards.
+        let pool_final = storage::get_staking_pool(&env, pool_id).unwrap();
+        // acc_reward_per_share after 10 s at rate 10 with 500 staked:
+        // delta = 10 × 10 × PRECISION / 500 = 200_000_000_000
+        let expected_acc = active_window as i128 * reward_rate * PRECISION / 500;
+        assert_eq!(
+            pool_final.acc_reward_per_share, expected_acc,
+            "acc_reward_per_share must only reflect time with active stakers"
+        );
+    }
 }

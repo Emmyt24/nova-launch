@@ -25,6 +25,10 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
+mod buyback;
+mod campaign;
+mod campaign_breaker;
+mod campaign_validation;
 mod clawback;
 mod commit_reveal;
 #[cfg(test)]
@@ -76,6 +80,7 @@ mod timelock;
 mod token_creation;
 #[cfg(test)]
 mod token_creation_snapshot_test;
+mod token_recovery;
 mod treasury;
 mod types;
 mod validation;

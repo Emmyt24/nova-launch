@@ -119,6 +119,10 @@ export interface HealthCheckResult {
 /**
  * Runs a lightweight `SELECT 1` probe against the database.
  *
+ * This is the single source of truth for the Prisma `SELECT 1` health probe.
+ * The probe in `lib/health/health.service.ts` delegates here so the two
+ * implementations cannot drift (timeout defaults, error message formats).
+ *
  * Updates the internal pool stats on every call so that
  * `getPoolStats()` always reflects the latest state.
  *
@@ -272,11 +276,12 @@ export async function upsertDailyAnalytics(
 }
 
 // ---------------------------------------------------------------------------
-// Legacy connection test (kept for backwards compatibility)
+// Legacy connection test (kept for backward compatibility)
 // ---------------------------------------------------------------------------
 
 /**
- * @deprecated Use `checkDatabaseHealth()` instead.
+ * @deprecated Use `checkDatabaseHealth` instead. Kept as a thin wrapper so
+ * existing call sites keep working while there is a single probe implementation.
  */
 export async function testConnection(): Promise<boolean> {
   const result = await checkDatabaseHealth();

@@ -20,9 +20,31 @@ use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 use crate::types::{Disbursement, FinalizationError};
 
 /// Local decode target for a token-factory contract error surfaced through
-/// `try_invoke_contract`. token-factory's own `Error` type isn't available
-/// here (different soroban-sdk major version), so only the raw numeric
-/// error code is recovered — sufficient to know *that* commit failed.
+/// `try_invoke_contract`.
+///
+/// token-factory and this contract pin different soroban-sdk major versions
+/// (26.x vs 21.x), so token-factory's own `Error` type cannot be linked here
+/// and there is no shared generated typed client to decode against. Because
+/// of that version mismatch, `try_invoke_contract` can only recover the raw
+/// numeric error code from the host — everything else about the remote
+/// failure (its variant name, message, and any structured payload) is
+/// discarded. So a failed settlement surfaces here as `RemoteError(u32)`
+/// with no richer typed error available; the code is sufficient to know
+/// *that* commit failed, which is all `execute_disbursement` needs to decide
+/// to abort the reservation.
+///
+/// This is the deliberate convention for every cross-contract call in this
+/// module: the raw `invoke_contract` / `try_invoke_contract` bridge is used
+/// precisely because of the SDK version mismatch above. If a future change
+/// aligns the two contracts on the same soroban-sdk major version, a shared
+/// generated typed client could replace this bridge and `RemoteError` would
+/// no longer be needed.
+///
+/// If debugging a specific failed disbursement ever becomes a pain point,
+/// a human-readable interpretation of the common token-factory error codes
+/// could be added here (e.g. a `fn describe(&self) -> &'static str` mapping
+/// known codes to messages) so callers and logs can explain *why* a commit
+/// failed rather than only reporting the numeric code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RemoteError(pub u32);
 

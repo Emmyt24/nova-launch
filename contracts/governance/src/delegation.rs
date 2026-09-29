@@ -31,7 +31,21 @@ use crate::events;
 use crate::types::{DelegationRecord, Error};
 
 /// Maximum depth of a delegation chain.
-/// Prevents DoS via deeply nested delegation lookups.
+///
+/// This constant documents an *invariant* rather than driving a runtime
+/// depth counter: no code path reads `MAX_CHAIN_DEPTH` to compare it
+/// against a computed chain length.  The one-level limit it describes is
+/// enforced *structurally* by [`delegate`]: when the delegatee already has
+/// an active outgoing delegation, the re-delegation branch rejects the call
+/// with [`Error::DelegationChainTooDeep`] instead of following the
+/// delegatee's own delegation.  Because a delegatee's delegation is never
+/// chained, a chain can never exceed depth 1, so the invariant holds by
+/// construction.
+///
+/// Deliberate exception: the depth limit applies only to *incoming*
+/// delegations.  A delegator may freely re-delegate their own balance
+/// (see the re-delegation branch of [`delegate`]), which replaces their
+/// previous delegation rather than extending a chain.
 const MAX_CHAIN_DEPTH: u32 = 1;
 
 // ─── Public entry-points ───────────────────────────────────────────────────
@@ -194,80 +208,6 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
     let current_ledger = env.ledger().sequence();
 
     // Remove power from delegatee using the stored delegated_amount
-    let delegatee_power = storage::get_vote_power(env, &delegatee);
-    let new_delegatee_power = delegatee_power
-        .checked_sub(delegated_amount)
-        .ok_or_else(|| {
-            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegatee_power);
-            Error::ArithmeticError
-        })?;
-    storage::set_vote_power(env, &delegatee, new_delegatee_power.max(0));
+    let delegatee_power = storage::ge
 
-    // Restore power to delegator using the stored delegated_amount
-    let delegator_power = storage::get_vote_power(env, &delegator);
-    let new_delegator_power = delegator_power
-        .checked_add(delegated_amount)
-        .ok_or_else(|| {
-            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegator_power);
-            Error::ArithmeticError
-        })?;
-    storage::set_vote_power(env, &delegator, new_delegator_power);
-
-    // Remove delegation record
-    storage::remove_delegation(env, &delegator);
-
-    // Snapshots
-    snapshot_and_emit(env, &delegatee, new_delegatee_power.max(0), current_ledger);
-    snapshot_and_emit(env, &delegator, new_delegator_power, current_ledger);
-
-    events::emit_undelegated(env, &delegator, &delegatee, delegated_amount);
-
-    Ok(())
-}
-
-/// Return the current vote power of `address`.
-///
-/// For an address that has never delegated and has no delegators,
-/// this equals their token balance.
-pub fn get_vote_power(env: &Env, address: &Address) -> i128 {
-    storage::get_vote_power(env, address)
-}
-
-/// Return the current delegation record for `delegator`, if any.
-pub fn get_delegation(env: &Env, delegator: &Address) -> Option<DelegationRecord> {
-    storage::get_delegation(env, delegator)
-}
-
-/// Take a snapshot of `address`'s current vote power at the current ledger.
-///
-/// Snapshots are used by governance proposals to fix vote power at a
-/// specific point in time, preventing flash-loan style manipulation.
-///
-/// # Security
-/// `address.require_auth()` is called before any state mutation so that
-/// only the address itself can force a persistent-storage write on its
-/// behalf, closing the storage-spam griefing vector described in issue #1685.
-pub fn take_snapshot(env: &Env, address: &Address) -> Result<(), Error> {
-    // Auth: only the address itself may trigger a snapshot write for its own record
-    address.require_auth();
-
-    let power = storage::get_vote_power(env, address);
-    let ledger = env.ledger().sequence();
-    snapshot_and_emit(env, address, power, ledger);
-    Ok(())
-}
-
-/// Query a historical vote-power snapshot.
-pub fn get_snapshot_power(env: &Env, address: &Address, ledger: u32) -> Result<i128, Error> {
-    storage::get_snapshot(env, address, ledger)
-        .map(|s| s.power)
-        .ok_or(Error::SnapshotNotFound)
-}
-
-// ─── Internal helpers ──────────────────────────────────────────────────────
-
-/// Store a snapshot and emit the corresponding event.
-fn snapshot_and_emit(env: &Env, address: &Address, power: i128, ledger: u32) {
-    storage::set_snapshot(env, address, ledger, power);
-    events::emit_snapshot(env, address, ledger, power);
-}
+/* … truncated 3049 chars — edit only what you need near the top … */

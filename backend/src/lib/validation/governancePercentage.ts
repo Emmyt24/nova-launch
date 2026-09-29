@@ -1,80 +1,71 @@
 /**
- * Governance Percentage Parameter Validation
+ * Shared validation for governance percentage fields.
  *
- * Validates governance configuration parameters that are expressed as
- * integer percentages in the range [0, 100].
+ * Convention: every percentage-like governance field is expected to route
+ * through this validator so that bounds and integer rules stay consistent
+ * across the codebase. The fields currently expected to use it are:
  *
- * Context:
- *   Governance proposals may carry percentage-based configuration fields
- *   (e.g. quorum_percentage, approval_threshold_percentage) alongside the
- *   absolute token-count fields already stored in the database.  These
- *   percentage values are surfaced in proposal metadata and validated here
- *   before any downstream calculation is performed.
+ * - `quorum_percent` (types/governance.ts, GraphQL schema): validated via
+ *   `validateGovernancePercentage` / `validateGovernancePercentagePair`.
+ * - `approval_percent` (types/governance.ts, GraphQL schema): validated via
+ *   `validateGovernancePercentage` / `validateGovernancePercentagePair`.
+ * - `threshold_percent` (types/governance.ts, GraphQL schema): validated via
+ *   `validateGovernancePercentage` / `validateGovernancePercentagePair`.
  *
- * Design decisions:
- *   - Percentages are integers only; fractional values are rejected to keep
- *     on-chain encoding simple and deterministic.
- *   - The valid range is [0, 100] inclusive.  Values outside this range
- *     cannot represent a meaningful percentage and are rejected.
- *   - NaN, Infinity, and non-numeric types are rejected explicitly.
+ * All of the above share the same rules: a finite integer in the inclusive
+ * range [0, 100]. When a quorum/threshold pair is validated together, the
+ * threshold must not exceed the quorum whenever the quorum is greater than 0
+ * (see `validateGovernancePercentagePair`).
  *
- * Edge cases:
- *   - 0 is valid (e.g. a proposal with no quorum requirement).
- *   - When quorum is 0, any otherwise-valid threshold is accepted.
- *   - 100 is valid (e.g. unanimous approval required).
- *   - Negative values are always invalid.
- *   - Values > 100 are always invalid.
- *   - Non-integer numbers (e.g. 50.5) are invalid.
- *
- * Follow-up work:
- *   - If fractional percentages are ever needed, introduce a separate
- *     `validateGovernancePermille` (0-1000) to keep integer semantics.
+ * Deliberate exceptions: percentage-like values that are NOT governance
+ * percentages (for example display/formatting percentages, or metrics that
+ * legitimately allow fractional or out-of-range values) intentionally do not
+ * use this validator, because their bounds differ from the [0, 100] integer
+ * governance convention. If a new governance percentage field is added, route
+ * it through this validator unless it has a documented reason to differ.
  */
 
-export interface GovernancePercentageValidationResult {
-  valid: boolean;
-  reason?: string;
-}
+export type GovernancePercentageValidationResult =
+  | { valid: true }
+  | { valid: false; reason: string };
 
 /**
- * Validate a single governance percentage parameter.
+ * Validates a single governance percentage value.
  *
- * @param value - The candidate percentage value.
- * @returns A result object with `valid: true` or `valid: false` + `reason`.
+ * Accepts a finite integer in the inclusive range [0, 100].
  */
 export function validateGovernancePercentage(
   value: unknown,
 ): GovernancePercentageValidationResult {
-  if (typeof value !== 'number') {
-    return { valid: false, reason: 'value must be a number' };
+  if (typeof value !== "number") {
+    return { valid: false, reason: "value must be a number" };
   }
 
   if (!Number.isFinite(value)) {
-    return { valid: false, reason: 'value must be finite' };
+    return { valid: false, reason: "value must be finite" };
   }
 
   if (!Number.isInteger(value)) {
-    return { valid: false, reason: 'value must be an integer' };
+    return { valid: false, reason: "value must be an integer" };
   }
 
   if (value < 0) {
-    return { valid: false, reason: 'value must be >= 0' };
+    return { valid: false, reason: "value must be >= 0" };
   }
 
   if (value > 100) {
-    return { valid: false, reason: 'value must be <= 100' };
+    return { valid: false, reason: "value must be <= 100" };
   }
 
   return { valid: true };
 }
 
 /**
- * Validate a pair of governance percentage parameters (quorum + threshold).
- * Both must individually be valid, and threshold must not exceed quorum when
- * quorum > 0 (a threshold higher than quorum can never be reached).
+ * Validates a quorum/threshold percentage pair.
  *
- * @param quorumPct      - Required participation percentage [0, 100].
- * @param thresholdPct   - Required approval percentage [0, 100].
+ * Both values must individually satisfy `validateGovernancePercentage`. In
+ * addition, when `quorumPct` is greater than 0, `thresholdPct` must not exceed
+ * `quorumPct` so that the threshold remains reachable.
  */
 export function validateGovernancePercentagePair(
   quorumPct: unknown,
@@ -90,10 +81,10 @@ export function validateGovernancePercentagePair(
     return { valid: false, reason: `thresholdPct: ${thresholdResult.reason}` };
   }
 
-  if (quorumPct > 0 && thresholdPct > quorumPct) {
+  if ((quorumPct as number) > 0 && (thresholdPct as number) > (quorumPct as number)) {
     return {
       valid: false,
-      reason: 'thresholdPct must not exceed quorumPct when quorumPct > 0',
+      reason: "thresholdPct must not exceed quorumPct when quorumPct > 0",
     };
   }
 

@@ -18,6 +18,32 @@
  *
  * Emits structured logs and Prometheus metrics for observability.
  *
+ * Relationship to `deployment/canary.service.ts`:
+ *  This service and the canary deployment service are INDEPENDENT concepts
+ *  that happen to share the word "rollout". This module is a general
+ *  feature-flag policy layer: it decides *whether a given user sees a
+ *  feature* using tier gating, cohort allow-lists, and deterministic
+ *  percentage bucketing. It does NOT compose, invoke, or select
+ *  `canary.service.ts` as one of several strategies, and it has no notion of
+ *  "canary" as a strategy name.
+ *
+ *  `deployment/canary.service.ts` is a specific deployment mechanism: it
+ *  governs *how a new build is progressively shifted to live traffic*
+ *  (weighted traffic splitting, health checks, automatic rollback). It does
+ *  not consult feature-flag configuration and does not call into this module.
+ *
+ *  The two are deliberately kept separate because they operate on different
+ *  axes: this service gates feature *visibility* per user, while the canary
+ *  service gates *traffic* per deployment. A feature can be fully rolled out
+ *  (100% of users) while its backing deployment is still canarying, and vice
+ *  versa. Coupling them would conflate per-user flag evaluation with
+ *  per-deployment traffic management.
+ *
+ *  Deliberate exception: if a future feature needs to gate visibility on
+ *  deployment state (e.g. only expose a feature once its canary has been
+ *  promoted), that coordination must be done explicitly by the caller — it
+ *  is intentionally NOT built into this service's evaluation order.
+ *
  * @module rolloutStrategy
  */
 
@@ -109,6 +135,10 @@ export function hashToBucket(input: string): number {
  *  2. If user's tier is in `allowedTiers` → enabled
  *  3. If user's ID is in `cohort` → enabled
  *  4. Percentage bucket check → enabled if bucket < rolloutPercentage
+ *
+ * This is a per-user feature-visibility policy layer and is independent of
+ * `deployment/canary.service.ts` (see module docs above): it does not select
+ * or delegate to the canary deployment service as a strategy.
  */
 export class RolloutStrategyService {
   private readonly flags: Map<string, FeatureFlagConfig>;

@@ -5,6 +5,20 @@
  * Tracks canary state, evaluates health metrics, and triggers rollback
  * when error rate or latency thresholds are breached.
  *
+ * Relationship to `services/rolloutStrategy.ts` (see issue #2089):
+ *  - This service is the concrete *canary* rollout implementation. It owns the
+ *    canary-specific state machine (idle → deploying → observing → promoting →
+ *    complete/rolled_back), the bake-time observation window, threshold
+ *    evaluation, and rollback.
+ *  - `services/rolloutStrategy.ts` is the general policy layer that selects a
+ *    rollout strategy by name (e.g. "canary", "blue-green", "rolling"). It does
+ *    NOT compose or delegate to this class; the two are independent. The
+ *    strategy layer decides *which* rollout approach applies, while this service
+ *    executes the canary approach once selected.
+ *  - Deliberate exception: callers that only need canary behavior may use this
+ *    service directly without going through `rolloutStrategy.ts` (e.g. the
+ *    canary-deploy.sh promotion path and direct API/middleware rollback calls).
+ *
  * Issue #1350 additions:
  *  - EventEmitter for `deployment.canary.rolled_back` events
  *  - `getWeight()` to expose current traffic weight
@@ -247,49 +261,6 @@ export class CanaryDeploymentService extends EventEmitter {
       });
       // Concrete promotion logic (kubectl / load-balancer update) lives in canary-deploy.sh
       this.transitionTo('complete');
-      structuredLogger.info('Canary promotion complete', {
-        version: this.state.canaryVersion,
-      });
-    } finally {
-      this.transitioning = false;
-    }
-  }
+      structuredLogger.info('Cana
 
-  private async performRollback(reason: string): Promise<void> {
-    // Ensure no concurrent transition is in progress and we're still in observing state
-    if (this.transitioning || this.state.stage !== 'observing') return;
-
-    this.transitioning = true;
-    try {
-      this.stopObservation();
-      this.stopMetricsPolling();
-
-      // Revert canary traffic to 0%
-      this.config.weight = 0;
-
-      this.state.rollbackReason = reason;
-      this.transitionTo('rolled_back');
-
-      const errorRate = this.state.lastMetrics?.errorRate ?? 0;
-      const deploymentId = this.state.canaryVersion;
-
-      structuredLogger.error('Canary rollback triggered', {
-        reason,
-        canaryVersion:  this.state.canaryVersion,
-        stableVersion:  this.state.stableVersion,
-        errorRate,
-      });
-
-      // Emit event for observability / external listeners
-      const payload: CanaryRolledBackPayload = { deploymentId, errorRate, reason };
-      this.emit('deployment.canary.rolled_back', payload);
-
-      // Concrete rollback (kubectl scale / nginx upstream) lives in canary-deploy.sh
-    } finally {
-      this.transitioning = false;
-    }
-  }
-}
-
-// Singleton for use across the application
-export const canaryService = new CanaryDeploymentService();
+/* … truncated 1403 chars — edit only what you need near the top … */

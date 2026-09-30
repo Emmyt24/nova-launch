@@ -30,7 +30,7 @@ pub fn record_balance_snapshot(
     balance: i128,
 ) -> Result<(), Error> {
     let count_key = DataKey::BalanceSnapshotCount(token_index, holder.clone());
-    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let index = storage::next_persistent_append_index(env, &count_key)?;
 
     let snap = BalanceSnapshot {
         ledger: env.ledger().sequence(),
@@ -39,15 +39,13 @@ pub fn record_balance_snapshot(
     };
 
     env.storage().persistent().set(
-        &DataKey::BalanceSnapshot(token_index, holder.clone(), count),
+        &DataKey::BalanceSnapshot(token_index, holder.clone(), index),
         &snap,
     );
-    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(&count_key, &next_count);
 
     storage::bump_persistent(
         env,
-        &DataKey::BalanceSnapshot(token_index, holder.clone(), count),
+        &DataKey::BalanceSnapshot(token_index, holder.clone(), index),
     );
     storage::bump_persistent(env, &count_key);
 
@@ -126,7 +124,7 @@ pub fn record_supply_snapshot(
     total_supply: i128,
 ) -> Result<(), Error> {
     let count_key = DataKey::SupplySnapshotCount(token_index);
-    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let index = storage::next_persistent_append_index(env, &count_key)?;
 
     let snap = SupplySnapshot {
         ledger: env.ledger().sequence(),
@@ -136,11 +134,9 @@ pub fn record_supply_snapshot(
 
     env.storage()
         .persistent()
-        .set(&DataKey::SupplySnapshot(token_index, count), &snap);
-    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().persistent().set(&count_key, &next_count);
+        .set(&DataKey::SupplySnapshot(token_index, index), &snap);
 
-    storage::bump_persistent(env, &DataKey::SupplySnapshot(token_index, count));
+    storage::bump_persistent(env, &DataKey::SupplySnapshot(token_index, index));
     storage::bump_persistent(env, &count_key);
 
     Ok(())

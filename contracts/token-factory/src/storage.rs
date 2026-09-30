@@ -51,6 +51,69 @@ pub fn bump_persistent<
 }
 
 // ============================================================
+// Append-Only Counter Helpers (#2071)
+// ============================================================
+// Both snapshot.rs and storage.rs independently implement the same
+// "read count → use as next index → checked-increment → store" pattern.
+// These two helpers centralise that boilerplate so every counter uses
+// checked arithmetic consistently and future fixes only need to land once.
+//
+// Two variants exist because Soroban has two storage tiers with different
+// TTL semantics:
+//   - `next_persistent_append_index`: for counters stored in `persistent()`
+//     (e.g. balance/supply snapshot counts in snapshot.rs)
+//   - `next_instance_append_index`: for counters stored in `instance()`
+//     (e.g. BurnScheduleCountByToken in this file)
+//
+// Each helper:
+//   1. Reads the current count (defaults to 0 if absent).
+//   2. Returns the current count as the newly-allocated index.
+//   3. Stores `count + 1`, returning `Err(Error::ArithmeticError)` on overflow.
+// ============================================================
+
+/// Allocate the next append index for a counter stored in `persistent()` storage.
+///
+/// Returns the *current* count (= the index to use for the new entry) and
+/// atomically increments the stored count.  Callers are responsible for
+/// persisting the actual entry at that index and bumping its TTL.
+pub fn next_persistent_append_index(
+    env: &Env,
+    count_key: &crate::types::DataKey,
+) -> Result<u32, crate::types::Error> {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(count_key)
+        .unwrap_or(0);
+    let next = count
+        .checked_add(1)
+        .ok_or(crate::types::Error::ArithmeticError)?;
+    env.storage().persistent().set(count_key, &next);
+    Ok(count)
+}
+
+/// Allocate the next append index for a counter stored in `instance()` storage.
+///
+/// Returns the *current* count (= the index to use for the new entry) and
+/// atomically increments the stored count.  Callers are responsible for
+/// persisting the actual entry at that index.
+pub fn next_instance_append_index(
+    env: &Env,
+    count_key: &crate::types::DataKey,
+) -> Result<u32, crate::types::Error> {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(count_key)
+        .unwrap_or(0);
+    let next = count
+        .checked_add(1)
+        .ok_or(crate::types::Error::ArithmeticError)?;
+    env.storage().instance().set(count_key, &next);
+    Ok(count)
+}
+
+// ============================================================
 // Storage Functions - Burn Tracking
 // ============================================================
 // Available functions:
@@ -2105,15 +2168,11 @@ pub fn get_burn_schedule_count_by_token(env: &Env, token_index: u32) -> u32 {
 }
 
 pub fn add_burn_schedule_by_token(env: &Env, token_index: u32, schedule_id: u64) -> Result<(), Error> {
-    let count = get_burn_schedule_count_by_token(env, token_index);
+    let count_key = crate::types::DataKey::BurnScheduleCountByToken(token_index);
+    let index = next_instance_append_index(env, &count_key)?;
     env.storage().instance().set(
-        &crate::types::DataKey::BurnSchedulesByToken(token_index, count),
+        &crate::types::DataKey::BurnSchedulesByToken(token_index, index),
         &schedule_id,
-    );
-    let next_count = count.checked_add(1).ok_or(Error::ArithmeticError)?;
-    env.storage().instance().set(
-        &crate::types::DataKey::BurnScheduleCountByToken(token_index),
-        &next_count,
     );
     Ok(())
 }

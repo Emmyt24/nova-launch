@@ -81,8 +81,66 @@ export const PROJECTION_LAG_THRESHOLDS: ThresholdSet = {
 
 /**
  * Event-specific lag tolerances
- * Some event types may have legitimate reasons for higher lag
- * (e.g., webhook delivery, complex projection calculations)
+ *
+ * WHY THIS MAP EXISTS
+ * -------------------
+ * Most event kinds can be processed within the default PROJECTION_LAG_THRESHOLDS
+ * window (NORMAL: 5 s, WARNING: 30 s, CRITICAL: 60 s).  A small set of event
+ * kinds need *looser* tolerances because additional on-chain computation or
+ * cross-module projection work occurs before the event fires, making the
+ * observed backend lag structurally higher even under normal conditions.
+ *
+ * CRITERIA FOR ADDING A CUSTOM ENTRY
+ * ------------------------------------
+ * Add an entry here only when ALL of the following are true:
+ *
+ *  1. The event kind consistently triggers lag readings above the default
+ *     NORMAL threshold during load testing or production observation — i.e.
+ *     the default would produce spurious WARNING alerts in steady state.
+ *  2. The higher lag has an identifiable structural cause (e.g. governance
+ *     vote tallying, vault milestone verification, campaign scheduler
+ *     calculations) and is not a symptom of a bug or an under-resourced
+ *     worker.
+ *  3. The looser threshold has been reviewed and accepted by a team member
+ *     — widen conservatively (tighter is safer for catching real regressions).
+ *
+ * Conversely, do NOT add an entry just because an event is low-traffic or
+ * "less important".  The thresholds guard user trust, not throughput.
+ *
+ * CURRENT CUSTOM ENTRIES AND THEIR RATIONALE
+ * --------------------------------------------
+ *  token_created / token_burned / token_admin_burned
+ *    — Token events are processed quickly.  Their custom NORMAL/WARNING values
+ *      (5 s / 25 s) are tighter than the default WARNING (30 s) but use a
+ *      slightly shorter warning window to surface degradation earlier.
+ *
+ *  proposal_created / vote_cast
+ *    — Governance events trigger quorum re-computation, tally aggregation, and
+ *      potential state-machine transitions across the governance projection.
+ *      This additional work adds ~3 s of inherent latency, so NORMAL is 8 s
+ *      and CRITICAL is raised to 90 s to avoid false alarms during governance
+ *      load spikes.
+ *
+ *  campaign_started / vault_created
+ *    — Campaign and vault events kick off milestone verification and schedule
+ *      calculations.  Their structural overhead is modest (~1 s), so NORMAL is
+ *      6 s and CRITICAL is 75 s.
+ *
+ * DELIBERATE EXCEPTIONS (events NOT listed here)
+ * -----------------------------------------------
+ *  stream_claimed, dividend_claimed, and other settlement events rely on the
+ *  default PROJECTION_LAG_THRESHOLDS.  They have not shown structural lag
+ *  above the default NORMAL in production and adding lenient tolerances for
+ *  them would mask real indexing failures.  If future profiling shows they
+ *  need tuning, add them here with a documented rationale.
+ *
+ * FALLBACK BEHAVIOUR
+ * ------------------
+ * Any event kind NOT listed in this map silently falls back to the default
+ * PROJECTION_LAG_THRESHOLDS.  There is no warning when an unknown event kind
+ * is looked up — see getLagThresholdsForEventKind() below.  This is
+ * intentional: new event kinds get conservative defaults automatically and
+ * only get a custom entry after demonstrated need.
  */
 export const EVENT_LAG_TOLERANCES: Record<string, ThresholdSet> = {
   // Token events typically process quickly

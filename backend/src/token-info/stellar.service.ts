@@ -1,3 +1,36 @@
+/**
+ * StellarService — token-info read layer  (backend/src/token-info/)
+ *
+ * PURPOSE
+ * -------
+ * Thin HTTP client that reads token metadata, burn statistics, and trading
+ * volume from the public Horizon REST API.  All methods are read-only: they
+ * fetch data from the Stellar network and return it to the tokens module
+ * without writing any on-chain state.
+ *
+ * HOW IT DIFFERS FROM THE OTHER StellarService
+ * ---------------------------------------------
+ * There is a second file with the identical class name located at:
+ *   backend/src/stellar-service-integration/stellar.service.ts
+ *
+ * That service is the *write/transaction* layer: it owns the Soroban RPC
+ * client, submits signed transactions to the factory contract, monitors
+ * transaction status, and wraps the full retry/circuit-breaker/rate-limiter
+ * stack needed for reliable contract invocations.
+ *
+ * This file (token-info) vs. that file (stellar-service-integration):
+ *
+ *   | Concern                | token-info (this file)     | stellar-service-integration |
+ *   |------------------------|----------------------------|-----------------------------|
+ *   | Storage tier used      | read-only                  | read + write (Soroban RPC)  |
+ *   | Primary client         | Horizon HTTP (HttpService) | @stellar/stellar-sdk        |
+ *   | Retry / circuit-breaker| none (simple HTTP)         | RateLimiter + CircuitBreaker|
+ *   | Injected into          | TokensModule               | StellarModule               |
+ *
+ * If you are looking for the service that deploys tokens, mints, or manages
+ * the factory contract, open:
+ *   backend/src/stellar-service-integration/stellar.service.ts
+ */
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { HttpService } from "@nestjs/axios";

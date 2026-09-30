@@ -1,3 +1,37 @@
+/**
+ * StellarService — transaction / contract integration layer
+ *   (backend/src/stellar-service-integration/)
+ *
+ * PURPOSE
+ * -------
+ * Full-featured Stellar client responsible for all write operations and
+ * contract interactions: deploying tokens via the factory contract, minting,
+ * monitoring transaction status, and reading on-chain state via Soroban RPC.
+ * It owns the retry logic, circuit breaker, rate limiter, and sequence-number
+ * cache needed for reliable contract invocations.
+ *
+ * HOW IT DIFFERS FROM THE OTHER StellarService
+ * ---------------------------------------------
+ * There is a second file with the identical class name located at:
+ *   backend/src/token-info/stellar.service.ts
+ *
+ * That service is the *read-only* layer: it fetches token metadata, burn
+ * statistics, and trading volume from the public Horizon REST API.  It has no
+ * retry stack and is injected exclusively into the tokens info module.
+ *
+ * This file (stellar-service-integration) vs. that file (token-info):
+ *
+ *   | Concern                | stellar-service-integration (this file)   | token-info              |
+ *   |------------------------|-------------------------------------------|-------------------------|
+ *   | Storage tier used      | read + write (Soroban RPC)                | read-only               |
+ *   | Primary client         | @stellar/stellar-sdk (Horizon + Soroban)  | Horizon HTTP only       |
+ *   | Retry / circuit-breaker| RateLimiter + CircuitBreaker              | none (simple HTTP)      |
+ *   | Injected into          | StellarModule (app-wide)                  | TokensModule            |
+ *
+ * If you are looking for the lightweight service that only reads asset/trade
+ * data from Horizon, open:
+ *   backend/src/token-info/stellar.service.ts
+ */
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as StellarSdk from "@stellar/stellar-sdk";

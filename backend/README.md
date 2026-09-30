@@ -14,6 +14,16 @@ Backend API for the Nova Launch admin dashboard with protected endpoints for pla
 - � Multi-channel notification service support
 - 🔒 Rate limiting and security headers
 
+## Redis Availability Policy
+
+Redis failures are handled according to the consequence of losing the check, not by a blanket fail-open rule:
+
+- **Availability and delivery limits fail open.** The ingress rate limiter in `src/middleware/rateLimiter.ts` and the per-tenant webhook delivery limit in `src/services/webhookDeliveryService.ts` allow work to continue when Redis is unavailable, temporarily lifting that limit.
+- **Security checks fail closed.** Token revocation lookups treat Redis errors as revoked in `src/auth/token.service.ts`, and nonce consumption rejects the request when Redis cannot validate the nonce in `src/auth/nonce.service.ts`.
+- **Correctness and coordination checks also fail closed.** Errors from `RedisIdempotencyStore` in `src/middleware/idempotency.ts` are passed to Express rather than bypassing deduplication, and `src/lib/leaderElection.ts` does not claim leadership when Redis is unavailable.
+
+New Redis-backed checks should make their outage behavior explicit and follow the existing behavior for the same consequence; do not assume every Redis failure should fail open.
+
 ## Notification Service
 
 The backend includes a multi-channel notification service that supports:

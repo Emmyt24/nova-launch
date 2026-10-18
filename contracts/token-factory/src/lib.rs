@@ -87,6 +87,9 @@ mod validation;
 mod vault;
 mod vesting;
 mod batch_transfer;
+mod vesting_schedule;
+#[cfg(test)]
+mod vesting_schedule_test;
 #[cfg(test)]
 mod batch_transfer_test;
 
@@ -3211,6 +3214,47 @@ impl TokenFactory {
         transfers: Vec<(Address, i128)>,
     ) -> Result<u32, Error> {
         batch_transfer::batch_transfer(&env, &from, &token, &transfers)
+    }
+
+    /// Create a cliff + linear vesting schedule, escrowing `amount` of `token` (#2236).
+    pub fn create_vesting_schedule(
+        env: Env,
+        creator: Address,
+        token: Address,
+        beneficiary: Address,
+        amount: i128,
+        start_time: u64,
+        cliff_duration: u64,
+        duration: u64,
+    ) -> Result<u64, Error> {
+        vesting_schedule::create_vesting_schedule(
+            &env,
+            &creator,
+            &token,
+            &beneficiary,
+            amount,
+            start_time,
+            cliff_duration,
+            duration,
+        )
+    }
+
+    /// Claim all vested, unclaimed tokens from a vesting schedule (#2236).
+    pub fn claim_vesting_schedule(env: Env, beneficiary: Address, id: u64) -> Result<i128, Error> {
+        vesting_schedule::claim_vesting_schedule(&env, &beneficiary, id)
+    }
+
+    /// Get a vesting schedule by id (#2236).
+    pub fn get_vesting_schedule(
+        env: Env,
+        id: u64,
+    ) -> Result<vesting_schedule::VestingSchedule, Error> {
+        vesting_schedule::get_vesting_schedule(&env, id)
+    }
+
+    /// Amount currently claimable from a vesting schedule (#2236).
+    pub fn get_vesting_claimable(env: Env, id: u64) -> Result<i128, Error> {
+        vesting_schedule::get_claimable_amount(&env, id)
     }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.

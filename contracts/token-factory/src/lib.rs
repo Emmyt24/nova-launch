@@ -57,6 +57,9 @@ mod game_history_test;
 #[cfg(test)]
 mod liquidity_mining_test;
 mod mint;
+mod mint_allowance;
+#[cfg(test)]
+mod mint_allowance_test;
 mod pagination;
 mod payload_validation;
 #[cfg(test)]
@@ -2933,6 +2936,44 @@ impl TokenFactory {
     /// ```
     pub fn get_remaining_mintable(env: Env, token_index: u32) -> Option<i128> {
         mint::get_remaining_mintable(&env, token_index)
+    }
+
+    /// Grant a spender a limited, expiring mint allowance (creator only, #2228).
+    pub fn set_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+        amount: i128,
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        mint_allowance::set_allowance(&env, creator, token_index, spender, amount, expires_at)
+    }
+
+    /// Revoke a spender's mint allowance (creator only, #2228).
+    pub fn revoke_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+    ) -> Result<(), Error> {
+        mint_allowance::revoke_allowance(&env, creator, token_index, spender)
+    }
+
+    /// Remaining unexpired mint allowance for a spender (#2228).
+    pub fn get_mint_allowance(env: Env, token_index: u32, spender: Address) -> i128 {
+        mint_allowance::get_allowance(&env, token_index, &spender)
+    }
+
+    /// Mint using a previously granted allowance (#2228).
+    pub fn mint_with_allowance(
+        env: Env,
+        spender: Address,
+        token_index: u32,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        mint_allowance::mint_with_allowance(&env, spender, token_index, to, amount)
     }
 
     /// Update the supply cap for a token (creator only)

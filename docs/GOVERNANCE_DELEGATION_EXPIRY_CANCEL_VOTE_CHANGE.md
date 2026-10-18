@@ -12,3 +12,9 @@ wired into `lib.rs` with thin entry points.
 - `get_delegation_expiry(delegator)`; plain `delegate`/`undelegate` clear the expiry.
 - Events: `dlg_exp` (set), `dlg_end` (expired). Storage: `ExpiryKey::{Expiry, Delegators}`.
 
+## Proposal cancellation (#2239) - `proposal_cancellation.rs`
+- `cancel_proposal(proposer, proposal_id)`: proposer only, and only while the
+  proposal is `Active` with no votes cast (pending). Sets the new status
+  `ProposalStatus::Cancelled`. Event: `prop_cxl`.
+- Errors (`CancelError`): `ProposalNotFound=1`, `NotProposer=2`, `NotPending=3`.
+

@@ -3,7 +3,8 @@
 
 #![cfg(test)]
 
-use crate::types::Error;
+use crate::proposal_cancellation::CancelError;
+use crate::types::{Error, ProposalStatus};
 use crate::{GovernanceContract, GovernanceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -145,5 +146,56 @@ proptest! {
         prop_assert_eq!(client.get_vote_power(&delegatee), delegatee_bal);
         prop_assert_eq!(client.get_vote_power(&delegator), delegator_bal);
     }
+}
+
+// ─── #2239 proposal cancellation ───────────────────────────────────────────
+
+#[test]
+fn proposer_can_cancel_pending_proposal() {
+    let (env, client, admin) = setup();
+    let pid = new_proposal(&env, &client, &admin);
+    client.cancel_proposal(&admin, &pid);
+    assert_eq!(client.get_proposal(&pid).unwrap().status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn only_proposer_can_cancel() {
+    let (env, client, admin) = setup();
+    let pid = new_proposal(&env, &client, &admin);
+    let other = Address::generate(&env);
+    let r = client.try_cancel_proposal(&other, &pid);
+    assert_eq!(r, Err(Ok(CancelError::NotProposer)));
+}
+
+#[test]
+fn cannot_cancel_after_vote_or_twice() {
+    let (env, client, admin) = setup();
+    let voter = funded(&env, &client, &admin, 100);
+    let pid = new_proposal(&env, &client, &admin);
+    client.cast_vote(&voter, &pid, &true);
+    assert_eq!(
+        client.try_cancel_proposal(&admin, &pid),
+        Err(Ok(CancelError::NotPending))
+    );
+
+    let pid2 = new_proposal(&env, &client, &admin);
+    client.cancel_proposal(&admin, &pid2);
+    assert_eq!(
+        client.try_cancel_proposal(&admin, &pid2),
+        Err(Ok(CancelError::NotPending))
+    );
+}
+
+#[test]
+fn cancelled_proposal_rejects_votes_and_missing_id_errors() {
+    let (env, client, admin) = setup();
+    let voter = funded(&env, &client, &admin, 100);
+    let pid = new_proposal(&env, &client, &admin);
+    client.cancel_proposal(&admin, &pid);
+    assert!(client.try_cast_vote(&voter, &pid, &true).is_err());
+    assert_eq!(
+        client.try_cancel_proposal(&admin, &99_u32),
+        Err(Ok(CancelError::ProposalNotFound))
+    );
 }
 

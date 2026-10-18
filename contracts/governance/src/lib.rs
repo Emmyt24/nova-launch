@@ -14,6 +14,7 @@
 
 mod delegation;
 mod delegation_expiry;
+mod proposal_cancellation;
 mod events;
 mod settlement;
 mod storage;
@@ -110,6 +111,15 @@ impl GovernanceContract {
     /// Return the expiry timestamp of `delegator`'s delegation, if any.
     pub fn get_delegation_expiry(env: Env, delegator: Address) -> Option<u64> {
         delegation_expiry::get_expiry(&env, &delegator)
+    }
+
+    /// Cancel a pending proposal (no votes yet); proposer only (#2239).
+    pub fn cancel_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_id: u32,
+    ) -> Result<(), proposal_cancellation::CancelError> {
+        proposal_cancellation::cancel_proposal(&env, proposer, proposal_id)
     }
 
     /// Remove the active delegation for `delegator`.

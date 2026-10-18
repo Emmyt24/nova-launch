@@ -86,6 +86,9 @@ mod types;
 mod validation;
 mod vault;
 mod vesting;
+mod batch_transfer;
+#[cfg(test)]
+mod batch_transfer_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -3198,6 +3201,17 @@ impl TokenFactory {
     // ═══════════════════════════════════════════════════════════════════════
     // Stream Functions
     // ═══════════════════════════════════════════════════════════════════════
+
+    /// Batch transfer `token` from `from` to many recipients (max 50), atomically,
+    /// emitting a `bt_item` event per transfer and a `bt_done` summary (#2237).
+    pub fn batch_transfer(
+        env: Env,
+        from: Address,
+        token: Address,
+        transfers: Vec<(Address, i128)>,
+    ) -> Result<u32, Error> {
+        batch_transfer::batch_transfer(&env, &from, &token, &transfers)
+    }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.
     pub fn create_vault(

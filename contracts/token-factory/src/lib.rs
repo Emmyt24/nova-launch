@@ -89,6 +89,9 @@ mod vesting;
 mod batch_transfer;
 mod vesting_schedule;
 mod treasury_timelock;
+mod fee_tiering;
+#[cfg(test)]
+mod fee_tiering_test;
 #[cfg(test)]
 mod treasury_timelock_test;
 #[cfg(test)]
@@ -3296,6 +3299,31 @@ impl TokenFactory {
         id: u64,
     ) -> Result<treasury_timelock::QueuedWithdrawal, Error> {
         treasury_timelock::get_queued_withdrawal(&env, id)
+    }
+
+    /// Set the creation-fee surcharge for a token feature (admin only) (#2234).
+    pub fn set_feature_fee(
+        env: Env,
+        admin: Address,
+        feature: Symbol,
+        fee: i128,
+    ) -> Result<(), Error> {
+        fee_tiering::set_feature_fee(&env, &admin, &feature, fee)
+    }
+
+    /// Get the surcharge configured for a feature (#2234).
+    pub fn get_feature_fee(env: Env, feature: Symbol) -> i128 {
+        fee_tiering::get_feature_fee(&env, &feature)
+    }
+
+    /// List features with a configured surcharge (#2234).
+    pub fn get_fee_tier_features(env: Env) -> Vec<Symbol> {
+        fee_tiering::get_fee_tier_features(&env)
+    }
+
+    /// Quote the creation fee (base fee plus feature surcharges) (#2234).
+    pub fn quote_creation_fee(env: Env, features: Vec<Symbol>) -> Result<i128, Error> {
+        fee_tiering::quote_creation_fee(&env, &features)
     }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.

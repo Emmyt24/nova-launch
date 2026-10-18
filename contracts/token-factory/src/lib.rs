@@ -56,6 +56,7 @@ mod freeze_functions_test;
 mod game_history_test;
 #[cfg(test)]
 mod liquidity_mining_test;
+mod metadata_limits;
 mod mint;
 mod pagination;
 mod payload_validation;
@@ -409,6 +410,7 @@ impl TokenFactory {
         new_metadata_uri: String,
     ) -> Result<u32, Error> {
         // Only the configured governance contract may approve metadata changes.
+        metadata_limits::validate_metadata_uri(&new_metadata_uri)?;
         let governance = storage::get_governance(&env).ok_or(Error::Unauthorized)?;
         governance.require_auth();
 
@@ -1786,6 +1788,7 @@ impl TokenFactory {
     /// * `Error::TokenPaused` - Token is currently paused
     /// * `Error::MetadataAlreadySet` - Metadata already set for this token
     pub fn set_metadata(env: Env, token_index: u32, metadata_uri: String) -> Result<(), Error> {
+        metadata_limits::validate_metadata_uri(&metadata_uri)?;
         let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         let creator = token_info.creator.clone();
         creator.require_auth();
@@ -1835,6 +1838,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
+        metadata_limits::validate_metadata_uri(&metadata_uri)?;
         let mut token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 
@@ -1938,6 +1942,7 @@ impl TokenFactory {
 
         admin.require_auth();
 
+        metadata_limits::validate_metadata_uri(&new_metadata_uri)?;
         let mut token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 

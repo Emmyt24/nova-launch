@@ -15,6 +15,7 @@
 mod delegation;
 mod delegation_expiry;
 mod proposal_cancellation;
+mod vote_change;
 mod events;
 mod settlement;
 mod storage;
@@ -120,6 +121,30 @@ impl GovernanceContract {
         proposal_id: u32,
     ) -> Result<(), proposal_cancellation::CancelError> {
         proposal_cancellation::cancel_proposal(&env, proposer, proposal_id)
+    }
+
+    /// Admin: enable (`Some(secs_before_end)`) or disable (`None`) vote changes (#2240).
+    pub fn set_vote_change_window(
+        env: Env,
+        admin: Address,
+        window: Option<u64>,
+    ) -> Result<(), Error> {
+        vote_change::set_window(&env, admin, window)
+    }
+
+    /// Return the configured vote-change window, if enabled.
+    pub fn get_vote_change_window(env: Env) -> Option<u64> {
+        vote_change::get_window(&env)
+    }
+
+    /// Change an existing vote while the vote-change window is open (#2240).
+    pub fn change_vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u32,
+        in_favor: bool,
+    ) -> Result<(), vote_change::VoteChangeError> {
+        vote_change::change_vote(&env, voter, proposal_id, in_favor)
     }
 
     /// Remove the active delegation for `delegator`.

@@ -18,3 +18,10 @@ wired into `lib.rs` with thin entry points.
   `ProposalStatus::Cancelled`. Event: `prop_cxl`.
 - Errors (`CancelError`): `ProposalNotFound=1`, `NotProposer=2`, `NotPending=3`.
 
+## Vote change window (#2240) - `vote_change.rs`
+- Disabled by default. Admin calls `set_vote_change_window(admin, Some(secs))`;
+  voters may then `change_vote` until `voting_end - secs`. `None` disables it.
+- The originally recorded weight is moved between `votes_for`/`votes_against`
+  with checked arithmetic. Event: `vote_chg`. Storage: `VoteChangeKey::Window`.
+- Errors (`VoteChangeError`): `ProposalNotFound=1`, `ProposalNotActive=2`,
+  `ChangesDisabled=3`, `WindowClosed=4`, `NoExistingVote=5`, `SameVote=6`, `Overflow=7`.

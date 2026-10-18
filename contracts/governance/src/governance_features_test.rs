@@ -5,6 +5,7 @@
 
 use crate::proposal_cancellation::CancelError;
 use crate::types::{Error, ProposalStatus};
+use crate::vote_change::VoteChangeError;
 use crate::{GovernanceContract, GovernanceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -199,3 +200,100 @@ fn cancelled_proposal_rejects_votes_and_missing_id_errors() {
     );
 }
 
+// ─── #2240 vote change window ──────────────────────────────────────────────
+
+#[test]
+fn vote_change_disabled_by_default() {
+    let (env, client, admin) = setup();
+    let voter = funded(&env, &client, &admin, 100);
+    let pid = new_proposal(&env, &client, &admin);
+    client.cast_vote(&voter, &pid, &true);
+    assert_eq!(client.get_vote_change_window(), None);
+    assert_eq!(
+        client.try_change_vote(&voter, &pid, &false),
+        Err(Ok(VoteChangeError::ChangesDisabled))
+    );
+}
+
+#[test]
+fn only_admin_sets_window() {
+    let (env, client, _admin) = setup();
+    let other = Address::generate(&env);
+    assert_eq!(
+        client.try_set_vote_change_window(&other, &Some(100_u64)),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn change_vote_moves_weight_between_tallies() {
+    let (env, client, admin) = setup();
+    let v1 = funded(&env, &client, &admin, 100);
+    let v2 = funded(&env, &client, &admin, 40);
+    let pid = new_proposal(&env, &client, &admin);
+    client.set_vote_change_window(&admin, &Some(200_u64));
+    client.cast_vote(&v1, &pid, &true);
+    client.cast_vote(&v2, &pid, &true);
+
+    client.change_vote(&v1, &pid, &false);
+    let p = client.get_proposal(&pid).unwrap();
+    assert_eq!(p.votes_for, 40);
+    assert_eq!(p.votes_against, 100);
+    assert!(!client.get_proposal_vote(&pid, &v1).unwrap().in_favor);
+
+    client.change_vote(&v1, &pid, &true);
+    let p = client.get_proposal(&pid).unwrap();
+    assert_eq!(p.votes_for, 140);
+    assert_eq!(p.votes_against, 0);
+}
+
+#[test]
+fn change_vote_rejections() {
+    let (env, client, admin) = setup();
+    let voter = funded(&env, &client, &admin, 100);
+    let stranger = funded(&env, &client, &admin, 100);
+    let pid = new_proposal(&env, &client, &admin);
+    client.set_vote_change_window(&admin, &Some(200_u64));
+    client.cast_vote(&voter, &pid, &true);
+
+    assert_eq!(
+        client.try_change_vote(&voter, &pid, &true),
+        Err(Ok(VoteChangeError::SameVote))
+    );
+    assert_eq!(
+        client.try_change_vote(&stranger, &pid, &true),
+        Err(Ok(VoteChangeError::NoExistingVote))
+    );
+
+    // voting_end = 1000, window = 200 => changes close after t = 800.
+    set_time(&env, 800);
+    client.change_vote(&voter, &pid, &false);
+    set_time(&env, 801);
+    assert_eq!(
+        client.try_change_vote(&voter, &pid, &true),
+        Err(Ok(VoteChangeError::WindowClosed))
+    );
+}
+
+proptest! {
+    #[test]
+    fn prop_vote_change_preserves_total_weight(
+        weights in prop::collection::vec(1i128..=10_000i128, 1..8),
+        flips in prop::collection::vec(prop::bool::ANY, 8),
+    ) {
+        let (env, client, admin) = setup();
+        let pid = new_proposal(&env, &client, &admin);
+        client.set_vote_change_window(&admin, &Some(0_u64));
+        let mut total: i128 = 0;
+        for (i, w) in weights.iter().enumerate() {
+            let v = funded(&env, &client, &admin, *w);
+            client.cast_vote(&v, &pid, &true);
+            total += *w;
+            if flips[i] {
+                client.change_vote(&v, &pid, &false);
+            }
+        }
+        let p = client.get_proposal(&pid).unwrap();
+        prop_assert_eq!(p.votes_for + p.votes_against, total);
+    }
+}

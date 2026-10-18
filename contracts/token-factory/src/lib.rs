@@ -88,6 +88,9 @@ mod vault;
 mod vesting;
 mod batch_transfer;
 mod vesting_schedule;
+mod treasury_timelock;
+#[cfg(test)]
+mod treasury_timelock_test;
 #[cfg(test)]
 mod vesting_schedule_test;
 #[cfg(test)]
@@ -3255,6 +3258,44 @@ impl TokenFactory {
     /// Amount currently claimable from a vesting schedule (#2236).
     pub fn get_vesting_claimable(env: Env, id: u64) -> Result<i128, Error> {
         vesting_schedule::get_claimable_amount(&env, id)
+    }
+
+    /// Queue a timelocked treasury withdrawal; returns its id (#2235).
+    pub fn queue_treasury_withdrawal(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        treasury_timelock::queue_withdrawal(&env, &admin, &recipient, amount)
+    }
+
+    /// Cancel a queued treasury withdrawal (#2235).
+    pub fn cancel_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::cancel_withdrawal(&env, &admin, id)
+    }
+
+    /// Execute a queued treasury withdrawal after its delay (#2235).
+    pub fn execute_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::execute_withdrawal(&env, &admin, id)
+    }
+
+    /// Set the treasury withdrawal delay in seconds (#2235).
+    pub fn set_treasury_withdrawal_delay(env: Env, admin: Address, delay: u64) -> Result<(), Error> {
+        treasury_timelock::set_withdrawal_delay(&env, &admin, delay)
+    }
+
+    /// Get the treasury withdrawal delay in seconds (#2235).
+    pub fn get_treasury_withdrawal_delay(env: Env) -> u64 {
+        treasury_timelock::get_withdrawal_delay(&env)
+    }
+
+    /// Get a queued treasury withdrawal (#2235).
+    pub fn get_queued_treasury_withdrawal(
+        env: Env,
+        id: u64,
+    ) -> Result<treasury_timelock::QueuedWithdrawal, Error> {
+        treasury_timelock::get_queued_withdrawal(&env, id)
     }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.

@@ -13,6 +13,7 @@
 #![warn(missing_docs)]
 
 mod delegation;
+mod delegation_expiry;
 mod events;
 mod settlement;
 mod storage;
@@ -84,7 +85,31 @@ impl GovernanceContract {
     /// * [`Error::DelegationChainTooDeep`] – Chain length would exceed the limit.
     /// * [`Error::ContractPaused`] – Contract is paused.
     pub fn delegate(env: Env, delegator: Address, delegatee: Address) -> Result<(), Error> {
-        delegation::delegate(&env, delegator, delegatee)
+        delegation::delegate(&env, delegator.clone(), delegatee)?;
+        // A plain delegation carries no expiry (#2238).
+        delegation_expiry::clear_expiry(&env, &delegator);
+        Ok(())
+    }
+
+    /// Delegate vote power until `expires_at` (ledger timestamp, must be in the future).
+    /// After expiry the delegation is ignored when resolving vote weight (#2238).
+    pub fn delegate_with_expiry(
+        env: Env,
+        delegator: Address,
+        delegatee: Address,
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        delegation_expiry::delegate_with_expiry(&env, delegator, delegatee, expires_at)
+    }
+
+    /// Permissionless: unwind an expired delegation. Returns true if one was expired.
+    pub fn expire_delegation(env: Env, delegator: Address) -> Result<bool, Error> {
+        delegation_expiry::expire_delegation(&env, &delegator)
+    }
+
+    /// Return the expiry timestamp of `delegator`'s delegation, if any.
+    pub fn get_delegation_expiry(env: Env, delegator: Address) -> Option<u64> {
+        delegation_expiry::get_expiry(&env, &delegator)
     }
 
     /// Remove the active delegation for `delegator`.
@@ -101,7 +126,9 @@ impl GovernanceContract {
     /// # Errors
     /// * [`Error::ContractPaused`] – Contract is paused.
     pub fn undelegate(env: Env, delegator: Address) -> Result<(), Error> {
-        delegation::undelegate(&env, delegator)
+        delegation::undelegate(&env, delegator.clone())?;
+        delegation_expiry::clear_expiry(&env, &delegator);
+        Ok(())
     }
 
     /// Get the current voting power of an address.
@@ -533,6 +560,8 @@ impl GovernanceContract {
         if storage::has_voted(&env, proposal_id, &voter) {
             return Err(VoteError::AlreadyVoted);
         }
+        // Drop lapsed delegations before resolving weight (#2238).
+        delegation_expiry::sweep_for_voter(&env, &voter).map_err(|_| VoteError::Overflow)?;
         let weight = {
             let vp = storage::get_vote_power(&env, &voter);
             if vp > 0 {
@@ -671,3 +700,6 @@ mod vote_accounting_test;
 
 #[cfg(test)]
 mod settlement_test;
+
+#[cfg(test)]
+mod governance_features_test;

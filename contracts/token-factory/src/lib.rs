@@ -25,6 +25,9 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
+mod burn_rate_limit;
+#[cfg(test)]
+mod burn_rate_limit_test;
 mod buyback;
 mod campaign;
 mod campaign_breaker;
@@ -1248,7 +1251,30 @@ impl TokenFactory {
     /// factory.burn(&env, caller, 0, 1_000_0000000)?;
     /// ```
     pub fn burn(env: Env, caller: Address, token_index: u32, amount: i128) -> Result<(), Error> {
+        burn_rate_limit::enforce(&env, token_index, amount)?;
         burn::burn(&env, caller, token_index, amount)
+    }
+
+    /// Configure the per-ledger-window burn cap for a token (admin only, #2229).
+    /// `max_burn == 0` clears the limit. Error 610 is returned by `burn` when over cap.
+    pub fn set_burn_rate_limit(
+        env: Env,
+        admin: Address,
+        token_index: u32,
+        window_ledgers: u32,
+        max_burn: i128,
+    ) -> Result<(), Error> {
+        burn_rate_limit::set_limit(&env, admin, token_index, window_ledgers, max_burn)
+    }
+
+    /// Get the burn rate limit as `(window_ledgers, max_burn)`, if configured (#2229).
+    pub fn get_burn_rate_limit(env: Env, token_index: u32) -> Option<(u32, i128)> {
+        burn_rate_limit::get_limit(&env, token_index)
+    }
+
+    /// Amount burned so far in the current ledger window (#2229).
+    pub fn get_burn_window_usage(env: Env, token_index: u32) -> i128 {
+        burn_rate_limit::get_window_usage(&env, token_index)
     }
 
     /// Batch burn tokens from multiple holders (admin only)

@@ -11,6 +11,8 @@ vi.mock("../../services/webhookService", () => ({
   default: {
     createSubscription: vi.fn(),
     deleteSubscription: vi.fn(),
+    restoreSubscription: vi.fn(),
+    updateCustomHeaders: vi.fn(),
     listSubscriptions: vi.fn(),
     getSubscription: vi.fn(),
     updateSubscriptionStatus: vi.fn(),
@@ -77,7 +79,7 @@ describe("Webhooks Routes", () => {
 
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
-      expect(res.body.data).toEqual(mockSub);
+      expect(res.body.data).toEqual({ ...mockSub, customHeaders: [] });
     });
 
     it("handles error during subscription creation", async () => {

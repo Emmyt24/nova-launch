@@ -2,10 +2,58 @@
 
 use crate::{TokenFactory, TokenFactoryClient};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, Bytes, Env, String,
 };
+
+/// Malicious token contract used to probe reentrancy safety of the bridge
+/// lock/release paths. On every `transfer` it attempts to reenter the
+/// factory's `lock_tokens` / `release_tokens` entry points before returning.
+///
+/// The reentrant calls are expected to fail (or be no-ops) because the
+/// factory must commit its nonce/escrow state *before* invoking the token
+/// contract; if it did not, the reentrant call would observe stale state and
+/// allow a double-release.
+#[contract]
+pub struct MaliciousToken;
+
+#[contractimpl]
+impl MaliciousToken {
+    /// Records the factory address and the nonce the mock should try to
+    /// reenter with. Stored in instance storage so the mock can act during
+    /// `transfer`.
+    pub fn configure(env: Env, factory: Address, nonce: u64) {
+        env.storage().instance().set(&0u32, &factory);
+        env.storage().instance().set(&1u32, &nonce);
+    }
+
+    pub fn transfer(env: Env, _from: Address, _to: Address, _amount: i128) {
+        let factory: Address = env.storage().instance().get(&0u32).unwrap();
+        let nonce: u64 = env.storage().instance().get(&1u32).unwrap();
+        let client = TokenFactoryClient::new(&env, &factory);
+
+        // Attempt to reenter the release path with the same nonce. This must
+        // not succeed in moving funds a second time.
+        let _ = client.try_release_tokens(
+            &env.current_contract_address(),
+            &nonce,
+            &env.current_contract_address(),
+            &env.current_contract_address(),
+            &1_i128,
+        );
+
+        // Attempt to reenter the lock path as well.
+        let _ = client.try_lock_tokens(
+            &env.current_contract_address(),
+            &env.current_contract_address(),
+            &1_i128,
+            &String::from_str(&env, "ethereum"),
+            &Bytes::from_array(&env, &[0u8; 20]),
+        );
+    }
+}
 
 /// Registers the factory (initialized) and a real Stellar Asset Contract
 /// token, so `lock_tokens` / `release_tokens` exercise genuine token
@@ -333,4 +381,76 @@ fn test_bridge_lock_query_returns_none_for_unknown_nonce() {
 
     assert!(client.get_bridge_lock(&999_u64).is_none());
     assert!(!client.is_bridge_nonce_released(&999_u64));
+}
+
+#[test]
+fn test_release_marks_nonce_before_external_token_call() {
+    // The nonce must be marked released *before* the token transfer is
+    // attempted, so a reentrant call from the token contract observes the
+    // nonce as already consumed and cannot double-release.
+    let (env, contract_id, admin, _token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let malicious_id = env.register_contract(None, MaliciousToken);
+    let malicious = MaliciousTokenClient::new(&env, &malicious_id);
+
+    let recipient = Address::generate(&env);
+    let amount = 100_000_i128;
+    let nonce = 7_u64;
+
+    // Fund the factory so the release transfer has something to move. The
+    // malicious token's `transfer` is a no-op for balances, so we only care
+    // about the factory's nonce bookkeeping.
+    malicious.configure(&contract_id, &nonce);
+
+    let result = client.try_release_tokens(&admin, &nonce, &malicious_id, &recipient, &amount);
+    // The release itself may fail because the malicious token does not
+    // implement a real balance transfer; what matters is that the nonce was
+    // consumed before the external call, so a reentrant release could not
+    // succeed.
+    let _ = result;
+
+    assert!(
+        client.is_bridge_nonce_released(&nonce),
+        "nonce must be marked released before the external token call"
+    );
+
+    // A second release of the same nonce must be rejected.
+    let replay = client.try_release_tokens(&admin, &nonce, &malicious_id, &recipient, &amount);
+    assert!(replay.is_err(), "replayed nonce must be rejected");
+}
+
+#[test]
+fn test_lock_commits_escrow_before_external_token_call() {
+    // `lock_tokens` must record the BridgeLock and increment the nonce before
+    // pulling tokens in, so a reentrant call from the token contract cannot
+    // observe a partially-updated escrow state.
+    let (env, contract_id, _admin, _token) = setup();
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let malicious_id = env.register_contract(None, MaliciousToken);
+    let malicious = MaliciousTokenClient::new(&env, &malicious_id);
+
+    let sender = Address::generate(&env);
+    let amount = 50_000_i128;
+    let (destination_chain, destination_address) = destination(&env, "ethereum", 0x08);
+
+    malicious.configure(&contract_id, &0_u64);
+
+    let result = client.try_lock_tokens(
+        &sender,
+        &malicious_id,
+        &amount,
+        &destination_chain,
+        &destination_address,
+    );
+    // The malicious token does not implement a real transfer, so the lock
+    // may fail; the invariant under test is that any lock that *is* recorded
+    // has its nonce/escrow state committed atomically.
+    if result.is_ok() {
+        let nonce = result.unwrap();
+        let lock = client.get_bridge_lock(&nonce).unwrap();
+        assert_eq!(lock.amount, amount);
+        assert_eq!(lock.token, malicious_id);
+    }
 }

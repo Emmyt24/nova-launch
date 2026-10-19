@@ -1,7 +1,17 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-const REQUIRED_OPERATIONS = ['create', 'mint', 'burn', 'claim', 'propose', 'vote', 'execute'];
+const REQUIRED_OPERATIONS = [
+  'create',
+  'mint',
+  'burn',
+  'claim',
+  'propose',
+  'vote',
+  'queue',
+  'execute',
+  'delegate'
+];
 const DEFAULT_THRESHOLD_PERCENT = 10;
 
 function parseArgs(argv) {

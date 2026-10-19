@@ -22,6 +22,8 @@ import {
   createRedisClient,
   incrementSlidingWindow,
 } from "../middleware/rateLimiter";
+import { applyPayloadSizeLimit, getMaxPayloadBytes } from "./webhookPayloadLimit";
+import { resolveCustomHeaders } from "./webhookCustomHeaders";
 import tenantWebhookRateLimiter, {
   TenantWebhookRateLimiter,
 } from "./tenantWebhookRateLimiter";
@@ -85,6 +87,8 @@ export class WebhookDeliveryService {
   private circuitBreaker: CircuitBreaker;
   // Read at construction time so tests can override via process.env before new WebhookDeliveryService()
   private readonly compressionThresholdBytes: number;
+  // Read at construction time for the same reason as compressionThresholdBytes.
+  private readonly maxPayloadBytes: number;
   private readonly pool: WorkerPool<DeliveryTask>;
   // Lazily created so environments/tests without Redis never pay the
   // connection cost unless a delivery actually needs rate-limit checking.
@@ -102,6 +106,8 @@ export class WebhookDeliveryService {
     this.compressionThresholdBytes = parseInt(
       process.env.WEBHOOK_COMPRESSION_THRESHOLD_BYTES || "1024"
     );
+    // Payloads larger than this (bytes) are truncated before delivery.
+    this.maxPayloadBytes = getMaxPayloadBytes();
     this.pool = new WorkerPool<DeliveryTask>({
       concurrency: parseWorkerConcurrency(),
       worker: async (task) => {
@@ -288,9 +294,29 @@ export class WebhookDeliveryService {
       }
     }
 
+    // Enforce the max payload size before signing so the signature covers
+    // exactly what is delivered.
+    const limited = applyPayloadSizeLimit(event, data, {
+      maxBytes: this.maxPayloadBytes,
+    });
+    if (limited.truncated) {
+      console.warn(
+        JSON.stringify({
+          event: 'webhook.payload_truncated',
+          correlationId: cid,
+          subscriptionId: subscription.id,
+          webhookEvent: event,
+          originalSizeBytes: limited.originalSizeBytes,
+          finalSizeBytes: limited.finalSizeBytes,
+          maxSizeBytes: limited.maxSizeBytes,
+          droppedFields: limited.droppedFields,
+        })
+      );
+    }
+
     const payload = webhookService.createPayload(
       event,
-      data,
+      limited.data,
       subscription.secret
     );
 
@@ -303,6 +329,11 @@ export class WebhookDeliveryService {
     // Include originating tx hash if present in data
     const txHash = (data as unknown as Record<string, unknown>).transactionHash as string | undefined;
     if (txHash) extraHeaders['X-Tx-Hash'] = txHash;
+    if (limited.truncated) extraHeaders['X-Webhook-Truncated'] = 'true';
+
+    // Per-subscription custom headers (e.g. gateway auth). Spread first so
+    // pipeline headers always take precedence.
+    const customHeaders = resolveCustomHeaders(subscription.customHeaders);
 
     // Per-tenant token-bucket rate limiting gate — applied BEFORE any
     // outbound HTTP call. If the tenant is within budget this resolves
@@ -343,6 +374,7 @@ export class WebhookDeliveryService {
           const response = await axios.post(subscription.url, requestBody, {
             timeout: TIMEOUT_MS,
             headers: {
+              ...customHeaders,
               ...contentHeaders,
               "X-Webhook-Signature": payload.signature,
               "X-Webhook-Event": event,
@@ -475,6 +507,7 @@ export class WebhookDeliveryService {
       const response = await axios.post(subscription.url, testPayload, {
         timeout: TIMEOUT_MS,
         headers: {
+          ...resolveCustomHeaders(subscription.customHeaders),
           "Content-Type": "application/json",
           "X-Webhook-Signature": testPayload.signature,
           "X-Webhook-Event": "test",

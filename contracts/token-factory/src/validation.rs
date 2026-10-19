@@ -25,10 +25,67 @@
 //! in `payload_validation`. A future feature gets its own `*_validation.rs` only when its rules are
 //! feature-specific; broadly reusable invariants should be added here.
 
-use soroban_sdk::Env;
+use soroban_sdk::{Address, Env};
 
 use crate::storage;
 use crate::types::Error;
+
+/// Validates that an address parameter is not the zero/degenerate address.
+///
+/// Soroban `Address` values cannot be constructed from an all-zero byte
+/// sequence in normal operation, but callers can still pass the contract's own
+/// address or a placeholder that resolves to a degenerate value. This helper
+/// centralizes the rejection of such values so every public entry point can
+/// fail fast before mutating state.
+///
+/// # Errors
+///
+/// * `Error::InvalidAddress` - The supplied address is degenerate (zero address)
+pub fn validate_non_zero_address(address: &Address) -> Result<(), Error> {
+    // A zero address is represented by an all-zero 32-byte payload. Soroban does
+    // not expose raw bytes for `Address`, so we compare against the canonical
+    // zero address derived from the environment.
+    let zero = Address::from_string(&soroban_sdk::String::from_str(
+        &address.env(),
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    if *address == zero {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(())
+}
+
+/// Validates that two addresses are not the same (self-referential parameter).
+///
+/// Several entry points accept a "from"/"to" or "owner"/"recipient" pair. When
+/// both refer to the same address the operation is a no-op at best and can
+/// corrupt accounting at worst, so it is rejected explicitly.
+///
+/// # Errors
+///
+/// * `Error::SelfReferentialAddress` - Both addresses are identical
+pub fn validate_distinct_addresses(a: &Address, b: &Address) -> Result<(), Error> {
+    if a == b {
+        return Err(Error::SelfReferentialAddress);
+    }
+    Ok(())
+}
+
+/// Validates that an address parameter is neither zero nor equal to `other`.
+///
+/// Convenience wrapper combining [`validate_non_zero_address`] and
+/// [`validate_distinct_addresses`] for entry points that take a single address
+/// plus a reference address (e.g. the contract itself or the caller).
+///
+/// # Errors
+///
+/// * `Error::InvalidAddress` - `address` is the zero address
+/// * `Error::SelfReferentialAddress` - `address` equals `other`
+pub fn validate_address_parameter(address: &Address, other: &Address) -> Result<(), Error> {
+    validate_non_zero_address(address)?;
+    validate_distinct_addresses(address, other)?;
+    Ok(())
+}
 
 /// Validates that the admin address is set and valid.
 ///

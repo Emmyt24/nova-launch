@@ -6,11 +6,14 @@
  * Uses `graphql-http` (spec-compliant, no Apollo overhead).
  * Introspection is disabled in production to reduce attack surface.
  *
- * Security:
+ * Security (full reference: docs/GRAPHQL_QUERY_LIMITS.md, #2205):
  *  - Depth limit: rejects queries nested deeper than MAX_DEPTH (default 6,
- *    configurable via GRAPHQL_MAX_DEPTH env var)
- *  - Complexity limit: rejects queries whose cost score exceeds MAX_COMPLEXITY
- *    (default 100, configurable via GRAPHQL_MAX_COMPLEXITY env var). Scoring
+ *    configurable via GRAPHQL_MAX_DEPTH env var) with HTTP 400 and a
+ *    `QUERY_TOO_DEEP` error code. Named fragment spreads are expanded, so
+ *    they can't be used to bypass the limit.
+ *  - Complexity limit: rejects queries whose cost score exceeds the caller's
+ *    budget — the tenant override if one exists, otherwise
+ *    GRAPHQL_MAX_COMPLEXITY (default 100). Scoring
  *    is computed with the `graphql-query-complexity` library using
  *    `simpleEstimator({ defaultComplexity: 1 })` (every scalar/object field
  *    costs 1) plus a custom estimator that scores fields in LIST_FIELDS at
@@ -65,6 +68,7 @@ import {
   GraphQLError,
   parse,
   validate,
+  type DocumentNode,
 } from "graphql";
 import {
   getComplexity,
@@ -85,6 +89,7 @@ import {
   createSubscriptionMetrics,
 } from "./subscriptions";
 import { tenantComplexityBudgetService } from "../services/tenantComplexityBudgetService";
+import { resolveDefaultComplexityBudget } from "./limits";
 
 /** Documented default query-depth limit, used when GRAPHQL_MAX_DEPTH is unset or malformed. */
 export const DEFAULT_MAX_DEPTH = 6;
@@ -108,15 +113,24 @@ export function resolveMaxDepth(raw: string | undefined): number {
 }
 
 const MAX_DEPTH = resolveMaxDepth(process.env.GRAPHQL_MAX_DEPTH);
-const MAX_COMPLEXITY = parseInt(
-  process.env.GRAPHQL_MAX_COMPLEXITY ?? "100",
-  10
-);
 // Fields returning lists are more expensive due to N-row fan-out.
 const LIST_FIELD_COST = parseInt(
   process.env.GRAPHQL_LIST_FIELD_COST ?? "10",
   10
 );
+
+/**
+ * Effective limits, exposed for documentation and tests (#2205). The global
+ * complexity budget (`GRAPHQL_MAX_COMPLEXITY`) is applied by
+ * `tenantComplexityBudgetService` when a tenant has no override.
+ */
+export const GRAPHQL_LIMITS = {
+  maxDepth: MAX_DEPTH,
+  defaultMaxComplexity: resolveDefaultComplexityBudget(
+    process.env.GRAPHQL_MAX_COMPLEXITY
+  ),
+  listFieldCost: LIST_FIELD_COST,
+} as const;
 
 /** Fields known to return lists (fan-out multiplier applied). */
 const LIST_FIELDS = new Set([
@@ -127,16 +141,68 @@ const LIST_FIELDS = new Set([
   "votes",
 ]);
 
-function maxQueryDepth(node: any, depth = 0): number {
+/**
+ * Depth of a selection tree. Each field and each inline fragment counts as
+ * one level. Named fragment spreads are expanded in place (also counting as
+ * a level, like an inline fragment) so they can't be used to smuggle nesting
+ * past the limit. `visited` guards against fragment cycles, which
+ * `validate()` rejects anyway.
+ */
+function maxQueryDepth(
+  node: any,
+  fragments: Record<string, any> = {},
+  depth = 0,
+  visited: Set<string> = new Set()
+): number {
   if (!node || typeof node !== "object") return depth;
-  if (node.selectionSet?.selections) {
+
+  if (node.kind === "FragmentSpread") {
+    const name = node.name?.value;
+    const fragment = name ? fragments[name] : undefined;
+    if (!fragment || visited.has(name)) return depth;
+    const next = new Set(visited).add(name);
+    return maxQueryDepth(fragment, fragments, depth, next);
+  }
+
+  if (node.selectionSet?.selections?.length) {
     return Math.max(
       ...node.selectionSet.selections.map((s: any) =>
-        maxQueryDepth(s, depth + 1)
+        maxQueryDepth(s, fragments, depth + 1, visited)
       )
     );
   }
   return depth;
+}
+
+/**
+ * Deepest operation in a parsed document. Fragment definitions are only
+ * measured where they are spread, not on their own.
+ */
+export function computeQueryDepth(doc: DocumentNode): number {
+  const fragments: Record<string, any> = {};
+  for (const def of doc.definitions) {
+    if (def.kind === "FragmentDefinition") fragments[def.name.value] = def;
+  }
+  const operations = doc.definitions.filter(
+    (def) => def.kind === "OperationDefinition"
+  );
+  if (operations.length === 0) return 0;
+  return Math.max(...operations.map((op) => maxQueryDepth(op, fragments)));
+}
+
+/** Complexity estimators used for every HTTP query (exported for tests/docs). */
+export function computeQueryComplexity(
+  doc: DocumentNode,
+  operationName?: string,
+  variables: Record<string, unknown> = {}
+): number {
+  return getComplexity({
+    schema,
+    query: doc,
+    operationName,
+    variables,
+    estimators: [listFieldEstimator, simpleEstimator({ defaultComplexity: 1 })],
+  });
 }
 
 /**
@@ -391,28 +457,20 @@ interface RequestComplexityInfo {
 
 const complexityByRequest = new WeakMap<object, RequestComplexityInfo>();
 
-/** Builds the `400 Bad Request` response body/init tuple graphql-http expects
- *  when returned directly from `onSubscribe`, guaranteeing the HTTP status is
- *  400 regardless of the request's `Accept` header (unlike returning a plain
- *  `GraphQLError[]`, whose status depends on content negotiation). */
-function tooComplexResponse(
-  complexity: number,
-  maxComplexity: number
+/** Builds a `400 Bad Request` response tuple in the shape graphql-http
+ *  expects when returned directly from `onSubscribe`, guaranteeing the HTTP
+ *  status is 400 regardless of the request's `Accept` header (unlike
+ *  returning a plain `GraphQLError[]`, whose status depends on content
+ *  negotiation). */
+function limitErrorResponse(
+  message: string,
+  errorExtensions: Record<string, unknown>,
+  responseExtensions: Record<string, unknown> = {}
 ): GraphqlHttpResponse {
-  const message = `Query complexity ${complexity} exceeds maximum allowed budget of ${maxComplexity}`;
   return [
     JSON.stringify({
-      errors: [
-        {
-          message,
-          extensions: {
-            code: "QUERY_TOO_COMPLEX",
-            complexity,
-            maxComplexity,
-          },
-        },
-      ],
-      extensions: { complexity, maxComplexity },
+      errors: [{ message, extensions: errorExtensions }],
+      extensions: responseExtensions,
     }),
     {
       status: 400,
@@ -420,6 +478,42 @@ function tooComplexResponse(
       headers: { "content-type": "application/json; charset=utf-8" },
     },
   ];
+}
+
+export function tooDeepResponse(
+  depth: number,
+  maxDepth: number
+): GraphqlHttpResponse {
+  return limitErrorResponse(
+    `Query depth ${depth} exceeds maximum allowed depth of ${maxDepth}. ` +
+      `Reduce nesting of fields and fragments.`,
+    { code: "QUERY_TOO_DEEP", depth, maxDepth },
+    { depth, maxDepth }
+  );
+}
+
+export function tooComplexResponse(
+  complexity: number,
+  maxComplexity: number,
+  budgetSource: "tenant" | "default" = "default"
+): GraphqlHttpResponse {
+  const scope = budgetSource === "tenant" ? "tenant" : "default";
+  return limitErrorResponse(
+    `Query complexity ${complexity} exceeds maximum allowed budget of ${maxComplexity} ` +
+      `(${scope} budget). Request fewer list fields, lower nesting or split the query.`,
+    { code: "QUERY_TOO_COMPLEX", complexity, maxComplexity, budgetSource },
+    { complexity, maxComplexity }
+  );
+}
+
+/**
+ * graphql-http's Express adapter passes its own request wrapper to hooks;
+ * the Express request (where `tenantMiddleware` attaches `tenant`) is on
+ * `raw`. Fall back to the wrapper itself for direct/test callers.
+ */
+function tenantFromRequest(req: unknown): TenantContext | undefined {
+  const r = req as { raw?: { tenant?: TenantContext }; tenant?: TenantContext };
+  return r.raw?.tenant ?? r.tenant;
 }
 
 router.all(
@@ -443,34 +537,29 @@ router.all(
           const errors = validate(schema, doc);
           if (errors.length) return errors;
 
-          const depth = Math.max(
-            ...doc.definitions.map((def: any) => maxQueryDepth(def))
-          );
+          // Depth is checked first: it is cheap and bounds the work the
+          // complexity estimator has to do.
+          const depth = computeQueryDepth(doc);
           if (depth > MAX_DEPTH) {
-            return [
-              new GraphQLError(
-                `Query depth ${depth} exceeds maximum allowed depth of ${MAX_DEPTH}`
-              ),
-            ];
+            return tooDeepResponse(depth, MAX_DEPTH);
           }
 
-          const complexity = getComplexity({
-            schema,
-            query: doc,
-            operationName: params.operationName ?? undefined,
-            variables: (params.variables as Record<string, unknown>) ?? {},
-            estimators: [
-              listFieldEstimator,
-              simpleEstimator({ defaultComplexity: 1 }),
-            ],
-          });
+          const complexity = computeQueryComplexity(
+            doc,
+            params.operationName ?? undefined,
+            (params.variables as Record<string, unknown>) ?? {}
+          );
 
-          // Get tenant-specific complexity budget
-          const tenant = (req as any).tenant as TenantContext | undefined;
+          // Tenant override if one exists, otherwise GRAPHQL_MAX_COMPLEXITY.
+          const tenant = tenantFromRequest(req);
           const budget = await tenantComplexityBudgetService.getBudgetForTenant(tenant);
 
           if (complexity > budget) {
-            return tooComplexResponse(complexity, budget);
+            const source =
+              tenant?.id && budget !== GRAPHQL_LIMITS.defaultMaxComplexity
+                ? "tenant"
+                : "default";
+            return tooComplexResponse(complexity, budget, source);
           }
 
           // Stash the score and budget so onOperation can echo them back in `extensions`

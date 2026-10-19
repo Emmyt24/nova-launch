@@ -987,6 +987,303 @@ fn test_burn_batch_single_address() {
 }
 
 // ============================================================================
+// Zero-Address and Self-Referential Parameter Tests - Issue #2253
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_burn_zero_address_token_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Zero-address token parameter must be rejected
+    let zero_token = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.burn(&zero_token, &user, &100_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_burn_zero_address_user_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = factory.create_token(
+        &creator,
+        &String::from_str(&env, "Zero User"),
+        &String::from_str(&env, "ZUSR"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    // Zero-address user parameter must be rejected
+    let zero_user = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.burn(&token_address, &zero_user, &100_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_admin_burn_zero_address_token_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let zero_token = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.admin_burn(&zero_token, &creator, &user, &100_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_admin_burn_zero_address_from_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = factory.create_token(
+        &creator,
+        &String::from_str(&env, "Zero From"),
+        &String::from_str(&env, "ZFRM"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    let zero_from = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.admin_burn(&token_address, &zero_from, &user, &100_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_admin_burn_zero_address_user_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = factory.create_token(
+        &creator,
+        &String::from_str(&env, "Zero Admin User"),
+        &String::from_str(&env, "ZAUS"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    let zero_user = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.admin_burn(&token_address, &creator, &zero_user, &100_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_burn_batch_zero_address_user_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = factory.create_token(
+        &creator,
+        &String::from_str(&env, "Zero Batch"),
+        &String::from_str(&env, "ZBAT"),
+        &7,
+        &10_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    let zero_user = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let burns = soroban_sdk::vec![&env, (user.clone(), 100_000), (zero_user, 100_000)];
+
+    factory.burn_batch(&token_address, &burns);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_burn_batch_zero_address_token_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let zero_token = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let burns = soroban_sdk::vec![&env, (user.clone(), 100_000)];
+
+    factory.burn_batch(&zero_token, &burns);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_transfer_admin_zero_address_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let zero_admin = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.transfer_admin(&admin, &zero_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_transfer_admin_self_referential_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Transferring admin to the current admin is a no-op and must be rejected
+    factory.transfer_admin(&admin, &admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_initialize_zero_address_admin_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let treasury = Address::generate(&env);
+    let zero_admin = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    client.initialize(&zero_admin, &treasury, &70_000_000, &30_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_initialize_zero_address_treasury_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let zero_treasury = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    client.initialize(&admin, &zero_treasury, &70_000_000, &30_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_initialize_self_referential_admin_treasury_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+
+    // Admin and treasury must not be the same address
+    client.initialize(&admin, &admin, &70_000_000, &30_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_create_token_zero_address_creator_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let factory = TokenFactoryClient::new(&env, &env.register_contract(None, TokenFactory));
+    factory.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let zero_creator = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    factory.create_token(
+        &zero_creator,
+        &String::from_str(&env, "Zero Creator"),
+        &String::from_str(&env, "ZCRT"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
 // Storage Key Layout Tests - Issue #2256
 // ============================================================================
 

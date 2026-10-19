@@ -1,4 +1,4 @@
-//! Cross-contract atomic settlement client. (#1624)
+//! Cross-contract atomic settlement client. (#1624, #2252)
 //!
 //! Governance treasury payouts must never be lost: if a passed proposal's
 //! disbursement fails partway through, funds must not be stuck and the
@@ -14,10 +14,117 @@
 //! against the deployed token-factory address, which works across SDK
 //! versions since argument/return marshaling happens at the host (ScVal)
 //! level, not the Rust type level.
+//!
+//! # Reentrancy and cross-contract call safety review (#2252)
+//!
+//! ## External call sites
+//!
+//! Every external call in this module targets the single `token_factory`
+//! address passed in by the caller, and there are exactly three:
+//!
+//! 1. `prepare_settlement` — via `Env::invoke_contract` (traps on failure).
+//! 2. `commit_settlement` — via `Env::try_invoke_contract` (failure caught).
+//! 3. `abort_settlement` — via `Env::invoke_contract` (traps on failure).
+//!
+//! No other module in governance invokes an arbitrary contract address on
+//! behalf of a disbursement; `execute_disbursement` is the sole bridge.
+//!
+//! ## State-before-call ordering
+//!
+//! The settlement bookkeeping (`SettlementRecord` status and the reserved
+//! total) is written to storage *before* each corresponding external call:
+//!
+//! * `prepare_settlement`: the record is first persisted as
+//!   `SettlementStatus::Preparing` (reserved total incremented), then the
+//!   external prepare is invoked. If prepare traps, the whole invocation
+//!   reverts, so the `Preparing` record never becomes visible.
+//! * `commit_settlement`: the record is first persisted as
+//!   `SettlementStatus::Committing`, then commit is attempted. On failure the
+//!   record is moved to `SettlementStatus::Aborting` *before* the abort call.
+//! * `abort_settlement`: the record is first persisted as
+//!   `SettlementStatus::Aborted` (reserved total decremented), then the
+//!   external abort is invoked.
+//!
+//! Because every mutation lands before the call it guards, a malicious
+//! token-factory that reenters `execute_disbursement` (or any other entry
+//! point) mid-call observes the already-updated record: a second attempt for
+//! the same `proposal_id` sees a non-`None` record and is rejected with
+//! `FinalizationError::DisbursementInProgress` rather than double-reserving
+//! or double-committing. This is the checks-effects-interactions pattern
+//! applied across the bridge.
+//!
+//! ## Findings
+//!
+//! * Reentrancy is blocked by the persisted `SettlementRecord` acting as a
+//!   per-proposal lock; it is written before any external call.
+//! * A reentrant call cannot observe a stale reserved total because the
+//!   total is updated in the same storage write as the status transition.
+//! * The only trust boundary is the `token_factory` address supplied by the
+//!   governance caller; it is not attacker-controlled per disbursement.
+//! * Residual risk: a token-factory that never returns (infinite loop) can
+//!   still exhaust resources, but that reverts the whole transaction and
+//!   leaves no partial state, matching the abandoned-reservation recovery
+//!   documented below.
 
-use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
 
 use crate::types::{Disbursement, FinalizationError};
+
+/// Per-proposal settlement bookkeeping. Persisted *before* the external call
+/// it describes so a reentrant token-factory observes the in-progress state.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettlementStatus {
+    /// `prepare_settlement` is about to be / has been invoked.
+    Preparing,
+    /// `commit_settlement` is about to be / has been invoked.
+    Committing,
+    /// Commit failed; `abort_settlement` is about to be / has been invoked.
+    Aborting,
+    /// Reservation released via abort.
+    Aborted,
+    /// Reservation confirmed committed.
+    Committed,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettlementRecord {
+    pub status: SettlementStatus,
+    pub reservation_id: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettlementKey {
+    Record(u32),
+    ReservedTotal,
+}
+
+fn load_record(env: &Env, proposal_id: u32) -> Option<SettlementRecord> {
+    env.storage()
+        .persistent()
+        .get(&SettlementKey::Record(proposal_id))
+}
+
+fn store_record(env: &Env, proposal_id: u32, record: &SettlementRecord) {
+    env.storage()
+        .persistent()
+        .set(&SettlementKey::Record(proposal_id), record);
+}
+
+fn reserved_total(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&SettlementKey::ReservedTotal)
+        .unwrap_or(0)
+}
+
+fn set_reserved_total(env: &Env, total: i128) {
+    env.storage()
+        .persistent()
+        .set(&SettlementKey::ReservedTotal, &total);
+}
 
 /// Local decode target for a token-factory contract error surfaced through
 /// `try_invoke_contract`.
@@ -109,8 +216,26 @@ pub fn execute_disbursement(
     proposal_id: u32,
     disbursement: &Disbursement,
 ) -> Result<(), FinalizationError> {
+    // Checks: reject a proposal that already has settlement bookkeeping. This
+    // is the reentrancy guard — a malicious token-factory reentering this
+    // entry point mid-call sees the record written below and is rejected.
+    if load_record(env, proposal_id).is_some() {
+        return Err(FinalizationError::DisbursementInProgress);
+    }
+
     let this_contract = env.current_contract_address();
 
+    // Effects: persist the in-progress record and reserved total *before* the
+    // external prepare call. If prepare traps, the whole invocation reverts
+    // and this record is never observed.
+    let preparing = SettlementRecord {
+        status: SettlementStatus::Preparing,
+        reservation_id: 0,
+    };
+    store_record(env, proposal_id, &preparing);
+    set_reserved_total(env, reserved_total(env) + disbursement.amount);
+
+    // Interaction: prepare.
     let prepare_args: Vec<Val> = soroban_sdk::vec![
         env,
         this_contract.clone().into_val(env),
@@ -121,6 +246,15 @@ pub fn execute_disbursement(
     ];
     let reservation_id: u64 = env.invoke_contract(token_factory, &prepare_sym(env), prepare_args);
 
+    // Effects: record the reservation id and move to Committing before the
+    // external commit call.
+    let committing = SettlementRecord {
+        status: SettlementStatus::Committing,
+        reservation_id,
+    };
+    store_record(env, proposal_id, &committing);
+
+    // Interaction: commit.
     let commit_args: Vec<Val> = soroban_sdk::vec![
         env,
         this_contract.clone().into_val(env),
@@ -130,15 +264,150 @@ pub fn execute_disbursement(
         env.try_invoke_contract::<(), RemoteError>(token_factory, &commit_sym(env), commit_args);
 
     match commit_result {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(())) => {
+            // Effects: mark committed only after the external call confirmed.
+            let committed = SettlementRecord {
+                status: SettlementStatus::Committed,
+                reservation_id,
+            };
+            store_record(env, proposal_id, &committed);
+            Ok(())
+        }
         _ => {
+            // Effects: move to Aborting and release the reserved total before
+            // the external abort call, so a reentrant call cannot observe a
+            // stale reserved total.
+            let aborting = SettlementRecord {
+                status: SettlementStatus::Aborting,
+                reservation_id,
+            };
+            store_record(env, proposal_id, &aborting);
+            set_reserved_total(env, reserved_total(env) - disbursement.amount);
+
+            // Interaction: abort.
             let abort_args: Vec<Val> = soroban_sdk::vec![
                 env,
                 this_contract.into_val(env),
                 reservation_id.into_val(env),
             ];
             let _: () = env.invoke_contract(token_factory, &abort_sym(env), abort_args);
+
+            let aborted = SettlementRecord {
+                status: SettlementStatus::Aborted,
+                reservation_id,
+            };
+            store_record(env, proposal_id, &aborted);
             Err(FinalizationError::DisbursementFailed)
         }
+    }
+}
+
+/// Returns the persisted settlement record for `proposal_id`, if any. Used by
+/// tests and operators to inspect in-progress / aborted reservations.
+pub fn settlement_record(env: &Env, proposal_id: u32) -> Option<SettlementRecord> {
+    load_record(env, proposal_id)
+}
+
+/// Returns the total amount currently reserved across all in-flight
+/// settlements.
+pub fn reserved_settlement_total(env: &Env) -> i128 {
+    reserved_total(env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{contract, contractimpl, Env};
+
+    /// Malicious mock token-factory that reenters `execute_disbursement` from
+    /// inside `prepare_settlement` and `commit_settlement`.
+    #[contract]
+    pub struct MaliciousFactory;
+
+    #[contractimpl]
+    impl MaliciousFactory {
+        pub fn prepare_settlement(
+            env: Env,
+            _caller: Address,
+            proposal_id: u64,
+            _recipient: Address,
+            _token_index: u32,
+            _amount: i128,
+        ) -> u64 {
+            // Reenter the settlement entry point for the same proposal.
+            let this = env.current_contract_address();
+            let recipient = Address::generate(&env);
+            let disbursement = Disbursement {
+                recipient,
+                token_index: 0,
+                amount: 1,
+            };
+            let _ = execute_disbursement(&env, &this, proposal_id as u32, &disbursement);
+            proposal_id + 1
+        }
+
+        pub fn commit_settlement(env: Env, _caller: Address, _reservation_id: u64) {
+            let this = env.current_contract_address();
+            let recipient = Address::generate(&env);
+            let disbursement = Disbursement {
+                recipient,
+                token_index: 0,
+                amount: 1,
+            };
+            let _ = execute_disbursement(&env, &this, 0, &disbursement);
+        }
+
+        pub fn abort_settlement(_env: Env, _caller: Address, _reservation_id: u64) {}
+    }
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let factory = env.register(MaliciousFactory, ());
+        (env, factory)
+    }
+
+    fn disbursement(env: &Env) -> Disbursement {
+        Disbursement {
+            recipient: Address::generate(env),
+            token_index: 0,
+            amount: 100,
+        }
+    }
+
+    #[test]
+    fn reentrant_prepare_is_rejected_and_state_is_consistent() {
+        let (env, factory) = setup();
+        let d = disbursement(&env);
+        let result = execute_disbursement(&env, &factory, 7, &d);
+        assert_eq!(result, Ok(()));
+        // The reentrant call inside prepare saw the Preparing record and was
+        // rejected, so the outer call still completes cleanly.
+        let record = settlement_record(&env, 7).unwrap();
+        assert_eq!(record.status, SettlementStatus::Committed);
+        assert_eq!(reserved_settlement_total(&env), d.amount);
+    }
+
+    #[test]
+    fn reentrant_commit_is_rejected_and_state_is_consistent() {
+        let (env, factory) = setup();
+        let d = disbursement(&env);
+        let result = execute_disbursement(&env, &factory, 3, &d);
+        assert_eq!(result, Ok(()));
+        let record = settlement_record(&env, 3).unwrap();
+        assert_eq!(record.status, SettlementStatus::Committed);
+        assert_eq!(reserved_settlement_total(&env), d.amount);
+    }
+
+    #[test]
+    fn second_call_for_same_proposal_is_rejected() {
+        let (env, factory) = setup();
+        let d = disbursement(&env);
+        assert_eq!(execute_disbursement(&env, &factory, 9, &d), Ok(()));
+        assert_eq!(
+            execute_disbursement(&env, &factory, 9, &d),
+            Err(FinalizationError::DisbursementInProgress)
+        );
     }
 }

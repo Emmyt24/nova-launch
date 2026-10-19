@@ -16,6 +16,8 @@ import {
   type TokenDeployInput,
 } from "../services/batchTokenDeployService";
 import { CursorPagination } from "../lib/pagination";
+import { STELLAR_HORIZON_URL } from "../config/env";
+import { getTxUrl, type ExplorerProvider } from "../config/explorer";
 import { createIdempotencyMiddleware } from "../middleware/idempotency";
 
 const router = Router();
@@ -451,11 +453,9 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
       return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid network parameter");
     }
 
-    // Query Horizon for transaction status
-    const horizonUrl =
-      network === "mainnet"
-        ? "https://horizon.stellar.org"
-        : "https://horizon-testnet.stellar.org";
+    // Query Horizon for transaction status using the centralized, validated
+    // Horizon URL configuration instead of hardcoding per-network hosts.
+    const horizonUrl = STELLAR_HORIZON_URL[network];
 
     const horizonResponse = await axios.get(`${horizonUrl}/transactions/${txHash}`);
     
@@ -495,6 +495,10 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
         txHash,
         status: "CONFIRMED",
         ledger: txData.ledger_attr,
+        explorerUrl: getTxUrl(txHash, {
+          network,
+          provider: req.query.explorer as ExplorerProvider | undefined,
+        }),
       });
     }
 
@@ -505,6 +509,10 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
       status: "PENDING",
       reason: "Transaction finalized but not yet indexed",
       ledger: txData.ledger_attr,
+      explorerUrl: getTxUrl(txHash, {
+        network,
+        provider: req.query.explorer as ExplorerProvider | undefined,
+      }),
     });
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {

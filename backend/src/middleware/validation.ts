@@ -66,6 +66,10 @@ export const validateSubscriptionCreate = [
       }
       return true;
     }),
+  body("customHeaders")
+    .optional({ nullable: true })
+    .isArray()
+    .withMessage("customHeaders must be an array"),
   validate,
 ];
 

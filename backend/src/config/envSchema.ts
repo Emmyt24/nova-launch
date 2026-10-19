@@ -708,6 +708,42 @@ export const ENV_SCHEMA: readonly EnvVarSpec[] = [
     example: "1024",
   },
   {
+    name: "WEBHOOK_MAX_PAYLOAD_BYTES",
+    group: "Webhooks",
+    description:
+      "Maximum webhook body size; larger payloads are truncated before delivery.",
+    required: "optional",
+    default: "262144",
+    example: "262144",
+  },
+  {
+    name: "WEBHOOK_FULL_DATA_URL_TEMPLATE",
+    group: "Webhooks",
+    description:
+      "URL template (with {field} placeholders) linked from truncated payloads as fullDataUrl.",
+    required: "optional",
+    default: "empty (no link)",
+    example: "https://api.example.com/tokens/{tokenAddress}",
+  },
+  {
+    name: "WEBHOOK_HEADER_ENCRYPTION_KEY",
+    group: "Webhooks",
+    description:
+      "Key (64 hex chars, or any string hashed to 32 bytes) for encrypting sensitive webhook custom header values at rest.",
+    required: "optional",
+    default: "empty (sensitive custom headers rejected)",
+    secret: true,
+  },
+  {
+    name: "WEBHOOK_RESTORE_RETENTION_DAYS",
+    group: "Webhooks",
+    description:
+      "Days a soft-deleted webhook subscription can still be restored.",
+    required: "optional",
+    default: "30",
+    example: "30",
+  },
+  {
     name: "WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
     group: "Webhooks",
     description: "Consecutive failures that open the delivery circuit breaker.",

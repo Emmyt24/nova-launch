@@ -58,10 +58,15 @@ import {
   RateLimiter, 
   BACKGROUND_RETRY_CONFIG,
   calculateBackoffDelay,
-  isRetryableError,
   sleep
 } from "./rate-limiter";
 import { CircuitBreaker } from "../lib/circuitBreaker";
+import {
+  RetryBudget,
+  classifyRpcError,
+  recordNonRetryable,
+  recordRetry,
+} from "./retry-budget";
 import {
   assertValidAddress,
   isValidAddress,
@@ -77,6 +82,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   private soroban: StellarSdk.rpc.Server;
   private readonly rateLimiter: RateLimiter;
   private readonly circuitBreaker: CircuitBreaker;
+  private readonly retryBudget: RetryBudget;
   private readonly sequenceCache: SequenceNumberCache;
 
   constructor(private readonly configService: ConfigService) {
@@ -118,6 +124,17 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           this.configService.get<number>("STELLAR_RATE_LIMIT_WINDOW_MS") ??
           DEFAULT_STELLAR_CONFIG.rateLimit.windowMs,
       },
+      retryBudget: {
+        capacity:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_CAPACITY") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.capacity,
+        refillPerSecond:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_REFILL_PER_SECOND") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.refillPerSecond,
+        depositPerSuccess:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_DEPOSIT_PER_SUCCESS") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.depositPerSuccess,
+      },
       circuitBreaker: {
         failureThreshold:
           this.configService.get<number>("STELLAR_CIRCUIT_BREAKER_FAILURE_THRESHOLD") ??
@@ -137,6 +154,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.circuitBreaker = new CircuitBreaker(this.config.circuitBreaker);
+    this.retryBudget = new RetryBudget(this.config.retryBudget, "stellar_service");
     
     // Initialize sequence number cache (5 min TTL)
     this.sequenceCache = new SequenceNumberCache(300000);
@@ -569,6 +587,13 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Tokens currently available in the shared retry budget (for health/debug).
+   */
+  getRetryBudgetAvailable(): number {
+    return this.retryBudget.available();
+  }
+
+  /**
    * Wraps an async operation with circuit breaker and retry + exponential backoff logic.
    * Uses background retry configuration for resilient polling.
    */
@@ -597,18 +622,20 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
               `${operationName} succeeded on attempt ${attempt}/${config.maxAttempts}`
             );
           }
-          
+
+          this.retryBudget.recordSuccess();
           return result;
         } catch (error) {
           lastError = error;
 
-          // Check if error is retryable
-          const retryable = isRetryableError(error);
-          
+          // Differentiate transient failures from terminal ones
+          const { retryable, reason } = classifyRpcError(error);
+
           if (!retryable || attempt === config.maxAttempts) {
             if (!retryable) {
+              recordNonRetryable("stellar_service", operationName, reason);
               this.logger.error(
-                `${operationName} failed with terminal error (not retryable)`,
+                `${operationName} failed with terminal error (not retryable, reason=${reason})`,
                 error
               );
             } else {
@@ -619,6 +646,16 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
             }
             throw error;
           }
+
+          // Shared retry budget: fail fast rather than amplify load during outages
+          if (!this.retryBudget.tryAcquire(operationName)) {
+            this.logger.warn(
+              `${operationName} failed (attempt ${attempt}/${config.maxAttempts}, reason=${reason}); ` +
+              `retry budget exhausted — not retrying`
+            );
+            throw error;
+          }
+          recordRetry("stellar_service", operationName, reason);
 
           const delay = calculateBackoffDelay(attempt, config);
           this.logger.warn(

@@ -233,6 +233,14 @@ export class StellarEventListener {
   async stop(): Promise<void> {
     this.isRunning = false;
     this.electionStarted = false;
+    // Persist the last processed cursor so a restart resumes exactly here.
+    if (this.lastCursor) {
+      try {
+        await this.cursorStore.save(this.lastCursor);
+      } catch (err) {
+        console.error("[StellarEventListener] failed to persist cursor on stop:", err);
+      }
+    }
     await this.leaderElection.stop();
     console.log("Stopping Stellar event listener...");
   }

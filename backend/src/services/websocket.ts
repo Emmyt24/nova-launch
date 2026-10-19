@@ -139,6 +139,8 @@ export class WebSocketService {
     }
     for (const state of this.clients.values()) {
       if (state.tokenExpiryTimer) clearTimeout(state.tokenExpiryTimer);
+      // 1001 = going away; lets clients reconnect and unblocks server.close()
+      try { state.ws.close(1001, "Server shutting down"); } catch { /* already closed */ }
     }
     this.wss?.close();
     this.wss = null;

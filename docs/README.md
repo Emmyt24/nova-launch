@@ -12,6 +12,34 @@
 
 ---
 
+## Free-Text Field Sanitization
+
+- **[FREE_TEXT_SANITIZATION.md](./FREE_TEXT_SANITIZATION.md)**
+  - Control-character stripping and NFC normalization for free-text fields
+  - Per-field length limits and the 400 `VALIDATION_ERROR` shape
+  - `escapeHtml()` at HTML output boundaries (email templates)
+
+---
+
+## Webhook Retry & Dead-Letter Tests
+
+- **[WEBHOOK_RETRY_DLQ_TESTS.md](./WEBHOOK_RETRY_DLQ_TESTS.md)**
+  - Mock receiver returning scripted failures
+  - Backoff schedule and dead-letter entry verification
+  - Redelivery and requeue from the DLQ via the admin API
+  - `npm run test:webhook-dlq` (blocking CI step)
+
+---
+
+## Event Ingestion Throughput
+
+- **[EVENT_INGESTION_THROUGHPUT.md](./EVENT_INGESTION_THROUGHPUT.md)**
+  - k6 open-model scenario with a 200 events/s target
+  - p95 batch processing latency budget and pass criteria
+  - Finding the throughput ceiling, the rate-limit caveat, and the results log
+
+---
+
 ## Database Backup & Point-in-Time Recovery
 
 - **[DATABASE_BACKUP_PITR.md](./DATABASE_BACKUP_PITR.md)**

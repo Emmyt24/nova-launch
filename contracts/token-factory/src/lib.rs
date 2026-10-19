@@ -87,6 +87,18 @@ mod types;
 mod validation;
 mod vault;
 mod vesting;
+mod batch_transfer;
+mod vesting_schedule;
+mod treasury_timelock;
+mod fee_tiering;
+#[cfg(test)]
+mod fee_tiering_test;
+#[cfg(test)]
+mod treasury_timelock_test;
+#[cfg(test)]
+mod vesting_schedule_test;
+#[cfg(test)]
+mod batch_transfer_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -3203,6 +3215,121 @@ impl TokenFactory {
     // ═══════════════════════════════════════════════════════════════════════
     // Stream Functions
     // ═══════════════════════════════════════════════════════════════════════
+
+    /// Batch transfer `token` from `from` to many recipients (max 50), atomically,
+    /// emitting a `bt_item` event per transfer and a `bt_done` summary (#2237).
+    pub fn batch_transfer(
+        env: Env,
+        from: Address,
+        token: Address,
+        transfers: Vec<(Address, i128)>,
+    ) -> Result<u32, Error> {
+        batch_transfer::batch_transfer(&env, &from, &token, &transfers)
+    }
+
+    /// Create a cliff + linear vesting schedule, escrowing `amount` of `token` (#2236).
+    pub fn create_vesting_schedule(
+        env: Env,
+        creator: Address,
+        token: Address,
+        beneficiary: Address,
+        amount: i128,
+        start_time: u64,
+        cliff_duration: u64,
+        duration: u64,
+    ) -> Result<u64, Error> {
+        vesting_schedule::create_vesting_schedule(
+            &env,
+            &creator,
+            &token,
+            &beneficiary,
+            amount,
+            start_time,
+            cliff_duration,
+            duration,
+        )
+    }
+
+    /// Claim all vested, unclaimed tokens from a vesting schedule (#2236).
+    pub fn claim_vesting_schedule(env: Env, beneficiary: Address, id: u64) -> Result<i128, Error> {
+        vesting_schedule::claim_vesting_schedule(&env, &beneficiary, id)
+    }
+
+    /// Get a vesting schedule by id (#2236).
+    pub fn get_vesting_schedule(
+        env: Env,
+        id: u64,
+    ) -> Result<vesting_schedule::VestingSchedule, Error> {
+        vesting_schedule::get_vesting_schedule(&env, id)
+    }
+
+    /// Amount currently claimable from a vesting schedule (#2236).
+    pub fn get_vesting_claimable(env: Env, id: u64) -> Result<i128, Error> {
+        vesting_schedule::get_claimable_amount(&env, id)
+    }
+
+    /// Queue a timelocked treasury withdrawal; returns its id (#2235).
+    pub fn queue_treasury_withdrawal(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        treasury_timelock::queue_withdrawal(&env, &admin, &recipient, amount)
+    }
+
+    /// Cancel a queued treasury withdrawal (#2235).
+    pub fn cancel_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::cancel_withdrawal(&env, &admin, id)
+    }
+
+    /// Execute a queued treasury withdrawal after its delay (#2235).
+    pub fn execute_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::execute_withdrawal(&env, &admin, id)
+    }
+
+    /// Set the treasury withdrawal delay in seconds (#2235).
+    pub fn set_treasury_withdrawal_delay(env: Env, admin: Address, delay: u64) -> Result<(), Error> {
+        treasury_timelock::set_withdrawal_delay(&env, &admin, delay)
+    }
+
+    /// Get the treasury withdrawal delay in seconds (#2235).
+    pub fn get_treasury_withdrawal_delay(env: Env) -> u64 {
+        treasury_timelock::get_withdrawal_delay(&env)
+    }
+
+    /// Get a queued treasury withdrawal (#2235).
+    pub fn get_queued_treasury_withdrawal(
+        env: Env,
+        id: u64,
+    ) -> Result<treasury_timelock::QueuedWithdrawal, Error> {
+        treasury_timelock::get_queued_withdrawal(&env, id)
+    }
+
+    /// Set the creation-fee surcharge for a token feature (admin only) (#2234).
+    pub fn set_feature_fee(
+        env: Env,
+        admin: Address,
+        feature: Symbol,
+        fee: i128,
+    ) -> Result<(), Error> {
+        fee_tiering::set_feature_fee(&env, &admin, &feature, fee)
+    }
+
+    /// Get the surcharge configured for a feature (#2234).
+    pub fn get_feature_fee(env: Env, feature: Symbol) -> i128 {
+        fee_tiering::get_feature_fee(&env, &feature)
+    }
+
+    /// List features with a configured surcharge (#2234).
+    pub fn get_fee_tier_features(env: Env) -> Vec<Symbol> {
+        fee_tiering::get_fee_tier_features(&env)
+    }
+
+    /// Quote the creation fee (base fee plus feature surcharges) (#2234).
+    pub fn quote_creation_fee(env: Env, features: Vec<Symbol>) -> Result<i128, Error> {
+        fee_tiering::quote_creation_fee(&env, &features)
+    }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.
     pub fn create_vault(

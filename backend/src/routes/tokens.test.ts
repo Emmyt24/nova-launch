@@ -434,7 +434,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.success).toBe(false);
-    expect(response.body.error).toBe("Invalid parameters");
+    expect(response.body.error.message).toBe("Invalid parameters");
   });
 
   it("should return validation error for invalid date format", async () => {
@@ -490,7 +490,7 @@ describe("GET /api/tokens/search", () => {
 
     expect(response.status).toBe(500);
     expect(response.body.success).toBe(false);
-    expect(response.body.error).toBe("Internal server error");
+    expect(response.body.error.message).toBe("Internal server error");
   });
 
   it("should include applied filters in response", async () => {

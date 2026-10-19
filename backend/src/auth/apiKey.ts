@@ -25,7 +25,9 @@
  *   - The in-memory store is process-local.  For multi-instance deployments,
  *     replace `ApiKeyStore` with a Prisma-backed implementation using the
  *     `IntegrationState` or a dedicated `ApiKey` model.
- *   - Grace period defaults to 24 hours; adjust via `rotationGraceMs`.
+ *   - Grace period defaults to 24 hours; adjust via `rotationGraceMs`, the
+ *     `API_KEY_ROTATION_GRACE_MS` env var, or per rotation via
+ *     `rotate(id, { graceMs })` (#2189). Grace is capped at `MAX_GRACE_MS`.
  */
 
 import crypto from "crypto";
@@ -48,6 +50,12 @@ export interface ApiKeyRecord {
   prevKeyHash: string | null;
   /** Timestamp when the rotation was initiated (ms since epoch). */
   rotationStartedAt: number | null;
+  /** When the previous key stops being accepted (ms since epoch). */
+  graceEndsAt: number | null;
+  /** User who owns the key and is notified about lifecycle changes. */
+  ownerId: string | null;
+  /** Contact address for owner notifications. */
+  ownerEmail: string | null;
   status: ApiKeyStatus;
   createdAt: number;
   lastUsedAt: number | null;
@@ -57,6 +65,16 @@ export interface CreateKeyResult {
   id: string;
   /** Raw key — shown once, never stored. */
   rawKey: string;
+}
+
+export interface CreateKeyOptions {
+  ownerId?: string;
+  ownerEmail?: string;
+}
+
+export interface RotateKeyOptions {
+  /** How long the previous key stays valid, in ms. Defaults to the manager's grace period. */
+  graceMs?: number;
 }
 
 export interface RotateKeyResult {
@@ -74,6 +92,30 @@ export const KEY_PREFIX = "nlk_";
 const KEY_BYTES = 32;
 /** Default rotation grace period: 24 hours. */
 export const DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
+/** Upper bound for a rotation grace period: 30 days. */
+export const MAX_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Validate a grace period. `0` is allowed and invalidates the previous key
+ * immediately (equivalent to rotate + commit).
+ */
+export function assertValidGraceMs(graceMs: number): void {
+  if (!Number.isInteger(graceMs) || graceMs < 0 || graceMs > MAX_GRACE_MS) {
+    throw new RangeError(
+      `Grace period must be an integer between 0 and ${MAX_GRACE_MS} ms`
+    );
+  }
+}
+
+/** Resolve the default grace period from API_KEY_ROTATION_GRACE_MS. */
+export function resolveDefaultGraceMs(
+  value: string | undefined = process.env.API_KEY_ROTATION_GRACE_MS
+): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_GRACE_MS;
+  const parsed = Number(value);
+  assertValidGraceMs(parsed);
+  return parsed;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,7 +145,12 @@ export class ApiKeyManager {
   private readonly graceMs: number;
 
   constructor(options: { rotationGraceMs?: number } = {}) {
-    this.graceMs = options.rotationGraceMs ?? DEFAULT_GRACE_MS;
+    this.graceMs = options.rotationGraceMs ?? resolveDefaultGraceMs();
+  }
+
+  /** Default grace period applied when `rotate()` is called without one. */
+  get defaultGraceMs(): number {
+    return this.graceMs;
   }
 
   /**
@@ -111,7 +158,7 @@ export class ApiKeyManager {
    *
    * @returns `{ id, rawKey }` — store `id`, show `rawKey` once to the user.
    */
-  create(name: string): CreateKeyResult {
+  create(name: string, options: CreateKeyOptions = {}): CreateKeyResult {
     if (!name || !name.trim()) {
       throw new Error("API key name is required");
     }
@@ -125,6 +172,9 @@ export class ApiKeyManager {
       keyHash: hashKey(rawKey),
       prevKeyHash: null,
       rotationStartedAt: null,
+      graceEndsAt: null,
+      ownerId: options.ownerId ?? null,
+      ownerEmail: options.ownerEmail ?? null,
       status: "active",
       createdAt: Date.now(),
       lastUsedAt: null,
@@ -159,10 +209,9 @@ export class ApiKeyManager {
       if (
         record.status === "rotating" &&
         record.prevKeyHash !== null &&
-        record.rotationStartedAt !== null
+        record.graceEndsAt !== null
       ) {
-        const graceExpired =
-          Date.now() - record.rotationStartedAt > this.graceMs;
+        const graceExpired = Date.now() > record.graceEndsAt;
 
         if (!graceExpired && safeHashEqual(incomingHash, record.prevKeyHash)) {
           record.lastUsedAt = Date.now();
@@ -173,6 +222,7 @@ export class ApiKeyManager {
         if (graceExpired) {
           record.prevKeyHash = null;
           record.rotationStartedAt = null;
+          record.graceEndsAt = null;
           record.status = "active";
         }
       }
@@ -184,26 +234,43 @@ export class ApiKeyManager {
   /**
    * Initiates key rotation.
    *
-   * Issues a new key while keeping the old key valid for `rotationGraceMs`.
-   * Call `commitRotation(id)` once the new key is deployed everywhere.
+   * Issues a new key while keeping the old key valid for `options.graceMs`
+   * (default: `rotationGraceMs`). Call `commitRotation(id)` once the new key
+   * is deployed everywhere. A grace of `0` invalidates the old key immediately.
+   *
+   * Rotating a key that is already mid-rotation drops the oldest key: only
+   * the key being replaced now remains valid during the new grace window.
    *
    * @returns `{ id, rawKey, graceEndsAt }`
-   * @throws If the key does not exist or is already revoked.
+   * @throws If the key does not exist, is revoked, or the grace is out of range.
    */
-  rotate(id: string): RotateKeyResult {
+  rotate(id: string, options: RotateKeyOptions = {}): RotateKeyResult {
     const record = this.store.get(id);
     if (!record) throw new Error(`API key not found: ${id}`);
     if (record.status === "revoked") throw new Error("Cannot rotate a revoked key");
 
+    const graceMs = options.graceMs ?? this.graceMs;
+    assertValidGraceMs(graceMs);
+
     const rawKey = generateRawKey();
     const now = Date.now();
+    const graceEndsAt = now + graceMs;
 
-    record.prevKeyHash = record.keyHash;
+    const replacedKeyHash = record.keyHash;
     record.keyHash = hashKey(rawKey);
-    record.rotationStartedAt = now;
-    record.status = "rotating";
+    if (graceMs === 0) {
+      record.prevKeyHash = null;
+      record.rotationStartedAt = null;
+      record.graceEndsAt = null;
+      record.status = "active";
+    } else {
+      record.prevKeyHash = replacedKeyHash;
+      record.rotationStartedAt = now;
+      record.graceEndsAt = graceEndsAt;
+      record.status = "rotating";
+    }
 
-    return { id, rawKey, graceEndsAt: now + this.graceMs };
+    return { id, rawKey, graceEndsAt };
   }
 
   /**
@@ -220,6 +287,7 @@ export class ApiKeyManager {
 
     record.prevKeyHash = null;
     record.rotationStartedAt = null;
+    record.graceEndsAt = null;
     record.status = "active";
   }
 
@@ -235,6 +303,7 @@ export class ApiKeyManager {
     record.status = "revoked";
     record.prevKeyHash = null;
     record.rotationStartedAt = null;
+    record.graceEndsAt = null;
   }
 
   /**
@@ -253,3 +322,6 @@ export class ApiKeyManager {
     return [...this.store.values()].map(({ keyHash, prevKeyHash, ...safe }) => safe);
   }
 }
+
+/** Process-wide manager used by the admin API key routes. */
+export const apiKeyManager = new ApiKeyManager();

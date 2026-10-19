@@ -9,7 +9,8 @@ import {
   tenantMiddleware,
   type TenantRequest,
 } from "../middleware/tenancy";
-import { successResponse, errorResponse } from "../utils/response";
+import { successResponse, errorResponse, sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 import {
   batchDeployTokens,
   type TokenDeployInput,
@@ -112,11 +113,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     const validationResult = searchParamsSchema.safeParse(req.query);
 
     if (!validationResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid parameters",
-        details: validationResult.error.issues,
-      });
+      return sendError(res, 400, ErrorCode.VALIDATION_ERROR, "Invalid parameters", validationResult.error.issues);
     }
 
     const params = validationResult.data;
@@ -141,10 +138,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     // keyset this endpoint sorts other fields independently of — reject the
     // combination explicitly rather than silently falling back to offset.
     if (params.cursor && params.sortBy !== "created") {
-      return res.status(400).json({
-        success: false,
-        error: "cursor pagination is only supported with sortBy=created",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "cursor pagination is only supported with sortBy=created");
     }
 
     // Parse pagination
@@ -202,10 +196,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       try {
         decodedCursor = CursorPagination.decodeCreatedAtCursor(params.cursor);
       } catch {
-        return res.status(400).json({
-          success: false,
-          error: "Invalid cursor parameter",
-        });
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid cursor parameter");
       }
 
       // `id` follows the same direction as `createdAt` so the whole tuple is
@@ -327,11 +318,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     return res.json(response);
   } catch (error) {
     console.error("Token search error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Internal server error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
   }
 });
 
@@ -430,7 +417,7 @@ router.post(
       console.error("[tokens] POST /batch unhandled error:", error);
       return res.status(500).json(
         errorResponse({
-          code: "INTERNAL_ERROR",
+          code: ErrorCode.INTERNAL_SERVER_ERROR,
           message: "Batch deployment failed",
           details:
             error instanceof Error ? error.message : "Unknown error",
@@ -459,17 +446,11 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
 
     // Validate txHash format (64 hex chars)
     if (!txHash || !/^[a-f0-9]{64}$/i.test(txHash)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid transaction hash format",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid transaction hash format");
     }
 
     if (network !== "testnet" && network !== "mainnet") {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid network parameter",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid network parameter");
     }
 
     // Query Horizon for transaction status using the centralized, validated
@@ -544,10 +525,6 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
     }
     
     console.error("Deployment status error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Failed to fetch deployment status",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch deployment status");
   }
 });

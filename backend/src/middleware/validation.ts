@@ -2,6 +2,8 @@ import { body, param, query, validationResult } from "express-validator";
 import { Request, Response, NextFunction } from "express";
 import { WebhookEventType } from "../types/webhook";
 import { isValidUrl, isValidStellarAddress } from "../utils/crypto";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 /** Valid campaign types as defined by the on-chain contract */
 const CAMPAIGN_TYPES = ["BUYBACK", "AIRDROP", "LIQUIDITY"] as const;
@@ -12,10 +14,7 @@ const CAMPAIGN_TYPES = ["BUYBACK", "AIRDROP", "LIQUIDITY"] as const;
 export const validate = (req: Request, res: Response, next: NextFunction) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      errors: errors.array(),
-    });
+    return sendError(res, 400, ErrorCode.VALIDATION_ERROR, "Request validation failed", errors.array());
   }
   next();
 };

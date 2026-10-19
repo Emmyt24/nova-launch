@@ -17,6 +17,7 @@ import {
 } from "../lib/metrics";
 import { CircuitBreaker } from "../lib/circuitBreaker";
 import { WorkerPool } from "../lib/WorkerPool";
+import { getRequestId } from "../lib/async-context";
 import {
   createRedisClient,
   incrementSlidingWindow,
@@ -71,6 +72,8 @@ interface DeliveryTask {
   event: WebhookEventType;
   data: WebhookEventData;
   correlationId: string;
+  /** Captured at trigger time — the worker may run outside the request's async context (#2186). */
+  requestId?: string;
 }
 
 export interface WebhookDeliveryResult {
@@ -112,7 +115,8 @@ export class WebhookDeliveryService {
           task.subscription,
           task.event,
           task.data,
-          task.correlationId
+          task.correlationId,
+          task.requestId
         );
       },
     });
@@ -133,8 +137,9 @@ export class WebhookDeliveryService {
     );
 
     const cid = correlationId || `whk_${Date.now().toString(36)}`;
+    const requestId = getRequestId();
     console.log(
-      JSON.stringify({ event: 'webhook.trigger', correlationId: cid, webhookEvent: event, subscriptionCount: subscriptions.length })
+      JSON.stringify({ event: 'webhook.trigger', correlationId: cid, ...(requestId && { requestId }), webhookEvent: event, subscriptionCount: subscriptions.length })
     );
 
     // Deliver through the bounded worker pool. Concurrency is capped by
@@ -144,7 +149,7 @@ export class WebhookDeliveryService {
     this.reportPoolMetrics();
     await Promise.allSettled(
       subscriptions.map((subscription) =>
-        this.pool.enqueue({ subscription, event, data, correlationId: cid })
+        this.pool.enqueue({ subscription, event, data, correlationId: cid, requestId })
       )
     );
     this.reportPoolMetrics();
@@ -268,9 +273,11 @@ export class WebhookDeliveryService {
     subscription: WebhookSubscription,
     event: WebhookEventType,
     data: WebhookEventData,
-    correlationId?: string
+    correlationId?: string,
+    requestId?: string
   ): Promise<WebhookDeliveryResult> {
     const cid = correlationId || `whk_${Date.now().toString(36)}`;
+    const rid = requestId ?? getRequestId();
 
     // Per-tenant rate limit: the subscription owner (createdBy) is the
     // closest thing to a tenant id on this model. One slow retry-after-delay
@@ -317,6 +324,8 @@ export class WebhookDeliveryService {
     const extraHeaders: Record<string, string> = {
       'X-Correlation-Id': cid,
     };
+    // Forward the originating request ID so receivers can join their logs to ours (#2186)
+    if (rid) extraHeaders['X-Request-Id'] = rid;
     // Include originating tx hash if present in data
     const txHash = (data as unknown as Record<string, unknown>).transactionHash as string | undefined;
     if (txHash) extraHeaders['X-Tx-Hash'] = txHash;

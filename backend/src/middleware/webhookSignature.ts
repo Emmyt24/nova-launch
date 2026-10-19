@@ -21,6 +21,8 @@
 
 import { Request, Response, NextFunction } from "express";
 import { verifyWebhookSignature } from "../utils/crypto";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 export const WEBHOOK_SIGNATURE_HEADER = "x-webhook-signature";
 
@@ -71,19 +73,13 @@ export function verifyInboundWebhookSignature(
       );
 
       if (!valid) {
-        res.status(401).json({
-          success: false,
-          error: "Unauthorized",
-        });
+        sendError(res, 401, ErrorCode.UNAUTHORIZED, "Invalid webhook signature");
         return;
       }
 
       next();
     } catch (err) {
-      res.status(500).json({
-        success: false,
-        error: "Internal server error",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
     }
   };
 }

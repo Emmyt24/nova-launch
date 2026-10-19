@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,7 +112,7 @@ export function tenantMiddleware(options: TenancyOptions = {}) {
         return next();
       }
       // Header present but invalid — always reject
-      res.status(400).json({ error: "Invalid X-Tenant-ID header value" });
+      sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid X-Tenant-ID header value");
       return;
     }
 
@@ -127,7 +129,7 @@ export function tenantMiddleware(options: TenancyOptions = {}) {
 
     // 3. No tenant found
     if (required) {
-      res.status(400).json({ error: "Tenant identification required" });
+      sendError(res, 400, ErrorCode.BAD_REQUEST, "Tenant identification required");
       return;
     }
 
@@ -151,12 +153,12 @@ export function requireTenantMatch(
   if (!paramId) return next(); // route has no :tenantId param — skip
 
   if (!req.tenant) {
-    res.status(401).json({ error: "Authentication required" });
+    sendError(res, 401, ErrorCode.UNAUTHORIZED, "Authentication required");
     return;
   }
 
   if (req.tenant.id !== paramId) {
-    res.status(403).json({ error: "Access to this tenant is forbidden" });
+    sendError(res, 403, ErrorCode.FORBIDDEN, "Access to this tenant is forbidden");
     return;
   }
 

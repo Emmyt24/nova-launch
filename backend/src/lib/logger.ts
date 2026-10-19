@@ -1,4 +1,4 @@
-import { getCorrelationId, getTransactionId } from './async-context';
+import { getCorrelationId, getRequestId, getTransactionId } from './async-context';
 
 type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -7,6 +7,8 @@ interface LogEntry {
   level: LogLevel;
   message: string;
   correlationId?: string;
+  /** Per-request ID (`X-Request-Id`) — see issue #2186. */
+  requestId?: string;
   /** Transaction ID originating from the frontend — see issue #1154. */
   transactionId?: string;
   [key: string]: unknown;
@@ -14,11 +16,13 @@ interface LogEntry {
 
 function write(level: LogLevel, message: string, meta?: Record<string, unknown>): void {
   const transactionId = getTransactionId();
+  const requestId = getRequestId();
   const entry: LogEntry = {
     timestamp: new Date().toISOString(),
     level,
     message,
     correlationId: getCorrelationId(),
+    ...(requestId !== undefined && { requestId }),
     ...(transactionId !== undefined && { transactionId }),
     ...meta,
   };

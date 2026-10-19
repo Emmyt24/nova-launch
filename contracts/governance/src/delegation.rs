@@ -48,6 +48,30 @@ use crate::types::{DelegationRecord, Error};
 /// previous delegation rather than extending a chain.
 const MAX_CHAIN_DEPTH: u32 = 1;
 
+/// Returns `true` when `addr` is the all-zero (degenerate) address.
+///
+/// Soroban has no native "zero address" sentinel, so we treat an address
+/// whose string representation is empty or composed solely of zero
+/// characters as the zero address.  This guards public entry-points against
+/// degenerate parameters that can never correspond to a real account.
+fn is_zero_address(env: &Env, addr: &Address) -> bool {
+    let _ = env;
+    let s = addr.to_string();
+    let len = s.len();
+    if len == 0 {
+        return true;
+    }
+    let mut i = 0u32;
+    while i < len {
+        match s.get(i) {
+            Some(c) if c == '0' => {}
+            _ => return false,
+        }
+        i += 1;
+    }
+    true
+}
+
 // ─── Public entry-points ───────────────────────────────────────────────────
 
 /// Delegate the caller's vote power to `delegatee`.
@@ -65,16 +89,23 @@ const MAX_CHAIN_DEPTH: u32 = 1;
 /// * `CircularDelegation`   - delegatee has already delegated to delegator
 /// * `ContractPaused`       - contract is paused
 /// * `Unauthorized`         - delegator did not sign
+/// * `ZeroAddress`          - `delegatee` is the zero address
 pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(), Error> {
     // Guard: contract must not be paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
 
+    // Validate: reject the zero address as delegatee (degenerate parameter).
+    // Checked before auth/state mutation so no gas is wasted on invalid input.
+    if is_zero_address(env, &delegatee) {
+        return Err(Error::ZeroAddress);
+    }
+
     // Auth: delegator must sign this transaction
     delegator.require_auth();
 
-    // Validate: no self-delegation
+    // Validate: no self-delegation (self-referential parameter)
     if delegator == delegatee {
         return Err(Error::InvalidParameters);
     }
@@ -198,6 +229,11 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
         return Err(Error::ContractPaused);
     }
 
+    // Validate: reject the zero address (degenerate parameter)
+    if is_zero_address(env, &delegator) {
+        return Err(Error::ZeroAddress);
+    }
+
     delegator.require_auth();
 
     let record = storage::get_delegation(env, &delegator).ok_or(Error::NotFound)?;
@@ -208,6 +244,80 @@ pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
     let current_ledger = env.ledger().sequence();
 
     // Remove power from delegatee using the stored delegated_amount
-    let delegatee_power = storage::ge
+    let delegatee_power = storage::get_vote_power(env, &delegatee);
+    let new_delegatee_power = delegatee_power
+        .checked_sub(delegated_amount)
+        .ok_or_else(|| {
+            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegatee_power);
+            Error::ArithmeticError
+        })?;
+    storage::set_vote_power(env, &delegatee, new_delegatee_power.max(0));
 
-/* … truncated 3049 chars — edit only what you need near the top … */
+    // Restore power to delegator using the stored delegated_amount
+    let delegator_power = storage::get_vote_power(env, &delegator);
+    let new_delegator_power = delegator_power
+        .checked_add(delegated_amount)
+        .ok_or_else(|| {
+            events::emit_error_detail(env, crate::types::Error::ArithmeticError as u32, delegator_power);
+            Error::ArithmeticError
+        })?;
+    storage::set_vote_power(env, &delegator, new_delegator_power);
+
+    // Remove delegation record
+    storage::remove_delegation(env, &delegator);
+
+    // Snapshots
+    snapshot_and_emit(env, &delegatee, new_delegatee_power.max(0), current_ledger);
+    snapshot_and_emit(env, &delegator, new_delegator_power, current_ledger);
+
+    events::emit_undelegated(env, &delegator, &delegatee, delegated_amount);
+
+    Ok(())
+}
+
+/// Return the current vote power of `address`.
+///
+/// For an address that has never delegated and has no delegators,
+/// this equals their token balance.
+pub fn get_vote_power(env: &Env, address: &Address) -> i128 {
+    storage::get_vote_power(env, address)
+}
+
+/// Return the current delegation record for `delegator`, if any.
+pub fn get_delegation(env: &Env, delegator: &Address) -> Option<DelegationRecord> {
+    storage::get_delegation(env, delegator)
+}
+
+/// Take a snapshot of `address`'s current vote power at the current ledger.
+///
+/// Snapshots are used by governance proposals to fix vote power at a
+/// specific point in time, preventing flash-loan style manipulation.
+///
+/// # Security
+/// `address.require_auth()` is called before any state mutation so that
+/// only the address itself can force a persistent-storage write on its
+/// behalf, closing the storage-spam griefing vector described in issue #1685.
+pub fn take_snapshot(env: &Env, address: &Address) -> Result<(), Error> {
+    // Auth: only the address itself may trigger a snapshot write for its own record
+    address.require_auth();
+
+    let power = storage::get_vote_power(env, address);
+    let ledger = env.ledger().sequence();
+    snapshot_and_emit(env, address, power, ledger);
+    Ok(())
+}
+
+/// Query a historical vote-power snapshot.
+pub fn get_snapshot_power(env: &Env, address: &Address, ledger: u32) -> Result<i128, Error> {
+    storage::get_snapshot(env, address, ledger)
+        .map(|s| s.power)
+        .ok_or(Error::SnapshotNotFound)
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────
+
+/// Store a snapshot and emit the corresponding event.
+fn snapshot_and_emit(env: &Env, address: &Address, power: i128, ledger: u32) {
+    storage::set_snapshot(env, address, ledger, power);
+    events::emit_snapshot(env, address, ledger, power);
+}

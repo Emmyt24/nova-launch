@@ -64,7 +64,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
 
       // null secret (missing subscription) always results in 401
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
   });
 
@@ -85,7 +85,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .send(payload);
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
 
     it("rejects malformed signature format with generic error", async () => {
@@ -105,7 +105,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .send(payload);
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
 
     it("rejects invalid signature with generic error", async () => {
@@ -127,7 +127,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .send(payload);
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
 
     it("rejects stale timestamp (replay attack) with generic error", async () => {
@@ -149,7 +149,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .send(payload);
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
   });
 
@@ -195,7 +195,7 @@ describe("verifyInboundWebhookSignature middleware", () => {
         .send(payload);
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe("Unauthorized");
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
     });
 
     it("supports configurable replay tolerance", async () => {

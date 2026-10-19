@@ -11,6 +11,8 @@ vi.mock("../../services/webhookService", () => ({
   default: {
     createSubscription: vi.fn(),
     deleteSubscription: vi.fn(),
+    restoreSubscription: vi.fn(),
+    updateCustomHeaders: vi.fn(),
     listSubscriptions: vi.fn(),
     getSubscription: vi.fn(),
     updateSubscriptionStatus: vi.fn(),
@@ -77,7 +79,7 @@ describe("Webhooks Routes", () => {
 
       expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
-      expect(res.body.data).toEqual(mockSub);
+      expect(res.body.data).toEqual({ ...mockSub, customHeaders: [] });
     });
 
     it("handles error during subscription creation", async () => {
@@ -91,7 +93,7 @@ describe("Webhooks Routes", () => {
 
       expect(res.status).toBe(500);
       expect(res.body.success).toBe(false);
-      expect(res.body.error).toBe("Failed to create webhook subscription");
+      expect(res.body.error.message).toBe("Failed to create webhook subscription");
     });
   });
 
@@ -102,7 +104,7 @@ describe("Webhooks Routes", () => {
         .send({});
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe("createdBy address is required");
+      expect(res.body.error.message).toBe("createdBy address is required");
     });
 
     it("returns 404 when subscription not found or not deleted", async () => {
@@ -113,7 +115,7 @@ describe("Webhooks Routes", () => {
         .send({ createdBy: "user-addr" });
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Subscription not found or unauthorized");
+      expect(res.body.error.message).toBe("Subscription not found or unauthorized");
     });
 
     it("deletes subscription successfully", async () => {
@@ -137,7 +139,7 @@ describe("Webhooks Routes", () => {
         .send({ createdBy: "user-addr" });
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to delete webhook subscription");
+      expect(res.body.error.message).toBe("Failed to delete webhook subscription");
     });
   });
 
@@ -174,7 +176,7 @@ describe("Webhooks Routes", () => {
         .send({ createdBy: "user-1" });
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to list webhook subscriptions");
+      expect(res.body.error.message).toBe("Failed to list webhook subscriptions");
     });
   });
 
@@ -185,7 +187,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).get("/api/webhooks/sub-1");
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Subscription not found");
+      expect(res.body.error.message).toBe("Subscription not found");
     });
 
     it("returns subscription with masked secret", async () => {
@@ -208,7 +210,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).get("/api/webhooks/sub-1");
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to fetch webhook subscription");
+      expect(res.body.error.message).toBe("Failed to fetch webhook subscription");
     });
   });
 
@@ -219,7 +221,7 @@ describe("Webhooks Routes", () => {
         .send({ active: "true" });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe("active field must be a boolean");
+      expect(res.body.error.message).toBe("active field must be a boolean");
     });
 
     it("returns 404 when updateSubscriptionStatus returns null/false", async () => {
@@ -232,7 +234,7 @@ describe("Webhooks Routes", () => {
         .send({ active: true });
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Subscription not found");
+      expect(res.body.error.message).toBe("Subscription not found");
     });
 
     it("updates subscription status successfully", async () => {
@@ -260,7 +262,7 @@ describe("Webhooks Routes", () => {
         .send({ active: false });
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to toggle webhook subscription");
+      expect(res.body.error.message).toBe("Failed to toggle webhook subscription");
     });
   });
 
@@ -286,7 +288,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).get("/api/webhooks/sub-1/logs");
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to fetch delivery logs");
+      expect(res.body.error.message).toBe("Failed to fetch delivery logs");
     });
   });
 
@@ -299,7 +301,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Delivery log not found");
+      expect(res.body.error.message).toBe("Delivery log not found");
     });
 
     it("returns 404 when associated subscription is not found", async () => {
@@ -314,7 +316,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Associated subscription not found");
+      expect(res.body.error.message).toBe("Associated subscription not found");
     });
 
     it("verifies signature successfully", async () => {
@@ -355,7 +357,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to verify delivery signature");
+      expect(res.body.error.message).toBe("Failed to verify delivery signature");
     });
   });
 
@@ -366,7 +368,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).post("/api/webhooks/sub-1/test");
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Subscription not found");
+      expect(res.body.error.message).toBe("Subscription not found");
     });
 
     it("returns test delivery status", async () => {
@@ -403,7 +405,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).post("/api/webhooks/sub-1/test");
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to test webhook");
+      expect(res.body.error.message).toBe("Failed to test webhook");
     });
   });
 
@@ -414,7 +416,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).get("/api/webhooks/sub-1/dead-letters");
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Subscription not found");
+      expect(res.body.error.message).toBe("Subscription not found");
     });
 
     it("returns dead letters for subscription", async () => {
@@ -439,7 +441,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).get("/api/webhooks/sub-1/dead-letters");
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to fetch dead-letter deliveries");
+      expect(res.body.error.message).toBe("Failed to fetch dead-letter deliveries");
     });
   });
 
@@ -452,7 +454,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Dead-letter entry not found");
+      expect(res.body.error.message).toBe("Dead-letter entry not found");
     });
 
     it("returns 404 when subscription not found", async () => {
@@ -468,7 +470,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Associated subscription not found");
+      expect(res.body.error.message).toBe("Associated subscription not found");
     });
 
     it("returns 502 when retry delivery fails", async () => {
@@ -490,7 +492,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(502);
-      expect(res.body.error).toBe(
+      expect(res.body.error.message).toBe(
         "Dead-letter delivery failed; entry remains unresolved"
       );
     });
@@ -530,7 +532,7 @@ describe("Webhooks Routes", () => {
       );
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to retry dead-letter delivery");
+      expect(res.body.error.message).toBe("Failed to retry dead-letter delivery");
     });
   });
 
@@ -541,7 +543,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).post("/api/webhooks/dead-letters/dl-1/skip");
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe("Dead-letter entry not found");
+      expect(res.body.error.message).toBe("Dead-letter entry not found");
     });
 
     it("marks dead letter as skipped", async () => {
@@ -566,7 +568,7 @@ describe("Webhooks Routes", () => {
       const res = await request(app).post("/api/webhooks/dead-letters/dl-1/skip");
 
       expect(res.status).toBe(500);
-      expect(res.body.error).toBe("Failed to archive dead-letter delivery");
+      expect(res.body.error.message).toBe("Failed to archive dead-letter delivery");
     });
   });
 });

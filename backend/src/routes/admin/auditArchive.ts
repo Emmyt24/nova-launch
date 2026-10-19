@@ -10,6 +10,8 @@ import { Router } from "express";
 import { Database } from "../../config/database";
 import { checkpointStore } from "../../services/auditRetentionJob";
 import { authenticateAdmin } from "../../middleware/auth";
+import { sendError } from "../../utils/response";
+import { ErrorCode } from "../../lib/errors";
 
 export const auditArchiveRouter = Router();
 
@@ -42,9 +44,8 @@ auditArchiveRouter.get("/archive-status", authenticateAdmin, async (_req, res) =
       },
     });
   } catch (err: any) {
-    res.status(500).json({
-      status: "error",
-      message: err.message ?? String(err),
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch audit archive status", {
+      reason: err?.message ?? String(err),
     });
   }
 });

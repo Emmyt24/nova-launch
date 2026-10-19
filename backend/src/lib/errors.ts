@@ -108,6 +108,8 @@ export interface AppErrorOptions {
   details?: unknown;
   /** Original cause – kept server-side only */
   cause?: unknown;
+  /** Override the status derived from `code` (e.g. 413 for an oversized body) */
+  httpStatus?: number;
 }
 
 export class AppError extends Error {
@@ -116,11 +118,11 @@ export class AppError extends Error {
   readonly details?: unknown;
   readonly cause?: unknown;
 
-  constructor({ code, message, details, cause }: AppErrorOptions) {
+  constructor({ code, message, details, cause, httpStatus }: AppErrorOptions) {
     super(message);
     this.name = "AppError";
     this.code = code;
-    this.httpStatus = ERROR_HTTP_STATUS[code];
+    this.httpStatus = httpStatus ?? ERROR_HTTP_STATUS[code];
     this.details = details;
     this.cause = cause;
 

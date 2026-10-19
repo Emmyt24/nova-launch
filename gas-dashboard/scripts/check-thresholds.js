@@ -12,7 +12,9 @@ const REQUIRED_OPERATIONS = [
   'bump_ttl',
   'quote_fee',
   'transfer_allowlist',
-  'mint_allowlist'
+  'mint_allowlist',
+  'queue',
+  'delegate'
 ];
 const DEFAULT_THRESHOLD_PERCENT = 10;
 

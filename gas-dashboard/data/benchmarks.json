@@ -60,5 +60,55 @@
     "avgGas": 48000,
     "source": "Internal Benchmark",
     "lastUpdated": "2024-03-01"
+  },
+  {
+    "name": "Governance Propose",
+    "contract": "governance",
+    "function": "propose",
+    "cpu": 0,
+    "memory": 0,
+    "thresholdPercent": 10,
+    "source": "Benchmark Baseline",
+    "lastUpdated": "2024-02-01"
+  },
+  {
+    "name": "Governance Vote",
+    "contract": "governance",
+    "function": "vote",
+    "cpu": 0,
+    "memory": 0,
+    "thresholdPercent": 10,
+    "source": "Benchmark Baseline",
+    "lastUpdated": "2024-02-01"
+  },
+  {
+    "name": "Governance Queue",
+    "contract": "governance",
+    "function": "queue",
+    "cpu": 0,
+    "memory": 0,
+    "thresholdPercent": 10,
+    "source": "Benchmark Baseline",
+    "lastUpdated": "2024-02-01"
+  },
+  {
+    "name": "Governance Execute",
+    "contract": "governance",
+    "function": "execute",
+    "cpu": 0,
+    "memory": 0,
+    "thresholdPercent": 10,
+    "source": "Benchmark Baseline",
+    "lastUpdated": "2024-02-01"
+  },
+  {
+    "name": "Governance Delegate",
+    "contract": "governance",
+    "function": "delegate",
+    "cpu": 0,
+    "memory": 0,
+    "thresholdPercent": 10,
+    "source": "Benchmark Baseline",
+    "lastUpdated": "2024-02-01"
   }
 ]

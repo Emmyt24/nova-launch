@@ -52,6 +52,7 @@ export interface HealthCheckResult {
     stellarSoroban: ServiceHealth;
     ipfs: ServiceHealth;
     cache: ServiceHealth;
+    redis: ServiceHealth;
   };
 }
 

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "OWNERSHIP: These shared test vectors are owned by the CONTRACTS TEAM (contracts/token-factory maintainers). They are the single source of truth for percent and fee computations and MUST be updated in lockstep with BOTH the contract implementation (contracts/token-factory) and the backend implementation (backend fee/percent math). Any change to rounding, basis points, or fee formulas requires updating this file and re-running the differential tests on both sides. Do not edit these vectors without coordinating with the contracts team.",
+  "_version": 1,
+  "_description": "Differential test vectors for percent and fee computations. Each vector specifies inputs and the expected result. Both the contract math and the backend math must produce exactly the expected result; any mismatch fails the differential test.",
+  "basisPointsDenominator": 10000,
+  "percentVectors": [
+    {
+      "id": "percent-zero-amount",
+      "description": "Percent of zero amount is zero",
+      "amount": "0",
+      "bps": 250,
+      "expected": "0"
+    },
+    {
+      "id": "percent-zero-bps",
+      "description": "Zero basis points yields zero",
+      "amount": "1000000",
+      "bps": 0,
+      "expected": "0"
+    },
+    {
+      "id": "percent-full-bps",
+      "description": "10000 bps (100%) returns the full amount",
+      "amount": "1000000",
+      "bps": 10000,
+      "expected": "1000000"
+    },
+    {
+      "id": "percent-one-bps",
+      "description": "1 bps of a large amount truncates toward zero",
+      "amount": "1000000",
+      "bps": 1,
+      "expected": "100"
+    },
+    {
+      "id": "percent-truncation-small",
+      "description": "Sub-unit result truncates to zero (floor division)",
+      "amount": "9999",
+      "bps": 1,
+      "expected": "0"
+    },
+    {
+      "id": "percent-truncation-remainder",
+      "description": "Result with remainder truncates toward zero",
+      "amount": "12345",
+      "bps": 333,
+      "expected": "411"
+    },
+    {
+      "id": "percent-half-bps",
+      "description": "5000 bps (50%) of an odd amount truncates",
+      "amount": "1001",
+      "bps": 5000,
+      "expected": "500"
+    },
+    {
+      "id": "percent-max-amount",
+      "description": "Percent of a large amount near u64 range",
+      "amount": "18446744073709551615",
+      "bps": 10000,
+      "expected": "18446744073709551615"
+    },
+    {
+      "id": "percent-large-amount-partial",
+      "description": "Percent of a large amount with truncation",
+      "amount": "18446744073709551615",
+      "bps": 1,
+      "expected": "1844674407370955"
+    },
+    {
+      "id": "percent-typical-fee",
+      "description": "Typical 30 bps (0.3%) of a common amount",
+      "amount": "1000000000",
+      "bps": 30,
+      "expected": "3000000"
+    }
+  ],
+  "feeVectors": [
+    {
+      "id": "fee-zero-amount",
+      "description": "Fee on zero amount is zero",
+      "amount": "0",
+      "feeBps": 100,
+      "expectedFee": "0",
+      "expectedNet": "0"
+    },
+    {
+      "id": "fee-zero-bps",
+      "description": "Zero fee bps yields zero fee and full net",
+      "amount": "1000000",
+      "feeBps": 0,
+      "expectedFee": "0",
+      "expectedNet": "1000000"
+    },
+    {
+      "id": "fee-full-bps",
+      "description": "10000 bps fee takes the entire amount",
+      "amount": "1000000",
+      "feeBps": 10000,
+      "expectedFee": "1000000",
+      "expectedNet": "0"
+    },
+    {
+      "id": "fee-truncation-small",
+      "description": "Fee truncates to zero for sub-unit results",
+      "amount": "9999",
+      "feeBps": 1,
+      "expectedFee": "0",
+      "expectedNet": "9999"
+    },
+    {
+      "id": "fee-truncation-remainder",
+      "description": "Fee with remainder truncates toward zero; net is amount minus fee",
+      "amount": "12345",
+      "feeBps": 333,
+      "expectedFee": "411",
+      "expectedNet": "11934"
+    },
+    {
+      "id": "fee-typical",
+      "description": "Typical 100 bps (1%) fee",
+      "amount": "1000000000",
+      "feeBps": 100,
+      "expectedFee": "10000000",
+      "expectedNet": "990000000"
+    },
+    {
+      "id": "fee-odd-amount",
+      "description": "Fee on odd amount with truncation",
+      "amount": "1001",
+      "feeBps": 5000,
+      "expectedFee": "500",
+      "expectedNet": "501"
+    },
+    {
+      "id": "fee-max-amount-full",
+      "description": "Full fee on max u64 amount",
+      "amount": "18446744073709551615",
+      "feeBps": 10000,
+      "expectedFee": "18446744073709551615",
+      "expectedNet": "0"
+    },
+    {
+      "id": "fee-max-amount-partial",
+      "description": "Partial fee on max u64 amount with truncation",
+      "amount": "18446744073709551615",
+      "feeBps": 1,
+      "expectedFee": "1844674407370955",
+      "expectedNet": "18446744073709551615"
+    },
+    {
+      "id": "fee-one-unit",
+      "description": "Fee on a single unit truncates to zero",
+      "amount": "1",
+      "feeBps": 100,
+      "expectedFee": "0",
+      "expectedNet": "1"
+    }
+  ]
+}

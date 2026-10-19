@@ -141,7 +141,7 @@ describe("GET /api/events/catchup", () => {
   it("returns 400 when `since` is missing", async () => {
     const res = await request(app).get("/api/events/catchup").expect(400);
 
-    expect(res.body.error).toMatch(/non-negative integer/);
+    expect(res.body.error.message).toMatch(/non-negative integer/);
   });
 
   it("returns 400 when `since` is not numeric", async () => {

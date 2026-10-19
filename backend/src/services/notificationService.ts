@@ -34,8 +34,10 @@ import {
   NotificationTarget,
 } from "../types/notification";
 import { IntegrationMetrics } from "../lib/metrics";
+import { escapeHtml } from "../middleware/freeTextSanitization";
 import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 import { getNotificationPreferences, isNotificationChannelEnabled } from "./notificationPreferences";
+import { getExplorerUrl, getTxUrl, getContractUrl } from "../config/explorer";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,7 +131,11 @@ function renderTemplate(
   }
   let html = templateCache.get(key)!;
   for (const [k, v] of Object.entries(vars)) {
-    html = html.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v ?? "");
+    // Values include user free text (token names, proposal titles) — escape
+    // at this HTML output boundary (#2210). A function replacement keeps `$`
+    // sequences in the value from being treated as replacement patterns.
+    const escaped = escapeHtml(v);
+    html = html.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), () => escaped);
   }
   return html;
 }
@@ -628,6 +634,18 @@ export class NotificationService {
       actionUrl: "https://nova-launch.app",
       ...(payload.metadata as Record<string, string> | undefined ?? {}),
     };
+
+    // Build explorer links through the centralized explorer configuration so
+    // templates never hardcode a block explorer host or URL shape.
+    const network = payload.network ?? process.env.STELLAR_NETWORK;
+    const explorerBaseUrl = getExplorerUrl(network);
+    templateVars.explorerUrl = explorerBaseUrl;
+    if (payload.tokenAddress) {
+      templateVars.contractUrl = getContractUrl(payload.tokenAddress, network);
+    }
+    if (payload.txHash) {
+      templateVars.txUrl = getTxUrl(payload.txHash, network);
+    }
     const htmlBody = templateKey
       ? renderTemplate(templateKey, templateVars)
       : payload.message;

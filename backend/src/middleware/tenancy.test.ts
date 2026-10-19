@@ -209,7 +209,7 @@ describe("tenantMiddleware — required: true", () => {
     const next = vi.fn();
     mw(req, res, next);
     expect(res.statusCode).toBe(400);
-    expect(res.body.error).toMatch(/required/i);
+    expect(res.body.error.message).toMatch(/required/i);
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -260,7 +260,7 @@ describe("requireTenantMatch", () => {
     const res = mockRes();
     requireTenantMatch(req, res, vi.fn());
     expect(res.statusCode).toBe(403);
-    expect(res.body.error).toMatch(/forbidden/i);
+    expect(res.body.error.message).toMatch(/forbidden/i);
   });
 
   it("rejects with 401 when no tenant is attached", () => {

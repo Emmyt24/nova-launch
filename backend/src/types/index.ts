@@ -65,3 +65,9 @@ export interface AdminRequest extends Express.Request {
 }
 
 export * from "./notification";
+
+export type {
+  Network,
+  ExplorerProvider,
+  ExplorerEntityType,
+} from "../config/explorer";

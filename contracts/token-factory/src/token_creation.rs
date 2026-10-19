@@ -109,6 +109,9 @@ pub fn create_token_internal(
     // Validate max_supply: if set, must be >= initial_supply
     crate::mint::validate_max_supply_at_creation(params.initial_supply, params.max_supply)?;
 
+    // Shared metadata size limit (#2241)
+    crate::metadata_limits::validate_optional_metadata_uri(&params.metadata_uri)?;
+
     // Generate unique token address based on token index
     // This ensures each token gets a different, deterministic address
     let token_address = generate_token_address(env, token_index);

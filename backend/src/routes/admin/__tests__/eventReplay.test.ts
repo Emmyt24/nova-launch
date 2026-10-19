@@ -20,6 +20,10 @@ vi.mock('../../../services/eventReplayService', () => ({
   })),
 }));
 
+vi.mock('../../../config/database', () => ({
+  Database: { createAuditLog: vi.fn().mockResolvedValue({}) },
+}));
+
 // ─── Helpers to build apps with different auth configurations ─────────────────
 
 /**
@@ -136,7 +140,7 @@ describe('POST /event-replay/clear-and-rebuild – auth guards', () => {
       .post('/event-replay/clear-and-rebuild')
       .set('Authorization', 'Bearer super-admin-token');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/[Cc]onfirmation/);
+    expect(res.body.error.message).toMatch(/[Cc]onfirmation/);
   });
 });
 
@@ -156,7 +160,7 @@ describe('POST /event-replay – batchSize validation', () => {
       .post('/event-replay?batchSize=abc')
       .set('Authorization', 'Bearer super-admin-token');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+    expect(res.body.error.message).toMatch(/batchSize must be between 1 and 200/);
   });
 
   it('rejects batchSize below 1 with 400', async () => {
@@ -170,7 +174,7 @@ describe('POST /event-replay – batchSize validation', () => {
       .post('/event-replay?batchSize=0')
       .set('Authorization', 'Bearer super-admin-token');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+    expect(res.body.error.message).toMatch(/batchSize must be between 1 and 200/);
   });
 
   it('rejects batchSize above 200 with 400', async () => {
@@ -184,7 +188,7 @@ describe('POST /event-replay – batchSize validation', () => {
       .post('/event-replay?batchSize=201')
       .set('Authorization', 'Bearer super-admin-token');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/batchSize must be between 1 and 200/);
+    expect(res.body.error.message).toMatch(/batchSize must be between 1 and 200/);
   });
 
   it('accepts valid batchSize between 1 and 200', async () => {

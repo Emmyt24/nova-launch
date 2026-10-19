@@ -111,3 +111,44 @@ export interface TokenCreationFeeQuote {
   /** Ledger timestamp at which the quote was produced. */
   quotedAt: string;
 }
+
+export type RpcEndpointKind = "horizon" | "soroban";
+
+export type EndpointHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+
+export interface RpcEndpointConfig {
+  url: string;
+  kind: RpcEndpointKind;
+  network: string;
+  weight?: number;
+}
+
+export interface EndpointHealth {
+  url: string;
+  kind: RpcEndpointKind;
+  network: string;
+  status: EndpointHealthStatus;
+  consecutiveFailures: number;
+  consecutiveSuccesses: number;
+  lastCheckedAt?: string;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastError?: string;
+  latencyMs?: number;
+  circuitState?: string;
+}
+
+export interface EndpointPoolStatus {
+  network: string;
+  kind: RpcEndpointKind;
+  activeEndpoint?: string;
+  endpoints: EndpointHealth[];
+}
+
+export interface EndpointPoolOptions {
+  healthCheckIntervalMs?: number;
+  healthCheckTimeoutMs?: number;
+  failureThreshold?: number;
+  recoveryThreshold?: number;
+  circuitBreakerNamePrefix?: string;
+}

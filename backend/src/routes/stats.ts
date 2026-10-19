@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { Database } from "../config/database";
-import { successResponse } from "../utils/response";
+import { successResponse, sendError } from "../utils/response";
 
 const router = Router();
 
@@ -68,13 +68,7 @@ router.get("/", async (req: Request, res: Response) => {
     res.json(successResponse(stats));
   } catch (error) {
     console.error("Analytics error:", error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: "ANALYTICS_ERROR",
-        message: "Failed to fetch analytics data",
-      },
-    });
+    sendError(res, 500, "ANALYTICS_ERROR", "Failed to fetch analytics data");
   }
 });
 

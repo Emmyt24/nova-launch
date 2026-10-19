@@ -1,0 +1,73 @@
+##############################################################################
+# Alert Rules — Stellar Event Listener Lag (#2200)
+#
+# Source metrics (backend/src/lib/metrics/listenerLagMetrics.ts):
+#   stellar_listener_latest_ledger                        gauge
+#   stellar_listener_processed_ledger                     gauge
+#   stellar_listener_ledger_lag                           gauge
+#   stellar_listener_head_last_updated_timestamp_seconds  gauge
+#   stellar_listener_ledgers_processed_total              counter
+#   stellar_listener_head_fetch_failures_total            counter
+#
+# Stellar closes a ledger roughly every 5–6 seconds, so 60 ledgers ≈ 5 min.
+##############################################################################
+
+groups:
+  - name: listener_lag_alerts
+    interval: 30s
+    rules:
+      - alert: EventListenerLagWarning
+        expr: max(stellar_listener_ledger_lag) > 60
+        for: 5m
+        labels:
+          severity: warning
+          team: blockchain
+        annotations:
+          summary: "Event listener is {{ $value }} ledgers behind the chain head"
+          description: >
+            The Stellar event listener's processed ledger has been more than
+            60 ledgers (~5 minutes) behind the latest ledger for 5 minutes.
+            Projections and webhooks are delayed.
+
+      - alert: EventListenerLagCritical
+        expr: max(stellar_listener_ledger_lag) > 720
+        for: 5m
+        labels:
+          severity: critical
+          team: blockchain
+        annotations:
+          summary: "Event listener is {{ $value }} ledgers behind the chain head"
+          description: >
+            The Stellar event listener is more than 720 ledgers (~1 hour)
+            behind. Check listener leadership, Horizon availability and
+            consider a ledger-range replay once the cause is fixed.
+
+      # The chain is advancing but the listener processed nothing.
+      - alert: EventListenerStalled
+        expr: |
+          increase(stellar_listener_ledgers_processed_total[15m]) == 0
+          and
+          max(stellar_listener_ledger_lag) > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: blockchain
+        annotations:
+          summary: "Event listener has stopped making progress"
+          description: >
+            No ledger progress in 15 minutes while the listener is
+            {{ $value }} ledgers behind the chain head.
+
+      # Lag metric can't be trusted if the head hasn't been refreshed.
+      - alert: EventListenerHeadStale
+        expr: time() - max(stellar_listener_head_last_updated_timestamp_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+          team: blockchain
+        annotations:
+          summary: "Event listener chain head lookup is stale"
+          description: >
+            The listener has not refreshed the chain head from Horizon for
+            more than 5 minutes ({{ $value | humanizeDuration }}). Head fetch
+            failures: check stellar_listener_head_fetch_failures_total.

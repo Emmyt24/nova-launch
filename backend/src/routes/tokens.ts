@@ -9,7 +9,8 @@ import {
   tenantMiddleware,
   type TenantRequest,
 } from "../middleware/tenancy";
-import { successResponse, errorResponse } from "../utils/response";
+import { successResponse, errorResponse, sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 import {
   batchDeployTokens,
   type TokenDeployInput,
@@ -19,11 +20,20 @@ import {
   quoteTokenCreationFee,
   tokenCreationFeeQuoteSchema,
 } from "../services/tokenCreationFeeService";
+import { STELLAR_HORIZON_URL } from "../config/env";
+import { getTxUrl, type ExplorerProvider } from "../config/explorer";
+import { createIdempotencyMiddleware } from "../middleware/idempotency";
 
 const router = Router();
 
 // Enforce tenant context on every token request — cross-tenant reads are rejected.
 router.use(tenantMiddleware({ required: true }));
+
+// Replays of an `Idempotency-Key` return the original deployment response instead
+// of creating duplicate records. Keys are namespaced per tenant.
+export const tokenCreationIdempotency = createIdempotencyMiddleware(undefined, {
+  keyScope: (req) => (req as TenantRequest).tenant?.id,
+});
 
 // Validation schema for search parameters
 // `creator` is intentionally omitted — the tenant scope always sets it.
@@ -107,11 +117,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     const validationResult = searchParamsSchema.safeParse(req.query);
 
     if (!validationResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid parameters",
-        details: validationResult.error.issues,
-      });
+      return sendError(res, 400, ErrorCode.VALIDATION_ERROR, "Invalid parameters", validationResult.error.issues);
     }
 
     const params = validationResult.data;
@@ -136,10 +142,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     // keyset this endpoint sorts other fields independently of — reject the
     // combination explicitly rather than silently falling back to offset.
     if (params.cursor && params.sortBy !== "created") {
-      return res.status(400).json({
-        success: false,
-        error: "cursor pagination is only supported with sortBy=created",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "cursor pagination is only supported with sortBy=created");
     }
 
     // Parse pagination
@@ -197,10 +200,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       try {
         decodedCursor = CursorPagination.decodeCreatedAtCursor(params.cursor);
       } catch {
-        return res.status(400).json({
-          success: false,
-          error: "Invalid cursor parameter",
-        });
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid cursor parameter");
       }
 
       // `id` follows the same direction as `createdAt` so the whole tuple is
@@ -322,11 +322,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     return res.json(response);
   } catch (error) {
     console.error("Token search error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Internal server error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
   }
 });
 
@@ -452,6 +448,7 @@ const batchDeploySchema = z.object({
  */
 router.post(
   "/batch",
+  tokenCreationIdempotency,
   async (req: TenantRequest & Request, res: Response) => {
     // Validate body
     const parsed = batchDeploySchema.safeParse(req.body);
@@ -481,7 +478,7 @@ router.post(
       console.error("[tokens] POST /batch unhandled error:", error);
       return res.status(500).json(
         errorResponse({
-          code: "INTERNAL_ERROR",
+          code: ErrorCode.INTERNAL_SERVER_ERROR,
           message: "Batch deployment failed",
           details:
             error instanceof Error ? error.message : "Unknown error",
@@ -510,24 +507,16 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
 
     // Validate txHash format (64 hex chars)
     if (!txHash || !/^[a-f0-9]{64}$/i.test(txHash)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid transaction hash format",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid transaction hash format");
     }
 
     if (network !== "testnet" && network !== "mainnet") {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid network parameter",
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, "Invalid network parameter");
     }
 
-    // Query Horizon for transaction status
-    const horizonUrl =
-      network === "mainnet"
-        ? "https://horizon.stellar.org"
-        : "https://horizon-testnet.stellar.org";
+    // Query Horizon for transaction status using the centralized, validated
+    // Horizon URL configuration instead of hardcoding per-network hosts.
+    const horizonUrl = STELLAR_HORIZON_URL[network];
 
     const horizonResponse = await axios.get(`${horizonUrl}/transactions/${txHash}`);
     
@@ -567,6 +556,10 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
         txHash,
         status: "CONFIRMED",
         ledger: txData.ledger_attr,
+        explorerUrl: getTxUrl(txHash, {
+          network,
+          provider: req.query.explorer as ExplorerProvider | undefined,
+        }),
       });
     }
 
@@ -577,6 +570,10 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
       status: "PENDING",
       reason: "Transaction finalized but not yet indexed",
       ledger: txData.ledger_attr,
+      explorerUrl: getTxUrl(txHash, {
+        network,
+        provider: req.query.explorer as ExplorerProvider | undefined,
+      }),
     });
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -589,10 +586,6 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
     }
     
     console.error("Deployment status error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Failed to fetch deployment status",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch deployment status");
   }
 });

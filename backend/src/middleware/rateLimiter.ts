@@ -1,6 +1,15 @@
 import { Request, Response, NextFunction } from "express";
 import Redis from "ioredis";
 import { createRedisClient, getRedis } from "../lib/redis";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
+
+/**
+ * What to do when Redis cannot be reached:
+ *  - "open"   – allow the request without enforcement (default; availability first)
+ *  - "closed" – reject with 503 + Retry-After (protection first)
+ */
+export type RedisFailureMode = "open" | "closed";
 
 /**
  * Configuration for a rate limit rule.
@@ -14,6 +23,52 @@ export interface RateLimitConfig {
   message?: string;
   /** Key prefix for Redis namespacing */
   keyPrefix?: string;
+  /** Behaviour when Redis is unavailable. Defaults to RATE_LIMIT_REDIS_FAILURE_MODE, then "open". */
+  redisFailureMode?: RedisFailureMode;
+}
+
+/**
+ * Resolve the Redis failure mode from the environment. Unknown values fall
+ * back to "open" so a typo never locks clients out.
+ */
+export function resolveRedisFailureMode(
+  value: string | undefined = process.env.RATE_LIMIT_REDIS_FAILURE_MODE
+): RedisFailureMode {
+  return value?.trim().toLowerCase() === "closed" ? "closed" : "open";
+}
+
+export interface RateLimitState {
+  limit: number;
+  remaining: number;
+  /** Seconds until the window resets */
+  resetSeconds: number;
+  windowMs: number;
+}
+
+/**
+ * Write rate-limit headers (#2188).
+ *
+ * Standard (IETF draft-ietf-httpapi-ratelimit-headers):
+ *   RateLimit-Limit     – configured maximum per window
+ *   RateLimit-Remaining – requests left in the current window
+ *   RateLimit-Reset     – seconds until the window resets
+ *   RateLimit-Policy    – "<limit>;w=<window seconds>"
+ *
+ * Legacy (kept for existing clients):
+ *   X-RateLimit-Limit / X-RateLimit-Remaining
+ *   X-RateLimit-Reset   – Unix timestamp (seconds) when the window resets
+ */
+export function setRateLimitHeaders(res: Response, state: RateLimitState): void {
+  const windowSeconds = Math.ceil(state.windowMs / 1000);
+
+  res.setHeader("RateLimit-Limit", state.limit);
+  res.setHeader("RateLimit-Remaining", state.remaining);
+  res.setHeader("RateLimit-Reset", state.resetSeconds);
+  res.setHeader("RateLimit-Policy", `${state.limit};w=${windowSeconds}`);
+
+  res.setHeader("X-RateLimit-Limit", state.limit);
+  res.setHeader("X-RateLimit-Remaining", state.remaining);
+  res.setHeader("X-RateLimit-Reset", Math.floor(Date.now() / 1000) + state.resetSeconds);
 }
 
 // `createRedisClient` now lives in `../lib/redis` so other modules (e.g. the
@@ -111,13 +166,13 @@ export function resolveKey(req: Request, prefix: string): string {
 /**
  * Creates an Express rate-limiting middleware backed by Redis.
  *
- * When Redis is unavailable the middleware fails open (allows the request)
- * to avoid taking down the API due to a cache outage.
+ * When Redis is unavailable the middleware fails open by default (allows the
+ * request without quota headers) to avoid taking down the API due to a cache
+ * outage. Set `redisFailureMode: "closed"` (or RATE_LIMIT_REDIS_FAILURE_MODE=closed)
+ * to reject with 503 + Retry-After instead.
  *
- * Standard rate-limit response headers are set on every response:
- *   X-RateLimit-Limit     – configured maximum
- *   X-RateLimit-Remaining – requests left in the current window
- *   X-RateLimit-Reset     – Unix timestamp (seconds) when the window resets
+ * Rate-limit headers are set on every enforced response — see
+ * `setRateLimitHeaders`. A 429 also carries `Retry-After` (seconds).
  *
  * @param redis  Shared Redis client instance
  * @param config Rate-limit configuration
@@ -129,6 +184,8 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
     message = "Too many requests, please try again later.",
     keyPrefix = "rl",
   } = config;
+  const redisFailureMode = config.redisFailureMode ?? resolveRedisFailureMode();
+  const windowSeconds = Math.max(1, Math.ceil(windowMs / 1000));
 
   return async function rateLimiterMiddleware(
     req: Request,
@@ -136,15 +193,30 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
     next: NextFunction
   ): Promise<void> {
     const key = resolveKey(req, keyPrefix);
-    const resetAt = Math.ceil((Date.now() + windowMs) / 1000);
 
     let count: number;
     try {
       count = await incrementSlidingWindow(redis, key, windowMs);
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+
+      if (redisFailureMode === "closed") {
+        // Protection first: refuse the request rather than serve it unmetered.
+        console.warn("[RateLimiter] Redis unavailable; rejecting request (fail-closed)", {
+          error: reason,
+          keyPrefix,
+        });
+        res.setHeader("Retry-After", windowSeconds);
+        sendError(res, 503, "RATE_LIMIT_UNAVAILABLE", "Rate limiting is temporarily unavailable, please retry later.", {
+          retryAfter: windowSeconds,
+        });
+        return;
+      }
+
       // Redis unavailable — fail open, but make the degraded protection visible.
+      // Quota headers are omitted because the remaining quota is unknown.
       console.warn("[RateLimiter] Redis unavailable; allowing request without rate-limit enforcement", {
-        error: error instanceof Error ? error.message : String(error),
+        error: reason,
         keyPrefix,
       });
       next();
@@ -153,13 +225,22 @@ export function createRateLimiter(redis: Redis, config: RateLimitConfig) {
 
     const remaining = Math.max(0, max - count);
 
-    res.setHeader("X-RateLimit-Limit", max);
-    res.setHeader("X-RateLimit-Remaining", remaining);
-    res.setHeader("X-RateLimit-Reset", resetAt);
+    // A sliding window frees capacity gradually; the full window length is the
+    // upper bound on when the quota is fully restored.
+    setRateLimitHeaders(res, {
+      limit: max,
+      remaining,
+      resetSeconds: windowSeconds,
+      windowMs,
+    });
 
     if (count > max) {
-      res.setHeader("Retry-After", resetAt - Math.floor(Date.now() / 1000));
-      res.status(429).json({ error: message });
+      res.setHeader("Retry-After", windowSeconds);
+      sendError(res, 429, ErrorCode.RATE_LIMITED, message, {
+        limit: max,
+        windowMs,
+        retryAfter: windowSeconds,
+      });
       return;
     }
 
@@ -237,7 +318,7 @@ export function webhookUserRateLimiter(
 ): void {
   const user = (req as any).user;
   if (!user?.walletAddress) {
-    res.status(401).json({ error: "Authentication required" });
+    sendError(res, 401, ErrorCode.UNAUTHORIZED, "Authentication required");
     return;
   }
 

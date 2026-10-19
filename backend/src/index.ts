@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import { corsOptions } from "./config/cors";
+import { corsOptions, validateCorsConfig } from "./config/cors";
 import { validateEnv } from "./config/env";
 import { runStartupValidation } from "./config/startupValidation";
 import adminRoutes from "./routes/admin";
@@ -28,11 +28,13 @@ import eventsRoutes from "./routes/events";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
-import { successResponse, errorResponse } from "./utils/response";
+import { successResponse, sendError } from "./utils/response";
+import { ErrorCode } from "./lib/errors";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
 import { initTracing, tracingMiddleware, shutdownTracing } from "./monitoring/tracing";
 import { createTimeoutMiddleware } from "./middleware/timeout";
 import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
+import { createFreeTextSanitizationMiddleware } from "./middleware/freeTextSanitization";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
 import { registerPoolMetrics } from "./lib/metrics/poolMetrics";
 import { registerPrismaTracing } from "./lib/metrics/prismaTracing";
@@ -82,19 +84,34 @@ app.use(createQueryTimeoutMiddleware());
 app.use(createMetricsMiddleware());
 
 // Security middleware
+validateCorsConfig();
 app.use(helmet());
 app.use(cors(corsOptions));
 
-// Rate limiting
+// Rate limiting — emits standard RateLimit-* headers (draft-6), the legacy
+// X-RateLimit-* headers and Retry-After on 429 (#2188)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
+  standardHeaders: "draft-6",
+  legacyHeaders: true,
+  handler: (_req, res, _next, options) => {
+    sendError(
+      res,
+      options.statusCode,
+      ErrorCode.RATE_LIMITED,
+      "Too many requests from this IP, please try again later.",
+      { limit: options.limit, windowMs: options.windowMs }
+    );
+  },
 });
 
 // Body parsing middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Canonicalise free-text fields (control chars, NFC, length limits) — #2210
+app.use(createFreeTextSanitizationMiddleware());
 
 // Initialize database and pool metrics
 Database.initialize();
@@ -147,8 +164,14 @@ app.use("/api/v1", v1Router);
 app.use("/api", v1Router);
 
 import { healthService } from "./lib/health/health.service";
+import { createGracefulShutdown } from "./lib/gracefulShutdown";
+import { closeRedis } from "./lib/redis";
 import { isAppError, toAppError } from "./lib/errors";
 import { getCorrelationId, getTransactionId } from "./lib/async-context";
+import { tokenInfoCache } from "./services/tokenInfoCache";
+
+// Drop cached token info whenever a token-changing event is published (#2202)
+tokenInfoCache.bindInvalidation();
 
 // Health check — liveness (is the process alive?)
 app.get("/health/live", (_req, res) => {
@@ -200,43 +223,12 @@ if (process.env.METRICS_ENABLED !== "false") {
   });
 }
 
-// Error handling middleware — uses AppError framework for typed, consistent responses
-app.use(
-  (
-    err: unknown,
-    req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction
-  ) => {
-    const appErr = toAppError(err);
-    const isDev = process.env.NODE_ENV === "development";
-    const correlationId = getCorrelationId() ?? (req as any).correlationId;
-    const transactionId = getTransactionId() ?? (req as any).transactionId;
-
-    if (appErr.httpStatus >= 500) {
-      console.error("Error:", err);
-    }
-
-    const body = appErr.toHttpResponse(isDev);
-    if (correlationId) {
-      (body as any).correlationId = correlationId;
-    }
-    if (transactionId) {
-      (body as any).transactionId = transactionId;
-    }
-    res.status(appErr.httpStatus).json(body);
-  }
-);
-
 // 404 handler
-app.use((req, res) => {
-  res.status(404).json(
-    errorResponse({
-      code: "NOT_FOUND",
-      message: "Route not found",
-    })
-  );
-});
+app.use(notFoundHandler);
+
+// Error handling — normalises every error into the shared error schema
+// ({ success, error: { code, message, details, requestId }, requestId, timestamp }) — see #2187
+app.use(errorHandler);
 
 const server = app.listen(PORT, async () => {
   console.log(`🚀 Admin API server running on port ${PORT}`);
@@ -299,12 +291,36 @@ const server = app.listen(PORT, async () => {
   }
 });
 
-// Graceful shutdown — flush any pending trace spans before exiting.
-const gracefulShutdown = async (signal: string) => {
-  console.log(`${signal} received, shutting down gracefully`);
-  await shutdownTracing();
-  process.exit(0);
-};
+// Graceful shutdown: stop new work, drain jobs, persist the listener cursor,
+// then close HTTP, WebSocket, DB, Redis and tracing (see lib/gracefulShutdown).
+const gracefulShutdown = createGracefulShutdown({
+  steps: [
+    { name: "websocket", run: () => websocketService.close() },
+    {
+      name: "http-server",
+      run: () =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          (server as any).closeIdleConnections?.();
+        }),
+    },
+    { name: "event-listener", run: () => stellarEventListener.stop() },
+    {
+      name: "job-queue",
+      run: async () => {
+        const { drained, inFlight } = await jobQueue.drain(
+          Number(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) || 10_000
+        );
+        if (!drained) console.warn(`[shutdown] ${inFlight} job(s) still running at drain timeout`);
+      },
+    },
+    { name: "database", run: () => baseClient.$disconnect() },
+    { name: "redis", run: () => closeRedis() },
+    { name: "tracing", run: () => shutdownTracing() },
+  ],
+  timeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS) || 30_000,
+  exit: (code) => process.exit(code),
+});
 
 process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 process.once("SIGINT", () => void gracefulShutdown("SIGINT"));

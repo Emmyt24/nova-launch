@@ -1,8 +1,12 @@
+export type ExplorerProvider = 'stellar.expert' | 'stellarchain';
+
 export interface TokenBasicInfo {
   name: string;
   symbol: string;
   decimals: number;
   address: string;
+  explorerUrl?: string;
+  explorerProvider?: ExplorerProvider;
 }
 
 export interface TokenSupplyInfo {

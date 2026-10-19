@@ -10,6 +10,12 @@ import {
 } from "../middleware/validation";
 import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLimiter";
 import { verifyStoredWebhookSignature } from "../utils/crypto";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
+import {
+  CustomHeaderValidationError,
+  maskCustomHeaders,
+} from "../services/webhookCustomHeaders";
 
 const router = Router();
 
@@ -30,15 +36,18 @@ router.post(
       // Users must store this secret securely as it won't be shown again
       res.status(201).json({
         success: true,
-        data: subscription,
+        data: {
+          ...subscription,
+          customHeaders: maskCustomHeaders(subscription.customHeaders),
+        },
         message: "Webhook subscription created successfully. Please store your secret securely; it will not be shown again.",
       });
     } catch (error) {
+      if (error instanceof CustomHeaderValidationError) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
       console.error("Error creating subscription:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to create webhook subscription",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to create webhook subscription");
     }
   }
 );
@@ -58,30 +67,72 @@ router.delete(
       const { createdBy } = req.body;
 
       if (!createdBy) {
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "createdBy address is required");
+      }
+
+      const deleted = await webhookService.deleteSubscription(id, createdBy);
+
+      if (!deleted) {
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Subscription not found or unauthorized");
+      }
+
+      res.json({
+        success: true,
+        message: "Webhook subscription deleted successfully. It can be restored within the retention window.",
+      });
+    } catch (error) {
+      console.error("Error deleting subscription:", error);
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to delete webhook subscription");
+    }
+  }
+);
+
+/**
+ * POST /api/webhooks/:id/restore
+ * Restore a soft-deleted webhook subscription within the retention window
+ */
+router.post(
+  "/:id/restore",
+  webhookUserRateLimiter,
+  webhookRateLimiter,
+  validateSubscriptionId,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { createdBy } = req.body;
+
+      if (!createdBy) {
         return res.status(400).json({
           success: false,
           error: "createdBy address is required",
         });
       }
 
-      const deleted = await webhookService.deleteSubscription(id, createdBy);
+      const result = await webhookService.restoreSubscription(id, createdBy);
 
-      if (!deleted) {
+      if (result === "not_found") {
         return res.status(404).json({
           success: false,
-          error: "Subscription not found or unauthorized",
+          error: "Deleted subscription not found or unauthorized",
+        });
+      }
+
+      if (result === "retention_expired") {
+        return res.status(410).json({
+          success: false,
+          error: "Restore window has expired for this subscription",
         });
       }
 
       res.json({
         success: true,
-        message: "Webhook subscription deleted successfully",
+        message: "Webhook subscription restored successfully",
       });
     } catch (error) {
-      console.error("Error deleting subscription:", error);
+      console.error("Error restoring subscription:", error);
       res.status(500).json({
         success: false,
-        error: "Failed to delete webhook subscription",
+        error: "Failed to restore webhook subscription",
       });
     }
   }
@@ -109,6 +160,7 @@ router.post(
         return {
           ...publicData,
           secret: `${secret.substring(0, 8)}...`,
+          customHeaders: maskCustomHeaders(sub.customHeaders),
         };
       });
 
@@ -119,10 +171,7 @@ router.post(
       });
     } catch (error) {
       console.error("Error listing subscriptions:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to list webhook subscriptions",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to list webhook subscriptions");
     }
   }
 );
@@ -140,10 +189,7 @@ router.get(
       const subscription = await webhookService.getSubscription(id);
 
       if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Subscription not found");
       }
 
       // Hide secret
@@ -154,13 +200,70 @@ router.get(
         data: {
           ...publicData,
           secret: `${secret.substring(0, 8)}...`,
+          customHeaders: maskCustomHeaders(subscription.customHeaders),
         },
       });
     } catch (error) {
       console.error("Error fetching subscription:", error);
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch webhook subscription");
+    }
+  }
+);
+
+/**
+ * PUT /api/webhooks/:id/headers
+ * Replace the custom headers sent with each delivery for a subscription
+ */
+router.put(
+  "/:id/headers",
+  webhookUserRateLimiter,
+  webhookRateLimiter,
+  validateSubscriptionId,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { createdBy, customHeaders } = req.body;
+
+      if (!createdBy) {
+        return res.status(400).json({
+          success: false,
+          error: "createdBy address is required",
+        });
+      }
+
+      if (!Array.isArray(customHeaders)) {
+        return res.status(400).json({
+          success: false,
+          error: "customHeaders must be an array",
+        });
+      }
+
+      const updated = await webhookService.updateCustomHeaders(
+        id,
+        createdBy,
+        customHeaders
+      );
+
+      if (!updated) {
+        return res.status(404).json({
+          success: false,
+          error: "Subscription not found or unauthorized",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: { customHeaders: maskCustomHeaders(updated.customHeaders) },
+        message: "Custom headers updated successfully",
+      });
+    } catch (error) {
+      if (error instanceof CustomHeaderValidationError) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
+      console.error("Error updating custom headers:", error);
       res.status(500).json({
         success: false,
-        error: "Failed to fetch webhook subscription",
+        error: "Failed to update custom headers",
       });
     }
   }
@@ -181,19 +284,13 @@ router.patch(
       const { active } = req.body;
 
       if (typeof active !== "boolean") {
-        return res.status(400).json({
-          success: false,
-          error: "active field must be a boolean",
-        });
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "active field must be a boolean");
       }
 
       const updated = await webhookService.updateSubscriptionStatus(id, active);
 
       if (!updated) {
-        return res.status(404).json({
-          success: false,
-          error: "Subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Subscription not found");
       }
 
       res.json({
@@ -202,10 +299,7 @@ router.patch(
       });
     } catch (error) {
       console.error("Error toggling subscription:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to toggle webhook subscription",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to toggle webhook subscription");
     }
   }
 );
@@ -231,10 +325,7 @@ router.get(
       });
     } catch (error) {
       console.error("Error fetching delivery logs:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to fetch delivery logs",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch delivery logs");
     }
   }
 );
@@ -257,20 +348,16 @@ router.get(
 
       const log = await webhookService.getDeliveryLogById(id);
       if (!log) {
-        return res.status(404).json({
-          success: false,
-          error: "Delivery log not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Delivery log not found");
       }
 
+      // Include soft-deleted subscriptions so historical deliveries stay verifiable.
       const subscription = await webhookService.getSubscription(
-        log.subscriptionId
+        log.subscriptionId,
+        { includeDeleted: true }
       );
       if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Associated subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Associated subscription not found");
       }
 
       // Reconstruct the exact object shape that was signed (event, timestamp,
@@ -298,10 +385,7 @@ router.get(
       });
     } catch (error) {
       console.error("Error verifying delivery signature:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to verify delivery signature",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to verify delivery signature");
     }
   }
 );
@@ -320,10 +404,7 @@ router.post(
       const subscription = await webhookService.getSubscription(id);
 
       if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Subscription not found");
       }
 
       const success = await webhookDeliveryService.testWebhook(subscription);
@@ -336,10 +417,7 @@ router.post(
       });
     } catch (error) {
       console.error("Error testing webhook:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to test webhook",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to test webhook");
     }
   }
 );
@@ -358,10 +436,7 @@ router.get(
 
       const subscription = await webhookService.getSubscription(id);
       if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Subscription not found");
       }
 
       const deadLetters = await webhookDeadLetterService.listUnresolved(id, limit);
@@ -373,10 +448,7 @@ router.get(
       });
     } catch (error) {
       console.error("Error fetching dead letters:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to fetch dead-letter deliveries",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch dead-letter deliveries");
     }
   }
 );
@@ -394,18 +466,12 @@ router.post(
       const deadLetter = await webhookDeadLetterService.getEntry(id);
 
       if (!deadLetter) {
-        return res.status(404).json({
-          success: false,
-          error: "Dead-letter entry not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Dead-letter entry not found");
       }
 
       const subscription = await webhookService.getSubscription(deadLetter.subscriptionId);
       if (!subscription) {
-        return res.status(404).json({
-          success: false,
-          error: "Associated subscription not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Associated subscription not found");
       }
 
       // Re-deliver the webhook
@@ -418,10 +484,7 @@ router.post(
       );
 
       if (!deliveryResult.success) {
-        res.status(502).json({
-          success: false,
-          error: "Dead-letter delivery failed; entry remains unresolved",
-        });
+        sendError(res, 502, ErrorCode.WEBHOOK_DELIVERY_FAILED, "Dead-letter delivery failed; entry remains unresolved");
         return;
       }
 
@@ -434,10 +497,7 @@ router.post(
       });
     } catch (error) {
       console.error("Error retrying dead letter:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to retry dead-letter delivery",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to retry dead-letter delivery");
     }
   }
 );
@@ -454,10 +514,7 @@ router.post(
       const deadLetter = await webhookDeadLetterService.getEntry(id);
 
       if (!deadLetter) {
-        return res.status(404).json({
-          success: false,
-          error: "Dead-letter entry not found",
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, "Dead-letter entry not found");
       }
 
       await webhookDeadLetterService.markResolved(id, "skipped");
@@ -468,10 +525,7 @@ router.post(
       });
     } catch (error) {
       console.error("Error skipping dead letter:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to archive dead-letter delivery",
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to archive dead-letter delivery");
     }
   }
 );

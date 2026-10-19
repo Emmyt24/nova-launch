@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { Database } from "../config/database";
 import { User } from "../types";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 /**
  * The admin JWT secret is required in production and development.
@@ -45,40 +47,39 @@ export const authenticateAdmin = async (
     const token = req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
-      return res.status(401).json({ error: "Authentication required" });
+      return sendError(res, 401, ErrorCode.UNAUTHORIZED, "Authentication required");
     }
 
     const decoded = jwt.verify(token, ADMIN_JWT_SECRET) as { userId: string };
     const user = await Database.findUserById(decoded.userId);
 
     if (!user) {
-      return res.status(401).json({ error: "Invalid token" });
+      return sendError(res, 401, ErrorCode.UNAUTHORIZED, "Invalid token");
     }
 
     if (user.banned) {
-      return res.status(403).json({ error: "Account banned" });
+      return sendError(res, 403, ErrorCode.FORBIDDEN, "Account banned");
     }
 
     if (user.role === "user") {
-      return res.status(403).json({ error: "Admin access required" });
+      return sendError(res, 403, ErrorCode.FORBIDDEN, "Admin access required");
     }
 
     req.admin = user;
     next();
   } catch (error) {
-    return res.status(401).json({ error: "Invalid or expired token" });
+    return sendError(res, 401, ErrorCode.UNAUTHORIZED, "Invalid or expired token");
   }
 };
 
 export const requireRole = (...roles: User["role"][]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.admin) {
-      return res.status(401).json({ error: "Authentication required" });
+      return sendError(res, 401, ErrorCode.UNAUTHORIZED, "Authentication required");
     }
 
     if (!roles.includes(req.admin.role)) {
-      return res.status(403).json({
-        error: "Insufficient permissions",
+      return sendError(res, 403, ErrorCode.FORBIDDEN, "Insufficient permissions", {
         required: roles,
         current: req.admin.role,
       });

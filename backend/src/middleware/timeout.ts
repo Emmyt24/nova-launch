@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { sendError } from "../utils/response";
 
 /**
  * Default timeout in milliseconds.
@@ -47,14 +48,7 @@ export function createTimeoutMiddleware(timeoutMs: number = getTimeoutMs()) {
       // Graceful degradation: if headers haven't been sent yet, return a
       // structured 503 so the client knows the request timed out.
       if (!res.headersSent) {
-        res.status(503).json({
-          success: false,
-          error: {
-            code: "REQUEST_TIMEOUT",
-            message: `Request timed out after ${timeoutMs}ms`,
-          },
-          timestamp: new Date().toISOString(),
-        });
+        sendError(res, 503, "REQUEST_TIMEOUT", `Request timed out after ${timeoutMs}ms`);
       }
 
       // The downstream handler is still running concurrently. Once we have

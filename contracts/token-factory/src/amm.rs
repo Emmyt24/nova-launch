@@ -32,17 +32,29 @@ const FEE_DENOMINATOR: i128 = 1000;
 
 /// Integer square root via Newton-Raphson (floor).
 /// Returns 0 for n = 0.
-fn isqrt(n: i128) -> i128 {
+fn isqrt(n: i128) -> Result<i128, Error> {
     if n <= 0 {
-        return 0;
+        return Ok(0);
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    // (x + 1) / 2 — x is positive here so the addition cannot overflow for
+    // any value that fits in i128 except i128::MAX; guard it explicitly.
+    let mut y = x
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?
+        .checked_div(2)
+        .ok_or(Error::ArithmeticError)?;
     while y < x {
         x = y;
-        y = (x + n / x) / 2;
+        // (x + n / x) / 2
+        let n_over_x = n.checked_div(x).ok_or(Error::ArithmeticError)?;
+        y = x
+            .checked_add(n_over_x)
+            .ok_or(Error::ArithmeticError)?
+            .checked_div(2)
+            .ok_or(Error::ArithmeticError)?;
     }
-    x
+    Ok(x)
 }
 
 /// Apply the constant-product swap formula with a 0.3 % fee retained in the
@@ -205,7 +217,7 @@ pub fn add_liquidity(
             desired_a
                 .checked_mul(desired_b)
                 .ok_or(Error::ArithmeticError)?,
-        );
+        )?;
         if shares == 0 {
             return Err(Error::ZeroLiquidity);
         }
@@ -570,4 +582,136 @@ pub fn get_pool(env: &Env, token_index_a: u32, token_index_b: u32) -> Option<Amm
 pub fn get_shares(env: &Env, token_index_a: u32, token_index_b: u32, provider: &Address) -> i128 {
     let (ka, kb) = storage::amm_canonical_pair(token_index_a, token_index_b);
     storage::get_amm_shares(env, ka, kb, provider)
+}
+
+// ── Differential tests (#2251) ────────────────────────────────────────────────
+//
+// The shared vectors live in `tests/vectors/math_vectors.json` at the repo
+// root and are owned by the backend/contract math owners (see
+// `tests/vectors/README.md`). They are embedded with `include_str!` so the
+// test is hermetic and does not depend on the working directory or filesystem
+// at runtime. Any divergence between the contract math below and the vectors
+// (which are also exercised by the backend) fails the test.
+#[cfg(test)]
+mod differential_tests {
+    use super::*;
+
+    /// Shared test vectors, embedded at compile time.
+    const VECTORS_JSON: &str = include_str!("../../../tests/vectors/math_vectors.json");
+
+    /// Minimal JSON field extractor: returns the value of `"key"` in `obj`.
+    ///
+    /// The vector file is a flat, machine-generated list of objects with
+    /// string and integer fields, so a tiny parser avoids pulling in a JSON
+    /// dependency for the contract crate.
+    fn field<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
+        let needle = alloc_key(key);
+        let start = obj.find(&needle)? + needle.len();
+        let rest = &obj[start..];
+        let end = rest.find(|c| c == ',' || c == '}')?;
+        let raw = rest[..end].trim();
+        let raw = raw.trim_matches('"');
+        Some(raw)
+    }
+
+    fn alloc_key(key: &str) -> alloc::string::String {
+        alloc::format!("\"{}\":", key)
+    }
+
+    fn field_i128(obj: &str, key: &str) -> i128 {
+        field(obj, key)
+            .unwrap_or_else(|| panic!("missing field `{}` in vector: {}", key, obj))
+            .parse()
+            .unwrap_or_else(|_| panic!("non-integer field `{}` in vector: {}", key, obj))
+    }
+
+    /// Split the top-level JSON array into individual object slices.
+    fn objects(json: &str) -> alloc::vec::Vec<&str> {
+        let mut out = alloc::vec::Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        for (i, c) in json.char_indices() {
+            match c {
+                '{' => {
+                    if depth == 0 {
+                        start = i;
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        out.push(&json[start..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn swap_fee_math_matches_shared_vectors() {
+        let mut checked = 0usize;
+        for obj in objects(VECTORS_JSON) {
+            if field(obj, "kind") != Some("swap") {
+                continue;
+            }
+            let amount_in = field_i128(obj, "amount_in");
+            let reserve_in = field_i128(obj, "reserve_in");
+            let reserve_out = field_i128(obj, "reserve_out");
+            let expected_out = field_i128(obj, "amount_out");
+
+            let (amount_out, new_in, new_out) =
+                constant_product_out(amount_in, reserve_in, reserve_out)
+                    .expect("vector inputs must not overflow");
+
+            assert_eq!(
+                amount_out, expected_out,
+                "swap amount_out mismatch for vector {}",
+                obj
+            );
+            assert_eq!(
+                new_in,
+                reserve_in + amount_in,
+                "swap reserve_in mismatch for vector {}",
+                obj
+            );
+            assert_eq!(
+                new_out,
+                reserve_out - amount_out,
+                "swap reserve_out mismatch for vector {}",
+                obj
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no swap vectors found in shared vector file");
+    }
+
+    #[test]
+    fn percent_math_matches_shared_vectors() {
+        let mut checked = 0usize;
+        for obj in objects(VECTORS_JSON) {
+            if field(obj, "kind") != Some("percent") {
+                continue;
+            }
+            let amount = field_i128(obj, "amount");
+            let bps = field_i128(obj, "bps");
+            let expected = field_i128(obj, "result");
+
+            // bps = basis points (1/10_000). Contract and backend must agree.
+            let result = amount
+                .checked_mul(bps)
+                .expect("vector inputs must not overflow")
+                / 10_000;
+
+            assert_eq!(
+                result, expected,
+                "percent result mismatch for vector {}",
+                obj
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no percent vectors found in shared vector file");
+    }
 }

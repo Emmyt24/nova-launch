@@ -55,3 +55,60 @@ If the breakdown shows 0, you can't vote yet. Either acquire the governance toke
 > **Note:** The backend doesn't index delegation events yet. Until it does, the app treats your full reported voting power as your own balance and shows 0 for both delegation lines.
 
 The link target for "Learn how voting power works" can be overridden with the `VITE_GOVERNANCE_DOCS_URL` environment variable.
+
+---
+
+## Gas baselines for governance operations
+
+Governance operations (propose, vote, queue, execute, delegate) are benchmarked so that gas regressions are caught before they reach `main`.
+
+### Where baselines live
+
+All gas baselines are stored in a single file:
+
+```
+gas-dashboard/data/benchmarks.json
+```
+
+Each entry records the operation name and its measured gas cost. CI compares every benchmarked operation against this file.
+
+### Running the measurement locally
+
+From the repository root:
+
+```bash
+# Measure all governance operations and compare against the stored baselines
+npm run bench:governance
+
+# Measure and print the raw numbers without comparing
+npm run bench:governance -- --no-compare
+```
+
+The script runs the benchmarks for `propose`, `vote`, `queue`, `execute`, and `delegate`, then diffs the results against `gas-dashboard/data/benchmarks.json`.
+
+### The 10 percent threshold
+
+CI fails when any governance operation's gas cost is **more than 10 percent above** its stored baseline. A regression under that threshold is reported as a warning but does not fail the build.
+
+If CI fails on a gas regression:
+
+1. Check whether the change is expected. If it is an unintended regression, fix the code rather than the baseline.
+2. If the increase is intentional and approved (for example, a deliberate feature addition), refresh the baseline as described below.
+
+### Refreshing a baseline after an approved gas change
+
+Only update baselines for changes that have been reviewed and approved.
+
+1. Make sure your branch contains the approved gas change.
+2. Re-run the benchmarks and write the new values:
+
+   ```bash
+   npm run bench:governance -- --update
+   ```
+
+   This rewrites the affected entries in `gas-dashboard/data/benchmarks.json`.
+3. Review the diff in `gas-dashboard/data/benchmarks.json`. Confirm that only the operations you intended to change have new values, and that the increases are explained in the pull request description.
+4. Commit the updated baseline file together with the code change so reviewers can see both in the same pull request.
+5. Note the reason for the refresh in the pull request description (for example, "adds an extra storage read to `execute`").
+
+> **Tip:** Never update baselines just to make CI green. A baseline refresh is a deliberate decision that should be justified in review.

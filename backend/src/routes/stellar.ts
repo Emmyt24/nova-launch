@@ -1,6 +1,9 @@
 import { Router, Request, Response } from "express";
 import axios from "axios";
 import { successResponse, errorResponse } from "../utils/response";
+import { getExplorerUrl, getTxUrl } from "../config/explorer";
+import { env } from "../config/env";
+import { getHorizonEndpointPool } from "../services/endpointPool";
 
 const router = Router();
 
@@ -83,12 +86,41 @@ function mapFeeBucket(bucket: HorizonFeeBucket) {
 }
 
 function getHorizonUrl(): string {
-  if (process.env.STELLAR_HORIZON_URL) {
-    return process.env.STELLAR_HORIZON_URL;
+  return env.STELLAR_HORIZON_URL;
+}
+
+/**
+ * Fetch fee stats from Horizon, rotating through the configured endpoint
+ * pool on failure. The first healthy endpoint that responds successfully
+ * wins; failed endpoints are reported to the pool so they can be marked
+ * unhealthy and skipped by subsequent requests.
+ */
+async function fetchFeeStatsFromPool(): Promise<HorizonFeeStatsRaw> {
+  const pool = getHorizonEndpointPool();
+  const attempted = new Set<string>();
+  let lastError: unknown;
+
+  while (attempted.size < pool.size()) {
+    const endpoint = pool.getNextEndpoint();
+    if (!endpoint || attempted.has(endpoint.url)) {
+      break;
+    }
+    attempted.add(endpoint.url);
+
+    try {
+      const response = await axios.get<HorizonFeeStatsRaw>(
+        `${endpoint.url}/fee_stats`,
+        { timeout: 10000 }
+      );
+      pool.reportSuccess(endpoint.url);
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      pool.reportFailure(endpoint.url);
+    }
   }
-  return process.env.STELLAR_NETWORK === "mainnet"
-    ? "https://horizon.stellar.org"
-    : "https://horizon-testnet.stellar.org";
+
+  throw lastError ?? new Error("No healthy Horizon endpoints available");
 }
 
 /**
@@ -108,13 +140,7 @@ router.get("/fee-stats", async (_req: Request, res: Response) => {
       return res.json(successResponse(feeStatsCache.data));
     }
 
-    const horizonUrl = getHorizonUrl();
-    const response = await axios.get<HorizonFeeStatsRaw>(
-      `${horizonUrl}/fee_stats`,
-      { timeout: 10000 }
-    );
-
-    const raw = response.data;
+    const raw = await fetchFeeStatsFromPool();
 
     const feeStats: FeeStatsResponse = {
       lastLedger: Number(raw.last_ledger),
@@ -126,7 +152,17 @@ router.get("/fee-stats", async (_req: Request, res: Response) => {
 
     feeStatsCache = { data: feeStats, timestamp: now };
 
-    res.json(successResponse(feeStats));
+    res.json(
+      successResponse({
+        ...feeStats,
+        explorerUrl: getExplorerUrl(env.STELLAR_NETWORK, env.STELLAR_EXPLORER_PROVIDER),
+        txExplorerUrl: getTxUrl(
+          env.STELLAR_NETWORK,
+          env.STELLAR_EXPLORER_PROVIDER,
+          String(feeStats.lastLedger)
+        ),
+      })
+    );
   } catch (error) {
     console.error("Error fetching Horizon fee stats:", error);
     res.status(502).json(

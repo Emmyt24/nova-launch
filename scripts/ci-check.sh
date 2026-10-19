@@ -89,7 +89,42 @@ else
     exit 1
 fi
 
-print_stage "Stage 2: Contract-to-Frontend ABI Snapshot Tests"
+# Contract size check
+print_stage "Checking optimized WASM size..."
+WASM_PATH="target/wasm32-unknown-unknown/release/token_factory.wasm"
+if [ ! -f "$WASM_PATH" ]; then
+    print_error "Optimized WASM not found at $WASM_PATH"
+    exit 1
+fi
+
+WASM_SIZE=$(wc -c < "$WASM_PATH" | tr -d ' ')
+MAX_WASM_SIZE="${MAX_WASM_SIZE:-65536}"
+print_warning "Current WASM size: ${WASM_SIZE} bytes (threshold: ${MAX_WASM_SIZE} bytes)"
+
+if [ "$WASM_SIZE" -gt "$MAX_WASM_SIZE" ]; then
+    print_error "WASM size ${WASM_SIZE} bytes exceeds threshold of ${MAX_WASM_SIZE} bytes"
+    exit 1
+fi
+print_success "WASM size within threshold"
+
+cd ../..
+
+# Run the WASM size check script (builds optimized WASM, reports size, fails over threshold)
+print_stage "Stage 2: Contract Size & WASM Optimization Check"
+if [ -f "scripts/build-contract.sh" ]; then
+    if bash scripts/build-contract.sh; then
+        print_success "WASM size check passed"
+    else
+        print_error "WASM size check failed - contract exceeds configured size threshold"
+        exit 1
+    fi
+else
+    print_warning "scripts/build-contract.sh not found, skipping WASM size check"
+fi
+
+cd contracts/token-factory
+
+print_stage "Stage 3: Contract-to-Frontend ABI Snapshot Tests"
 
 # Generate contract interface snapshot
 print_stage "Generating contract interface snapshot..."
@@ -133,7 +168,7 @@ else
     print_warning "Frontend directory not found, skipping ABI tests"
 fi
 
-print_stage "Stage 3: Security Audit"
+print_stage "Stage 4: Security Audit"
 
 # Install cargo-audit if not present
 if ! command -v cargo-audit &> /dev/null; then
@@ -173,7 +208,7 @@ fi
 
 print_success "Static analysis passed"
 
-print_stage "Stage 4: Testing & Coverage"
+print_stage "Stage 5: Testing & Coverage"
 
 # Run tests
 print_stage "Running tests..."
@@ -215,7 +250,54 @@ else
     print_error "Event schema versioning tests failed"
     exit 1
 fi
-=======
+# Supply invariant property tests (total supply == sum of balances across mutations)
+print_stage "Running supply invariant property tests..."
+if cargo test --all-features supply_invariant; then
+    print_success "Supply invariant property tests passed"
+else
+    print_error "Supply invariant property tests failed"
+    exit 1
+fi
+
+# Vesting and vault claim math fuzz tests
+print_stage "Running vesting and vault claim fuzz tests..."
+if cargo test --all-features claim_math; then
+    print_success "Vesting and vault claim fuzz tests passed"
+else
+    print_error "Vesting and vault claim fuzz tests failed"
+    exit 1
+fi
+
+# Admin authorization negative tests
+print_stage "Running admin authorization negative tests..."
+if cargo test --all-features admin_authorization; then
+    print_success "Admin authorization negative tests passed"
+else
+    print_error "Admin authorization negative tests failed"
+    exit 1
+fi
+
+# Admin authorization coverage check: every admin-only function must have a rejection test
+print_stage "Checking admin authorization test coverage..."
+if command -v node &> /dev/null; then
+    if node scripts/check-admin-auth-coverage.js; then
+        print_success "Admin authorization coverage check passed"
+    else
+        print_error "Admin authorization coverage check failed - add a rejection test for each admin function"
+        exit 1
+    fi
+else
+    print_warning "Node.js not found, skipping admin authorization coverage check"
+fi
+
+# Event payload snapshot tests
+print_stage "Running event payload snapshot tests..."
+if cargo test --all-features event_snapshot; then
+    print_success "Event payload snapshot tests passed"
+else
+    print_error "Event payload snapshot tests failed - review event payload changes (see docs/EVENT_VERSIONING.md)"
+    exit 1
+fi
 
 # Check if tarpaulin is installed
 if ! command -v cargo-tarpaulin &> /dev/null; then
@@ -252,7 +334,36 @@ fi
 
 cd ../..
 
-print_stage "Stage 5: Deployment Simulation"
+print_stage "Stage 5b: Gas Regression Gate"
+
+# Measure governance operation gas usage and compare against stored baselines.
+# Regressions over the configured threshold (10%) fail the pipeline.
+if [ -f "gas-dashboard/scripts/measure.js" ] && [ -f "gas-dashboard/scripts/check-thresholds.js" ]; then
+    if command -v node &> /dev/null; then
+        print_stage "Measuring gas usage for governance operations..."
+        if node gas-dashboard/scripts/measure.js; then
+            print_success "Gas measurement complete"
+        else
+            print_error "Gas measurement failed"
+            exit 1
+        fi
+
+        print_stage "Checking gas usage against baselines..."
+        if node gas-dashboard/scripts/check-thresholds.js; then
+            print_success "Gas regression check passed"
+        else
+            print_error "Gas regression detected (over 10% vs baseline). See gas-dashboard/README.md for updating baselines."
+            exit 1
+        fi
+    else
+        print_error "Node.js not found, cannot run gas regression gate"
+        exit 1
+    fi
+else
+    print_warning "Gas regression scripts not found, skipping gas gate"
+fi
+
+print_stage "Stage 6: Deployment Simulation"
 
 # Check if deployment orchestrator is available
 if [ -d "scripts/deployment" ]; then

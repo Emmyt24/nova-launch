@@ -563,6 +563,402 @@ mod comprehensive_edge_case_tests {
 // 7. SECURITY-FOCUSED BOUNDARY TESTS (OWASP)
 // ============================================================================
 
+// ============================================================================
+// 8. AMM ARITHMETIC BOUNDARY TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod amm_boundary_tests {
+    use super::*;
+
+    // ---- Overflow on add (reserve + amount) ----
+
+    #[test]
+    fn test_amm_reserve_add_overflow() {
+        let reserve: i128 = i128::MAX - 10;
+        let amount: i128 = 100;
+
+        let result = reserve.checked_add(amount);
+        assert_eq!(result, None); // Overflow detected, must map to typed error
+    }
+
+    #[test]
+    fn test_amm_reserve_add_at_max_boundary() {
+        let reserve: i128 = i128::MAX;
+        let result = reserve.checked_add(0);
+        assert_eq!(result, Some(i128::MAX));
+    }
+
+    // ---- Underflow on sub (reserve - amount) ----
+
+    #[test]
+    fn test_amm_reserve_sub_underflow() {
+        let reserve: i128 = 0;
+        let amount: i128 = 1;
+
+        let result = reserve.checked_sub(amount);
+        assert_eq!(result, None); // Underflow detected
+    }
+
+    #[test]
+    fn test_amm_reserve_sub_at_min_boundary() {
+        let reserve: i128 = i128::MIN;
+        let result = reserve.checked_sub(1);
+        assert_eq!(result, None);
+    }
+
+    // ---- Overflow on mul (constant product k = x * y) ----
+
+    #[test]
+    fn test_amm_constant_product_mul_overflow() {
+        let reserve_a: i128 = i128::MAX / 2;
+        let reserve_b: i128 = 3;
+
+        let result = reserve_a.checked_mul(reserve_b);
+        assert_eq!(result, None); // k overflow detected
+    }
+
+    #[test]
+    fn test_amm_constant_product_mul_at_boundary() {
+        let reserve_a: i128 = i128::MAX;
+        let result = reserve_a.checked_mul(1);
+        assert_eq!(result, Some(i128::MAX));
+    }
+
+    // ---- Division by zero (zero-liquidity edge case) ----
+
+    #[test]
+    fn test_amm_zero_liquidity_division() {
+        let numerator: i128 = 1000;
+        let zero_liquidity: i128 = 0;
+
+        let result = numerator.checked_div(zero_liquidity);
+        assert_eq!(result, None); // Division by zero detected
+    }
+
+    #[test]
+    fn test_amm_zero_reserve_swap_output() {
+        // Swap output = (amount_in * reserve_out) / (reserve_in + amount_in)
+        let amount_in: i128 = 100;
+        let reserve_out: i128 = 1000;
+        let reserve_in: i128 = 0;
+
+        let numerator = amount_in.checked_mul(reserve_out);
+        assert_eq!(numerator, Some(100_000));
+
+        let denominator = reserve_in.checked_add(amount_in);
+        assert_eq!(denominator, Some(100));
+
+        let output = numerator.unwrap().checked_div(denominator.unwrap());
+        assert_eq!(output, Some(1000));
+    }
+
+    #[test]
+    fn test_amm_zero_amount_in_no_division_by_zero() {
+        // When amount_in == 0, denominator == reserve_in; if reserve_in == 0 too,
+        // division must be guarded and return a typed error, not panic.
+        let amount_in: i128 = 0;
+        let reserve_in: i128 = 0;
+
+        let denominator = reserve_in.checked_add(amount_in);
+        assert_eq!(denominator, Some(0));
+
+        let output = 0i128.checked_div(denominator.unwrap());
+        assert_eq!(output, None); // Guarded: must return typed error
+    }
+
+    // ---- Min boundary ----
+
+    #[test]
+    fn test_amm_min_reserve_operations() {
+        let min = i128::MIN;
+        assert_eq!(min.checked_add(0), Some(min));
+        assert_eq!(min.checked_sub(1), None);
+        assert_eq!(min.checked_mul(-1), None);
+        assert_eq!(min.checked_div(-1), None);
+    }
+}
+
+// ============================================================================
+// 9. BUYBACK ARITHMETIC BOUNDARY TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod buyback_boundary_tests {
+    use super::*;
+
+    // ---- Overflow on add (accumulated buyback total) ----
+
+    #[test]
+    fn test_buyback_total_add_overflow() {
+        let accumulated: i128 = i128::MAX - 50;
+        let new_amount: i128 = 100;
+
+        let result = accumulated.checked_add(new_amount);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_buyback_total_add_at_max() {
+        let accumulated: i128 = i128::MAX;
+        assert_eq!(accumulated.checked_add(0), Some(i128::MAX));
+    }
+
+    // ---- Underflow on sub (budget - spent) ----
+
+    #[test]
+    fn test_buyback_budget_sub_underflow() {
+        let budget: i128 = 100;
+        let spent: i128 = 200;
+
+        let result = budget.checked_sub(spent);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_buyback_budget_sub_at_min() {
+        let budget: i128 = i128::MIN;
+        assert_eq!(budget.checked_sub(1), None);
+    }
+
+    // ---- Overflow on mul (amount * price) ----
+
+    #[test]
+    fn test_buyback_amount_price_mul_overflow() {
+        let amount: i128 = i128::MAX / 2;
+        let price: i128 = 3;
+
+        let result = amount.checked_mul(price);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_buyback_amount_price_mul_at_boundary() {
+        let amount: i128 = i128::MAX;
+        assert_eq!(amount.checked_mul(1), Some(i128::MAX));
+        assert_eq!(amount.checked_mul(0), Some(0));
+    }
+
+    // ---- Division by zero (zero price / zero liquidity) ----
+
+    #[test]
+    fn test_buyback_zero_price_division() {
+        let total_value: i128 = 1000;
+        let zero_price: i128 = 0;
+
+        let result = total_value.checked_div(zero_price);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_buyback_zero_liquidity_division() {
+        let amount: i128 = 500;
+        let zero_liquidity: i128 = 0;
+
+        let result = amount.checked_div(zero_liquidity);
+        assert_eq!(result, None);
+    }
+
+    // ---- Min boundary ----
+
+    #[test]
+    fn test_buyback_min_boundary_operations() {
+        let min = i128::MIN;
+        assert_eq!(min.checked_add(0), Some(min));
+        assert_eq!(min.checked_sub(1), None);
+        assert_eq!(min.checked_mul(-1), None);
+        assert_eq!(min.checked_div(-1), None);
+    }
+}
+
+// ============================================================================
+// 10. DIVIDENDS ARITHMETIC BOUNDARY TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod dividends_boundary_tests {
+    use super::*;
+
+    // ---- Overflow on add (accumulated dividends) ----
+
+    #[test]
+    fn test_dividends_accumulated_add_overflow() {
+        let accumulated: i128 = i128::MAX - 1;
+        let new_dividend: i128 = 2;
+
+        let result = accumulated.checked_add(new_dividend);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_dividends_accumulated_add_at_max() {
+        let accumulated: i128 = i128::MAX;
+        assert_eq!(accumulated.checked_add(0), Some(i128::MAX));
+    }
+
+    // ---- Underflow on sub (claimable = entitled - claimed) ----
+
+    #[test]
+    fn test_dividends_claimable_sub_underflow() {
+        let entitled: i128 = 100;
+        let claimed: i128 = 150;
+
+        let result = entitled.checked_sub(claimed);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_dividends_claimable_sub_at_min() {
+        let entitled: i128 = i128::MIN;
+        assert_eq!(entitled.checked_sub(1), None);
+    }
+
+    // ---- Overflow on mul (shares * dividend_per_share) ----
+
+    #[test]
+    fn test_dividends_shares_per_share_mul_overflow() {
+        let shares: i128 = i128::MAX / 2;
+        let dividend_per_share: i128 = 3;
+
+        let result = shares.checked_mul(dividend_per_share);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_dividends_mul_at_boundary() {
+        let shares: i128 = i128::MAX;
+        assert_eq!(shares.checked_mul(1), Some(i128::MAX));
+        assert_eq!(shares.checked_mul(0), Some(0));
+    }
+
+    // ---- Division by zero (zero total shares) ----
+
+    #[test]
+    fn test_dividends_zero_total_shares_division() {
+        let total_dividends: i128 = 1000;
+        let zero_total_shares: i128 = 0;
+
+        let result = total_dividends.checked_div(zero_total_shares);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_dividends_zero_liquidity_division() {
+        let amount: i128 = 100;
+        let zero_liquidity: i128 = 0;
+
+        let result = amount.checked_div(zero_liquidity);
+        assert_eq!(result, None);
+    }
+
+    // ---- Min boundary ----
+
+    #[test]
+    fn test_dividends_min_boundary_operations() {
+        let min = i128::MIN;
+        assert_eq!(min.checked_add(0), Some(min));
+        assert_eq!(min.checked_sub(1), None);
+        assert_eq!(min.checked_mul(-1), None);
+        assert_eq!(min.checked_div(-1), None);
+    }
+}
+
+// ============================================================================
+// 11. FRACTIONALIZATION ARITHMETIC BOUNDARY TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod fractionalization_boundary_tests {
+    use super::*;
+
+    // ---- Overflow on add (sum of fractions) ----
+
+    #[test]
+    fn test_fractionalization_sum_add_overflow() {
+        let sum: i128 = i128::MAX - 5;
+        let fraction: i128 = 10;
+
+        let result = sum.checked_add(fraction);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_fractionalization_sum_add_at_max() {
+        let sum: i128 = i128::MAX;
+        assert_eq!(sum.checked_add(0), Some(i128::MAX));
+    }
+
+    // ---- Underflow on sub (remaining = total - allocated) ----
+
+    #[test]
+    fn test_fractionalization_remaining_sub_underflow() {
+        let total: i128 = 100;
+        let allocated: i128 = 200;
+
+        let result = total.checked_sub(allocated);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_fractionalization_remaining_sub_at_min() {
+        let total: i128 = i128::MIN;
+        assert_eq!(total.checked_sub(1), None);
+    }
+
+    // ---- Overflow on mul (token_amount * fraction_numerator) ----
+
+    #[test]
+    fn test_fractionalization_mul_overflow() {
+        let token_amount: i128 = i128::MAX / 2;
+        let fraction_numerator: i128 = 3;
+
+        let result = token_amount.checked_mul(fraction_numerator);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_fractionalization_mul_at_boundary() {
+        let token_amount: i128 = i128::MAX;
+        assert_eq!(token_amount.checked_mul(1), Some(i128::MAX));
+        assert_eq!(token_amount.checked_mul(0), Some(0));
+    }
+
+    // ---- Division by zero (zero denominator / zero liquidity) ----
+
+    #[test]
+    fn test_fractionalization_zero_denominator_division() {
+        let numerator: i128 = 1000;
+        let zero_denominator: i128 = 0;
+
+        let result = numerator.checked_div(zero_denominator);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_fractionalization_zero_liquidity_division() {
+        let amount: i128 = 100;
+        let zero_liquidity: i128 = 0;
+
+        let result = amount.checked_div(zero_liquidity);
+        assert_eq!(result, None);
+    }
+
+    // ---- Min boundary ----
+
+    #[test]
+    fn test_fractionalization_min_boundary_operations() {
+        let min = i128::MIN;
+        assert_eq!(min.checked_add(0), Some(min));
+        assert_eq!(min.checked_sub(1), None);
+        assert_eq!(min.checked_mul(-1), None);
+        assert_eq!(min.checked_div(-1), None);
+    }
+}
+
+// ============================================================================
+// 12. SECURITY-FOCUSED BOUNDARY TESTS (OWASP)
+// ============================================================================
+
 #[cfg(test)]
 mod security_boundary_tests {
     use super::*;

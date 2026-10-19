@@ -13,6 +13,7 @@ import networkRouter from "./network";
 import reconcileRouter from "./reconcile";
 import treasuryRouter from "./treasury";
 import governanceRouter from "./governance";
+import apiKeysRouter from "./apiKeys";
 
 const router = Router();
 
@@ -30,5 +31,6 @@ router.use("/network", networkRouter);
 router.use("/reconcile", reconcileRouter);
 router.use("/treasury", treasuryRouter);
 router.use("/governance", governanceRouter);
+router.use("/api-keys", apiKeysRouter);
 
 export default router;

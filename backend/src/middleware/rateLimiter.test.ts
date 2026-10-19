@@ -246,7 +246,7 @@ describe("createRateLimiter — blocks requests over the limit", () => {
 
     await middleware(mockReq(), res, vi.fn());
 
-    expect(res.body.error).toContain("Too many requests");
+    expect(res.body.error.message).toContain("Too many requests");
   });
 
   it("uses custom message when provided", async () => {
@@ -260,7 +260,7 @@ describe("createRateLimiter — blocks requests over the limit", () => {
 
     await middleware(mockReq(), res, vi.fn());
 
-    expect(res.body.error).toBe("Custom limit message");
+    expect(res.body.error.message).toBe("Custom limit message");
   });
 
   it("sets Retry-After header on 429", async () => {

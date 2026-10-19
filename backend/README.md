@@ -18,7 +18,7 @@ Backend API for the Nova Launch admin dashboard with protected endpoints for pla
 
 Redis failures are handled according to the consequence of losing the check, not by a blanket fail-open rule:
 
-- **Availability and delivery limits fail open.** The ingress rate limiter in `src/middleware/rateLimiter.ts` and the per-tenant webhook delivery limit in `src/services/webhookDeliveryService.ts` allow work to continue when Redis is unavailable, temporarily lifting that limit.
+- **Availability and delivery limits fail open.** The ingress rate limiter in `src/middleware/rateLimiter.ts` (unless `RATE_LIMIT_REDIS_FAILURE_MODE=closed`) and the per-tenant webhook delivery limit in `src/services/webhookDeliveryService.ts` allow work to continue when Redis is unavailable, temporarily lifting that limit.
 - **Security checks fail closed.** Token revocation lookups treat Redis errors as revoked in `src/auth/token.service.ts`, and nonce consumption rejects the request when Redis cannot validate the nonce in `src/auth/nonce.service.ts`.
 - **Correctness and coordination checks also fail closed.** Errors from `RedisIdempotencyStore` in `src/middleware/idempotency.ts` are passed to Express rather than bypassing deduplication, and `src/lib/leaderElection.ts` does not claim leadership when Redis is unavailable.
 
@@ -35,6 +35,14 @@ The backend includes a multi-channel notification service that supports:
 Configuration is optional for email and SMS. When a channel is not configured, delivery fails safely and other channels continue.
 
 ### Environment variables
+
+The complete reference for every backend environment variable — defaults,
+required flags and examples — is generated in
+[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) from `src/config/envSchema.ts`.
+After adding or changing a variable, update the schema and run
+`npm run docs:env`; CI fails when the reference is stale.
+
+Notification channel variables:
 
 | Environment variable | Description |
 |---|---|
@@ -152,19 +160,44 @@ request the middleware:
 All four operations run in a single atomic pipeline, making the counter safe
 for distributed deployments.
 
-### Fail-open behaviour
+### Redis-unavailable behaviour
 
-If Redis is unavailable the middleware calls `next()` and allows the request
-through. This prevents a cache outage from taking down the API.
+By default the middleware **fails open**: if Redis is unavailable it logs a warning, calls `next()` and lets the request through, so a cache outage cannot take down the API. Because the remaining quota is unknown, no quota headers are sent on these responses. Clients should read missing `RateLimit-*` headers as "quota unknown", not "unlimited".
 
-### Response headers
+Set `RATE_LIMIT_REDIS_FAILURE_MODE=closed` (or pass `redisFailureMode: "closed"` to `createRateLimiter`) to **fail closed** instead. Requests are then rejected with `503 RATE_LIMIT_UNAVAILABLE` and a `Retry-After` header. An unrecognised value falls back to `open`.
+
+### Response headers (#2188)
+
+Every response that the limiter enforces includes both the standard headers ([IETF draft-ietf-httpapi-ratelimit-headers](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/)) and the legacy headers:
 
 | Header | Description |
 |---|---|
-| `X-RateLimit-Limit` | Configured maximum requests per window |
-| `X-RateLimit-Remaining` | Requests remaining in the current window |
-| `X-RateLimit-Reset` | Unix timestamp (seconds) when the window resets |
-| `Retry-After` | Seconds until the client may retry (only on 429) |
+| `RateLimit-Limit` | Configured maximum requests per window |
+| `RateLimit-Remaining` | Requests remaining in the current window |
+| `RateLimit-Reset` | Seconds until the window resets. For the sliding window this is the full window length, which is an upper bound. |
+| `RateLimit-Policy` | `<limit>;w=<window seconds>`, for example `100;w=900` |
+| `X-RateLimit-Limit` | Legacy: same as `RateLimit-Limit` |
+| `X-RateLimit-Remaining` | Legacy: same as `RateLimit-Remaining` |
+| `X-RateLimit-Reset` | Legacy: Unix timestamp (seconds) when the window resets |
+| `Retry-After` | Seconds until the client may retry (only on 429, or on 503 in fail-closed mode) |
+
+The per-route `express-rate-limit` limiter in `src/index.ts` is configured with `standardHeaders: "draft-6"` and `legacyHeaders: true`, so it sends the same header set.
+
+A 429 response body follows the shared error schema (see `docs/API_ERROR_RESPONSES.md`):
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "Too many requests, please try again later.",
+    "details": { "limit": 100, "windowMs": 900000, "retryAfter": 900 },
+    "requestId": "..."
+  },
+  "requestId": "...",
+  "timestamp": "..."
+}
+```
 
 ### Configuration
 
@@ -173,6 +206,7 @@ through. This prevents a cache outage from taking down the API.
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
 | `RATE_LIMIT_WINDOW_MS` | `900000` (15 min) | Window size in milliseconds |
 | `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window (global limiter) |
+| `RATE_LIMIT_REDIS_FAILURE_MODE` | `open` | `open` or `closed`: behaviour when Redis is unavailable |
 
 ### Pre-configured limiters
 

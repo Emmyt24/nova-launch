@@ -50,11 +50,24 @@ export interface LeaderboardResponse {
 interface CacheEntry {
   data: LeaderboardResponse;
   timestamp: number;
+  ttl: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 /** Safety-net TTL — entries are also evicted by event-driven invalidation. */
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Each time window is cached separately (the window is part of the key) and
+ * with its own TTL: short windows shift quickly as burns age out, long
+ * windows barely move (#2204).
+ */
+export const WINDOW_CACHE_TTL_MS: Record<TimePeriod, number> = {
+  [TimePeriod.H24]: 60 * 1000,
+  [TimePeriod.D7]: CACHE_TTL,
+  [TimePeriod.D30]: 10 * 60 * 1000,
+  [TimePeriod.ALL]: 15 * 60 * 1000,
+};
 
 const MAX_SORTED_SET_SCORE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -80,7 +93,7 @@ function getFromCache(key: string): LeaderboardResponse | null {
   const entry = cache.get(key);
   if (!entry) return null;
 
-  if (Date.now() - entry.timestamp > CACHE_TTL) {
+  if (Date.now() - entry.timestamp > entry.ttl) {
     cache.delete(key);
     return null;
   }
@@ -89,7 +102,17 @@ function getFromCache(key: string): LeaderboardResponse | null {
 }
 
 function setCache(key: string, data: LeaderboardResponse): void {
-  cache.set(key, { data, timestamp: Date.now() });
+  cache.set(key, {
+    data,
+    timestamp: Date.now(),
+    ttl: WINDOW_CACHE_TTL_MS[data.period] ?? CACHE_TTL,
+  });
+}
+
+/** Cache keys currently held for a board, e.g. for inspecting per-window caching. */
+export function getCachedKeys(type?: string): string[] {
+  const keys = [...cache.keys()];
+  return type ? keys.filter((k) => k.startsWith(`${type}:`)) : keys;
 }
 
 /**
@@ -412,23 +435,32 @@ export async function getMostActiveLeaderboard(
   return getRankedLeaderboard("most-active", period, page, limit, recomputeMostActive);
 }
 
+/** Restricts token-level boards to tokens created inside the window. */
+function createdWithin(period: TimePeriod) {
+  const dateFilter = getDateFilter(period);
+  return dateFilter ? { createdAt: { gte: dateFilter } } : {};
+}
+
 export async function getNewestTokensLeaderboard(
   page: number = 1,
-  limit: number = 10
+  limit: number = 10,
+  period: TimePeriod = TimePeriod.ALL
 ): Promise<LeaderboardResponse> {
-  const cacheKey = getCacheKey("newest", TimePeriod.ALL, page, limit);
+  const cacheKey = getCacheKey("newest", period, page, limit);
   const cached = getFromCache(cacheKey);
   if (cached) return cached;
 
   const skip = (page - 1) * limit;
+  const where = createdWithin(period);
 
   const [tokens, total] = await Promise.all([
     prisma.token.findMany({
+      where,
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
     }),
-    prisma.token.count(),
+    prisma.token.count({ where }),
   ]);
 
   const data: LeaderboardToken[] = tokens.map((token, index) => ({
@@ -450,7 +482,7 @@ export async function getNewestTokensLeaderboard(
   const response: LeaderboardResponse = {
     success: true,
     data,
-    period: TimePeriod.ALL,
+    period,
     updatedAt: new Date().toISOString(),
     pagination: { page, limit, total },
   };
@@ -461,21 +493,24 @@ export async function getNewestTokensLeaderboard(
 
 export async function getLargestSupplyLeaderboard(
   page: number = 1,
-  limit: number = 10
+  limit: number = 10,
+  period: TimePeriod = TimePeriod.ALL
 ): Promise<LeaderboardResponse> {
-  const cacheKey = getCacheKey("largest-supply", TimePeriod.ALL, page, limit);
+  const cacheKey = getCacheKey("largest-supply", period, page, limit);
   const cached = getFromCache(cacheKey);
   if (cached) return cached;
 
   const skip = (page - 1) * limit;
+  const where = createdWithin(period);
 
   const [tokens, total] = await Promise.all([
     prisma.token.findMany({
+      where,
       orderBy: { totalSupply: "desc" },
       skip,
       take: limit,
     }),
-    prisma.token.count(),
+    prisma.token.count({ where }),
   ]);
 
   const data: LeaderboardToken[] = tokens.map((token, index) => ({
@@ -497,7 +532,7 @@ export async function getLargestSupplyLeaderboard(
   const response: LeaderboardResponse = {
     success: true,
     data,
-    period: TimePeriod.ALL,
+    period,
     updatedAt: new Date().toISOString(),
     pagination: { page, limit, total },
   };

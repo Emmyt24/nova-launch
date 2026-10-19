@@ -15,6 +15,12 @@
  * - Results are cached in-memory for CACHE_TTL ms (keyed by query string).
  * - Slow queries (>200 ms) are logged as warnings.
  *
+ * Relevance (#2203):
+ * - Token hits are ranked by `rankTokens` (src/lib/search/tokenRanking.ts):
+ *   exact symbol > exact name > prefix > substring > typo matches, boosted
+ *   by activity (burn count) and holder count within each tier.
+ * - Name typos are tolerated (1 edit for 4–7 chars, 2 for 8+).
+ *
  * GET /api/search?q=<term>&types=tokens,proposals&limit=10
  */
 
@@ -22,6 +28,11 @@ import { Router, Request, Response } from "express";
 import { performance } from "perf_hooks";
 import { prisma } from "../lib/prisma";
 import { z } from "zod";
+import {
+  allowedTypos,
+  holdersFromMetadata,
+  rankTokens,
+} from "../lib/search/tokenRanking";
 
 const router = Router();
 
@@ -95,6 +106,8 @@ interface TokenHit {
   creator: string;
   totalSupply: string;
   createdAt: string;
+  /** Relevance score; higher is more relevant (#2203). */
+  relevance: number;
 }
 
 interface ProposalHit {
@@ -185,6 +198,23 @@ router.get("/", async (req: Request, res: Response) => {
 
 // ─── Entity search helpers ────────────────────────────────────────────────────
 
+/** How many DB candidates to rank per request before trimming to `limit`. */
+const TOKEN_CANDIDATE_POOL = 100;
+/** Extra candidates scanned for typo matches when exact/partial hits are sparse. */
+const TOKEN_TYPO_POOL = 200;
+
+const TOKEN_SEARCH_SELECT = {
+  id: true,
+  address: true,
+  name: true,
+  symbol: true,
+  creator: true,
+  totalSupply: true,
+  burnCount: true,
+  metadata: true,
+  createdAt: true,
+} as const;
+
 async function searchTokens(q: string, limit: number) {
   const where = {
     OR: [
@@ -197,22 +227,40 @@ async function searchTokens(q: string, limit: number) {
   const [rows, total] = await Promise.all([
     prisma.token.findMany({
       where,
-      take: limit,
+      take: TOKEN_CANDIDATE_POOL,
       orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        address: true,
-        name: true,
-        symbol: true,
-        creator: true,
-        totalSupply: true,
-        createdAt: true,
-      },
+      select: TOKEN_SEARCH_SELECT,
     }),
     prisma.token.count({ where }),
   ]);
 
-  const hits: TokenHit[] = rows.map((r) => ({
+  // Substring matching cannot find misspelt names, so widen the pool with
+  // tokens sharing the query's first letter and let the ranker filter them.
+  let candidates = rows;
+  if (rows.length < limit && allowedTypos(q.trim().length) > 0) {
+    const seen = new Set(rows.map((r) => r.id));
+    const typoRows = await prisma.token.findMany({
+      where: {
+        name: { startsWith: q.trim()[0], mode: "insensitive" as const },
+        id: { notIn: [...seen] },
+      },
+      take: TOKEN_TYPO_POOL,
+      orderBy: { createdAt: "desc" },
+      select: TOKEN_SEARCH_SELECT,
+    });
+    candidates = [...rows, ...typoRows];
+  }
+
+  const ranked = rankTokens(
+    q,
+    candidates.map((r) => ({
+      ...r,
+      activity: r.burnCount,
+      holders: holdersFromMetadata(r.metadata),
+    }))
+  );
+
+  const hits: TokenHit[] = ranked.slice(0, limit).map(({ token: r, score }) => ({
     type: "token",
     id: r.id,
     address: r.address,
@@ -221,9 +269,12 @@ async function searchTokens(q: string, limit: number) {
     creator: r.creator,
     totalSupply: r.totalSupply.toString(),
     createdAt: r.createdAt.toISOString(),
+    relevance: Math.round(score * 100) / 100,
   }));
 
-  return { hits, total };
+  // Typo-only matches are not counted by the substring `count` query.
+  const typoOnly = ranked.length - rows.length;
+  return { hits, total: total + Math.max(0, typoOnly) };
 }
 
 async function searchProposals(q: string, limit: number) {

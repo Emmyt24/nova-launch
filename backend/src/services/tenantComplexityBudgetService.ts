@@ -1,9 +1,13 @@
 import { PrismaClient } from "@prisma/client";
 import type { TenantContext } from "../middleware/tenancy";
+import {
+  DEFAULT_COMPLEXITY_BUDGET,
+  resolveDefaultComplexityBudget,
+} from "../graphql/limits";
 
 const prisma = new PrismaClient();
 
-const DEFAULT_COMPLEXITY_BUDGET = 100;
+export { DEFAULT_COMPLEXITY_BUDGET, resolveDefaultComplexityBudget };
 
 export interface TenantComplexityBudget {
   tenantId: string;
@@ -31,8 +35,11 @@ export class TenantComplexityBudgetService {
    * @returns The complexity budget for the tenant
    */
   async getBudgetForTenant(tenant: TenantContext | undefined | null): Promise<number> {
+    const defaultBudget = resolveDefaultComplexityBudget(
+      process.env.GRAPHQL_MAX_COMPLEXITY
+    );
     if (!tenant || !tenant.id) {
-      return DEFAULT_COMPLEXITY_BUDGET;
+      return defaultBudget;
     }
 
     // Check cache first
@@ -45,7 +52,7 @@ export class TenantComplexityBudgetService {
       where: { tenantId: tenant.id },
     });
 
-    const budget = override?.complexityBudget ?? DEFAULT_COMPLEXITY_BUDGET;
+    const budget = override?.complexityBudget ?? defaultBudget;
     TenantComplexityBudgetService.budgetCache.set(tenant.id, budget);
     return budget;
   }

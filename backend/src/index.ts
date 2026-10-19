@@ -156,6 +156,10 @@ import { createGracefulShutdown } from "./lib/gracefulShutdown";
 import { closeRedis } from "./lib/redis";
 import { isAppError, toAppError } from "./lib/errors";
 import { getCorrelationId, getTransactionId } from "./lib/async-context";
+import { tokenInfoCache } from "./services/tokenInfoCache";
+
+// Drop cached token info whenever a token-changing event is published (#2202)
+tokenInfoCache.bindInvalidation();
 
 // Health check — liveness (is the process alive?)
 app.get("/health/live", (_req, res) => {

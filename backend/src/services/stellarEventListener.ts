@@ -21,6 +21,7 @@ import {
 } from "../stellar-service-integration/rate-limiter";
 import { ListenerBackoffState, LISTENER_RECONNECT_CONFIG } from "./listenerBackoff";
 import { IntegrationMetrics } from "../lib/metrics";
+import { listenerLagTracker, ListenerLagTracker } from "../lib/metrics/listenerLagMetrics";
 import { OutboundHttpClient } from "../lib/outboundHttpClient";
 import {
   PROJECTION_LAG_THRESHOLDS,
@@ -36,6 +37,14 @@ const HORIZON_URL = _env.STELLAR_HORIZON_URL;
 const FACTORY_CONTRACT_ID = _env.FACTORY_CONTRACT_ID;
 
 const POLL_INTERVAL_MS = 5000;
+
+/**
+ * Minimum interval between chain head lookups used for the ledger lag
+ * metrics. Configurable via LISTENER_HEAD_REFRESH_MS; defaults to 15s.
+ */
+const _rawHeadRefresh = parseInt(process.env.LISTENER_HEAD_REFRESH_MS ?? "15000", 10);
+export const HEAD_REFRESH_INTERVAL_MS: number =
+  Number.isFinite(_rawHeadRefresh) && _rawHeadRefresh >= 0 ? _rawHeadRefresh : 15000;
 
 /**
  * Maximum number of ledgers the cursor may lag before a full catchup is
@@ -126,6 +135,8 @@ export class StellarEventListener {
   private leaderElection: LeaderElection;
   private electionStarted = false;
   private fencingToken: number | null = null;
+  private lagTracker: ListenerLagTracker = listenerLagTracker;
+  private lastHeadRefreshAt = 0;
 
   constructor(transport?: HorizonTransport) {
     this.prisma = new PrismaClient();
@@ -256,6 +267,7 @@ export class StellarEventListener {
 
     while (this.isRunning) {
       try {
+        await this.refreshChainHeadIfDue();
         await this.fetchAndProcessEvents();
         backoff.recordSuccess();
         await this.delay(POLL_INTERVAL_MS);
@@ -338,6 +350,7 @@ export class StellarEventListener {
         this.lastCursor = event.paging_token;
         await this.cursorStore.save(this.lastCursor);
         this.emitCursorLagMetric(event.ledger);
+        this.lagTracker.recordProcessedLedger(event.ledger);
       }
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -792,6 +805,11 @@ export class StellarEventListener {
     const currentLedger = await this.transport.getCurrentLedger?.(HORIZON_URL);
     if (currentLedger == null) return;
 
+    this.lagTracker.recordChainHead(currentLedger);
+    this.lastHeadRefreshAt = Date.now();
+    const cursorLedger = parseLedgerFromCursor(this.lastCursor);
+    if (cursorLedger !== null) this.lagTracker.recordProcessedLedger(cursorLedger);
+
     const lag = await this.cursorStore.getCursorLag(currentLedger);
     if (lag == null) return;
 
@@ -805,6 +823,35 @@ export class StellarEventListener {
       );
       this.lastCursor = null;
     }
+  }
+
+  /**
+   * Refresh the chain head used by the ledger lag metrics, at most once per
+   * HEAD_REFRESH_INTERVAL_MS. Failures are counted but never interrupt polling.
+   */
+  private async refreshChainHeadIfDue(): Promise<void> {
+    if (!this.transport.getCurrentLedger) return;
+    const now = Date.now();
+    if (this.lastHeadRefreshAt && now - this.lastHeadRefreshAt < HEAD_REFRESH_INTERVAL_MS) return;
+    this.lastHeadRefreshAt = now;
+
+    try {
+      const head = await this.transport.getCurrentLedger(HORIZON_URL);
+      if (head == null) {
+        this.lagTracker.recordHeadFetchFailure();
+        return;
+      }
+      this.lagTracker.recordChainHead(head);
+    } catch {
+      this.lagTracker.recordHeadFetchFailure();
+    }
+  }
+
+  /**
+   * Current chain head vs processed ledger (for health checks / debugging).
+   */
+  getLedgerLag() {
+    return this.lagTracker.snapshot();
   }
 
   /**

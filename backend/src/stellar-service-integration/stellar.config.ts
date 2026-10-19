@@ -14,6 +14,12 @@ export interface StellarConfig {
     maxRequests: number;
     windowMs: number;
   };
+  /** Shared token bucket limiting retries across all RPC calls (#2201). */
+  retryBudget: {
+    capacity: number;
+    refillPerSecond: number;
+    depositPerSuccess: number;
+  };
   circuitBreaker: {
     failureThreshold: number;
     successThreshold: number;
@@ -36,6 +42,11 @@ export const DEFAULT_STELLAR_CONFIG: StellarConfig = {
   rateLimit: {
     maxRequests: 100,
     windowMs: 60000,
+  },
+  retryBudget: {
+    capacity: 20,
+    refillPerSecond: 1,
+    depositPerSuccess: 0.1,
   },
   circuitBreaker: {
     failureThreshold: 5,

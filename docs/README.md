@@ -12,6 +12,15 @@
 
 ---
 
+## Free-Text Field Sanitization
+
+- **[FREE_TEXT_SANITIZATION.md](./FREE_TEXT_SANITIZATION.md)**
+  - Control-character stripping and NFC normalization for free-text fields
+  - Per-field length limits and the 400 `VALIDATION_ERROR` shape
+  - `escapeHtml()` at HTML output boundaries (email templates)
+
+---
+
 ## Database Backup & Point-in-Time Recovery
 
 - **[DATABASE_BACKUP_PITR.md](./DATABASE_BACKUP_PITR.md)**

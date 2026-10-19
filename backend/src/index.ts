@@ -33,6 +33,7 @@ import { requestLoggingMiddleware } from "./middleware/request-logging.middlewar
 import { initTracing, tracingMiddleware, shutdownTracing } from "./monitoring/tracing";
 import { createTimeoutMiddleware } from "./middleware/timeout";
 import { createQueryTimeoutMiddleware } from "./middleware/queryTimeout";
+import { createFreeTextSanitizationMiddleware } from "./middleware/freeTextSanitization";
 import { createMetricsMiddleware, metricsRegistry } from "./lib/metrics";
 import { registerPoolMetrics } from "./lib/metrics/poolMetrics";
 import { registerPrismaTracing } from "./lib/metrics/prismaTracing";
@@ -95,6 +96,9 @@ const limiter = rateLimit({
 // Body parsing middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Canonicalise free-text fields (control chars, NFC, length limits) — #2210
+app.use(createFreeTextSanitizationMiddleware());
 
 // Initialize database and pool metrics
 Database.initialize();

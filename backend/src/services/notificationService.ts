@@ -34,6 +34,7 @@ import {
   NotificationTarget,
 } from "../types/notification";
 import { IntegrationMetrics } from "../lib/metrics";
+import { escapeHtml } from "../middleware/freeTextSanitization";
 import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 import { getNotificationPreferences, isNotificationChannelEnabled } from "./notificationPreferences";
 
@@ -129,7 +130,11 @@ function renderTemplate(
   }
   let html = templateCache.get(key)!;
   for (const [k, v] of Object.entries(vars)) {
-    html = html.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v ?? "");
+    // Values include user free text (token names, proposal titles) — escape
+    // at this HTML output boundary (#2210). A function replacement keeps `$`
+    // sequences in the value from being treated as replacement patterns.
+    const escaped = escapeHtml(v);
+    html = html.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), () => escaped);
   }
   return html;
 }

@@ -591,3 +591,139 @@ fn test_upgrade_rejects_non_admin() {
     client.upgrade(&attacker, &new_wasm_hash).unwrap();
 }
 
+#[test]
+fn test_admin_burn_allowlist_mode_allows_whitelisted_from() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Enable allowlist mode and whitelist the burn source
+    client.set_allowlist_mode(&token_address, &creator, &true).unwrap();
+    client.add_to_allowlist(&token_address, &creator, &from).unwrap();
+
+    // Burn from a whitelisted address should succeed
+    client.admin_burn(&token_address, &creator, &from, &100_000_0000000).unwrap();
+
+    let token_info = client.get_token_info_by_address(&token_address).unwrap();
+    assert_eq!(token_info.total_burned, 100_000_0000000);
+    assert_eq!(token_info.burn_count, 1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_admin_burn_allowlist_mode_rejects_non_whitelisted_from() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Enable allowlist mode without whitelisting the burn source
+    client.set_allowlist_mode(&token_address, &creator, &true).unwrap();
+
+    // Burn from a non-whitelisted address should fail
+    client.admin_burn(&token_address, &creator, &from, &100_000_0000000).unwrap();
+}
+
+#[test]
+fn test_admin_burn_allowlist_mode_disabled_allows_any_from() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Allowlist mode is off by default; a non-whitelisted address can be burned from
+    client.admin_burn(&token_address, &creator, &from, &100_000_0000000).unwrap();
+
+    let token_info = client.get_token_info_by_address(&token_address).unwrap();
+    assert_eq!(token_info.total_burned, 100_000_0000000);
+}
+
+#[test]
+fn test_admin_burn_extends_ttl_of_persistent_entries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Advance the ledger so the initial TTL is partially consumed
+    env.ledger().set_sequence_number(env.ledger().sequence() + 100);
+
+    let ttl_before = env.storage().persistent().get_ttl(&storage::DataKey::TokenInfo(token_address.clone()));
+
+    client.admin_burn(&token_address, &creator, &from, &100_000_0000000).unwrap();
+
+    let ttl_after = env.storage().persistent().get_ttl(&storage::DataKey::TokenInfo(token_address.clone()));
+
+    // Accessing the entry during admin_burn should bump its TTL
+    assert!(ttl_after > ttl_before, "expected TTL bump on token info entry");
+}
+
+#[test]
+fn test_admin_burn_ttl_bump_keeps_entry_alive_across_ledgers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Repeated burns across advancing ledgers should keep the entry readable
+    for _ in 0..3 {
+        env.ledger().set_sequence_number(env.ledger().sequence() + 50);
+        client.admin_burn(&token_address, &creator, &from, &10_000_0000000).unwrap();
+        assert!(client.get_token_info_by_address(&token_address).is_some());
+    }
+
+    let token_info = client.get_token_info_by_address(&token_address).unwrap();
+    assert_eq!(token_info.total_burned, 30_000_0000000);
+    assert_eq!(token_info.burn_count, 3);
+}

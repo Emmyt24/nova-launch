@@ -19,12 +19,71 @@ import { Throttle } from "@nestjs/throttler";
 import { TokensService } from "./tokens.service";
 import { GetTokenParamDto } from "./dto/get-token-param.dto";
 import { GetTokenQueryDto, TokenInclude } from "./dto/get-token-query.dto";
-import { TokenApiResponse } from "./interfaces/token.interface";
+import { GetTokenCreationFeeQuoteQueryDto } from "./dto/get-token-creation-fee-quote-query.dto";
+import {
+  TokenApiResponse,
+  TokenCreationFeeQuoteApiResponse,
+} from "./interfaces/token.interface";
 
 @ApiTags("Tokens")
 @Controller("api/tokens")
 export class TokensController {
   constructor(private readonly tokensService: TokensService) {}
+
+  /**
+   * GET /api/tokens/creation-fee/quote
+   * Read-only quote of the fee that would be charged for token creation.
+   * Mirrors the on-chain charge logic so clients can preview costs.
+   */
+  @Get("creation-fee/quote")
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 60, ttl: 60000 } }) // 60 req/min per IP
+  @ApiOperation({
+    summary: "Quote token creation fee",
+    description:
+      "Returns the fee that would be charged for creating a token with the given options. " +
+      "The quote is read-only and matches the actual creation charge logic.",
+  })
+  @ApiQuery({
+    name: "include",
+    required: false,
+    isArray: true,
+    enum: TokenInclude,
+    description: "Optional data fields to include in the quote breakdown",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Token creation fee quote retrieved successfully",
+    schema: {
+      example: {
+        success: true,
+        data: {
+          baseFee: "1.0000000",
+          totalFee: "1.0000000",
+          asset: "XLM",
+          breakdown: [],
+        },
+        cached: false,
+        timestamp: "2025-01-01T00:00:00.000Z",
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: "Invalid quote options" })
+  @ApiResponse({ status: 429, description: "Too many requests" })
+  async getTokenCreationFeeQuote(
+    @Query() query: GetTokenCreationFeeQuoteQueryDto
+  ): Promise<TokenCreationFeeQuoteApiResponse> {
+    const quote = await this.tokensService.getTokenCreationFeeQuote({
+      include: query.include,
+    });
+
+    return {
+      success: true,
+      data: quote,
+      cached: false,
+      timestamp: new Date().toISOString(),
+    };
+  }
 
   /**
    * GET /api/tokens/:address

@@ -27,13 +27,44 @@ interface EventSchema {
   [key: string]: any;
 }
 
+/**
+ * Event types that are additive-only: new versions may add properties but must
+ * never remove or retype existing ones. Used to keep v1 wire compatibility for
+ * fee-change events while v2 adds old/new value fields (issue #2243).
+ */
+const ADDITIVE_EVENT_TYPES = new Set<string>([
+  "FeeParameterChanged",
+  "FeeParameterChange",
+  "FeeChanged",
+]);
+
+/**
+ * Event types introduced by the allowlist mode feature (issue #2245). These are
+ * brand-new events, so there is no prior schema to compare against.
+ */
+const NEW_EVENT_TYPES = new Set<string>([
+  "AllowlistModeSet",
+  "AllowlistAdded",
+  "AllowlistRemoved",
+  "AllowlistTransferRejected",
+]);
+
 export function detectBreakingChanges(oldSchema: EventSchema, newSchema: EventSchema): string[] {
   const violations: string[] = [];
+
+  // Newly introduced events have no prior schema; nothing can break.
+  if (newSchema.eventType && NEW_EVENT_TYPES.has(newSchema.eventType)) {
+    return violations;
+  }
 
   const oldProps = oldSchema.properties || {};
   const newProps = newSchema.properties || {};
   const oldRequired = oldSchema.required || [];
   const newRequired = newSchema.required || [];
+
+  // Event versioning: a bumped schemaVersion signals an additive revision. The
+  // v1 schema must remain intact, so only removals/retypes are breaking.
+  const isAdditive = oldSchema.eventType !== undefined && ADDITIVE_EVENT_TYPES.has(oldSchema.eventType);
 
   // Check removed properties
   for (const prop of Object.keys(oldProps)) {
@@ -52,10 +83,23 @@ export function detectBreakingChanges(oldSchema: EventSchema, newSchema: EventSc
     }
   }
 
-  // Check added required fields (breaking if not previously required/present)
+  // Check added required fields (breaking if not previously required/present).
+  // Additive event revisions may add optional fields only; a new required field
+  // would still break v1 consumers, so it remains a violation.
   for (const req of newRequired) {
     if (!oldRequired.includes(req) && (!oldProps[req])) {
       violations.push(`New required field '${req}' added without existing optional presence.`);
+    }
+  }
+
+  // For additive events, ensure the schema version was bumped when properties
+  // were added so consumers can distinguish v1 from v2 payloads.
+  if (isAdditive && newSchema.schemaVersion <= oldSchema.schemaVersion) {
+    const addedProps = Object.keys(newProps).filter(p => !(p in oldProps));
+    if (addedProps.length > 0) {
+      violations.push(
+        `Additive properties (${addedProps.join(", ")}) added without bumping schemaVersion from ${oldSchema.schemaVersion}.`
+      );
     }
   }
 

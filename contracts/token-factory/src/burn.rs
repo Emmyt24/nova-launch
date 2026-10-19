@@ -138,6 +138,10 @@ fn admin_burn_inner(
         },
     )?;
 
+    // Allowlist gate (#2245): admin burns move balances out of the holder's
+    // account, so the holder must be allowlisted when allowlist mode is on.
+    crate::allowlist::check_allowlist(env, token_index, holder)?;
+
     let balance = storage::get_balance(env, token_index, holder);
     if balance < amount {
         return Err(Error::InsufficientBalance);
@@ -226,6 +230,10 @@ fn batch_burn_inner(
         let (ref holder, amount) = burns.get(i).unwrap();
         validate_amount(amount)?;
         validate_address(holder)?;
+
+        // Allowlist gate (#2245): each holder whose balance is debited must be
+        // allowlisted when allowlist mode is enabled.
+        crate::allowlist::check_allowlist(env, token_index, holder)?;
 
         let balance = storage::get_balance(env, token_index, holder);
         if balance < amount {
@@ -362,6 +370,7 @@ mod burn_reentrancy_tests {
             is_paused: false,
             clawback_enabled: true,
             freeze_enabled: false,
+            allowlist_enabled: false,
         };
         storage::set_token_info(env, token_index, &info);
         storage::set_balance(env, token_index, &holder, 1_000_000);
@@ -433,5 +442,84 @@ mod burn_reentrancy_tests {
             info.initial_supply,
             "supply invariant violated"
         );
+    }
+
+    /// Admin burn is rejected when allowlist mode is on and the holder is not
+    /// allowlisted (#2245).
+    #[test]
+    fn test_admin_burn_rejected_when_holder_not_allowlisted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (holder, token_index) = setup_token(&env);
+        let admin = Address::generate(&env);
+        storage::set_admin(&env, &admin);
+
+        let mut info = storage::get_token_info(&env, token_index).unwrap();
+        info.allowlist_enabled = true;
+        storage::set_token_info(&env, token_index, &info);
+
+        let result = admin_burn(&env, admin.clone(), token_index, holder.clone(), 100);
+        assert_eq!(result, Err(Error::NotAllowlisted));
+
+        // Balance and aggregates untouched on rejection.
+        let info = storage::get_token_info(&env, token_index).unwrap();
+        assert_eq!(info.total_supply, 1_000_000);
+        assert_eq!(info.total_burned, 0);
+        assert_eq!(storage::get_balance(&env, token_index, &holder), 1_000_000);
+    }
+
+    /// Admin burn succeeds when allowlist mode is on and the holder is
+    /// allowlisted (#2245).
+    #[test]
+    fn test_admin_burn_allowed_when_holder_allowlisted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (holder, token_index) = setup_token(&env);
+        let admin = Address::generate(&env);
+        storage::set_admin(&env, &admin);
+
+        let mut info = storage::get_token_info(&env, token_index).unwrap();
+        info.allowlist_enabled = true;
+        storage::set_token_info(&env, token_index, &info);
+        crate::allowlist::add_to_allowlist(&env, &admin, token_index, holder.clone()).unwrap();
+
+        admin_burn(&env, admin.clone(), token_index, holder.clone(), 100).unwrap();
+
+        let info = storage::get_token_info(&env, token_index).unwrap();
+        assert_eq!(info.total_supply, 1_000_000 - 100);
+        assert_eq!(info.total_burned, 100);
+        assert_eq!(storage::get_balance(&env, token_index, &holder), 1_000_000 - 100);
+    }
+
+    /// Batch burn rejects the whole batch when any holder is not allowlisted
+    /// (#2245).
+    #[test]
+    fn test_batch_burn_rejected_when_holder_not_allowlisted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (holder, token_index) = setup_token(&env);
+        let admin = Address::generate(&env);
+        storage::set_admin(&env, &admin);
+
+        let mut info = storage::get_token_info(&env, token_index).unwrap();
+        info.allowlist_enabled = true;
+        storage::set_token_info(&env, token_index, &info);
+        crate::allowlist::add_to_allowlist(&env, &admin, token_index, holder.clone()).unwrap();
+
+        let other = Address::generate(&env);
+        storage::set_balance(&env, token_index, &other, 500);
+
+        let mut burns = soroban_sdk::Vec::new(&env);
+        burns.push_back((holder.clone(), 100));
+        burns.push_back((other.clone(), 100));
+
+        let result = batch_burn(&env, admin.clone(), token_index, burns);
+        assert_eq!(result, Err(Error::NotAllowlisted));
+
+        // No partial state changes.
+        let info = storage::get_token_info(&env, token_index).unwrap();
+        assert_eq!(info.total_supply, 1_000_000);
+        assert_eq!(storage::get_balance(&env, token_index, &holder), 1_000_000);
+        assert_eq!(storage::get_balance(&env, token_index, &other), 500);
     }
 }

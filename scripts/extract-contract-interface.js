@@ -201,6 +201,30 @@ function main() {
     if (snapshot.functions.length > 10) {
       console.log(`   ... and ${snapshot.functions.length - 10} more`);
     }
+
+    // Verify that the interface includes functions required by recent features:
+    // - Fee quote view function (#2244)
+    // - Admin TTL bump function (#2242)
+    // - Allowlist management functions (#2245)
+    const requiredFunctions = [
+      "quote_creation_fee",
+      "bump_ttl",
+      "set_allowlist_mode",
+      "add_to_allowlist",
+      "remove_from_allowlist",
+    ];
+    const exportedNames = new Set(snapshot.functions.map((fn) => fn.name));
+    const missing = requiredFunctions.filter((name) => !exportedNames.has(name));
+
+    if (missing.length > 0) {
+      console.warn(
+        `⚠️  Expected interface functions not found: ${missing.join(", ")}`,
+      );
+    } else {
+      console.log(
+        `✅ Verified feature functions present: ${requiredFunctions.join(", ")}`,
+      );
+    }
   } catch (error) {
     console.error("❌ Error extracting interface:", error.message);
     process.exit(1);

@@ -16,6 +16,10 @@ import {
   type TokenDeployInput,
 } from "../services/batchTokenDeployService";
 import { CursorPagination } from "../lib/pagination";
+import {
+  quoteTokenCreationFee,
+  tokenCreationFeeQuoteSchema,
+} from "../services/tokenCreationFeeService";
 import { STELLAR_HORIZON_URL } from "../config/env";
 import { getTxUrl, type ExplorerProvider } from "../config/explorer";
 import { createIdempotencyMiddleware } from "../middleware/idempotency";
@@ -321,6 +325,63 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
   }
 });
+
+// ---------------------------------------------------------------------------
+// Token creation fee quote
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/tokens/fee-quote
+ *
+ * Read-only quote of the fee that would be charged for creating a token with
+ * the given options. Delegates to the same `quoteTokenCreationFee` helper the
+ * creation path uses, so the quoted amount always matches the actual charge.
+ *
+ * Query params (all optional):
+ *   - decimals:        integer 0..18 (default 7)
+ *   - initialSupply:   non-negative integer string (default "0")
+ *   - metadataUri:     valid URL, enables metadata surcharge
+ *   - network:         "testnet" | "mainnet" (default "testnet")
+ *
+ * Response: { success: true, data: TokenCreationFeeQuote }
+ *
+ * Frontend hook usage:
+ *   const { data: quote } = useTokenCreationFeeQuote({
+ *     decimals: 7,
+ *     initialSupply: "1000000",
+ *     metadataUri: "https://example.com/meta.json",
+ *   });
+ *   // quote.totalFee / quote.breakdown mirror the amount charged on deploy.
+ */
+router.get(
+  "/fee-quote",
+  async (req: TenantRequest & Request, res: Response) => {
+    const parsed = tokenCreationFeeQuoteSchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json(
+        errorResponse({
+          code: "VALIDATION_ERROR",
+          message: "Invalid fee quote parameters",
+          details: parsed.error.issues,
+        })
+      );
+    }
+
+    try {
+      const quote = quoteTokenCreationFee(parsed.data);
+      return res.json(successResponse(quote));
+    } catch (error) {
+      console.error("[tokens] GET /fee-quote error:", error);
+      return res.status(500).json(
+        errorResponse({
+          code: "INTERNAL_ERROR",
+          message: "Failed to compute token creation fee quote",
+          details: error instanceof Error ? error.message : "Unknown error",
+        })
+      );
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Batch token deployment

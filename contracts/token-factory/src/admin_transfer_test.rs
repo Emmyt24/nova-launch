@@ -309,4 +309,135 @@ mod admin_transfer_tests {
 
         client.update_metadata_fee(&non_admin, &Some(1_0000000));
     }
+
+    #[test]
+    fn test_admin_can_add_to_allowlist() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        assert!(!client.is_allowlisted(&account));
+
+        client.add_to_allowlist(&admin, &account);
+
+        assert!(client.is_allowlisted(&account));
+    }
+
+    #[test]
+    fn test_admin_can_remove_from_allowlist() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.add_to_allowlist(&admin, &account);
+        assert!(client.is_allowlisted(&account));
+
+        client.remove_from_allowlist(&admin, &account);
+        assert!(!client.is_allowlisted(&account));
+    }
+
+    #[test]
+    fn test_new_admin_can_manage_allowlist_after_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.transfer_admin(&admin, &new_admin);
+
+        // New admin should be able to manage the allowlist
+        client.add_to_allowlist(&new_admin, &account);
+        assert!(client.is_allowlisted(&account));
+
+        client.remove_from_allowlist(&new_admin, &account);
+        assert!(!client.is_allowlisted(&account));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_old_admin_cannot_manage_allowlist_after_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.transfer_admin(&admin, &new_admin);
+
+        // Old admin should no longer be able to manage the allowlist
+        client.add_to_allowlist(&admin, &account);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unauthorized_add_to_allowlist_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        // Unauthorized address cannot add to the allowlist
+        client.add_to_allowlist(&unauthorized, &account);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unauthorized_remove_from_allowlist_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+        let account = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.add_to_allowlist(&admin, &account);
+
+        // Unauthorized address cannot remove from the allowlist
+        client.remove_from_allowlist(&unauthorized, &account);
+    }
 }

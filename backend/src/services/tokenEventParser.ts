@@ -2,10 +2,12 @@ import { PrismaClient } from "@prisma/client";
 import { eventBus } from "./eventBus";
 
 export interface RawTokenEvent {
-  type: "tok_reg" | "tok_burn" | "adm_burn" | "tok_meta";
+  type: "tok_reg" | "tok_burn" | "adm_burn" | "tok_meta" | "fee_chg";
   tokenAddress: string;
   transactionHash: string;
   ledger: number;
+  // event schema version; absent means v1 (legacy payloads)
+  version?: number;
   // tok_reg fields
   creator?: string;
   name?: string;
@@ -20,6 +22,12 @@ export interface RawTokenEvent {
   // metadata fields
   metadataUri?: string;
   updatedBy?: string;
+  // fee change fields (v2)
+  feeType?: string;
+  previousValue?: string;
+  newValue?: string;
+  // fee change fields (v1 legacy — only the new value was emitted)
+  value?: string;
 }
 
 export class TokenEventParser {
@@ -38,6 +46,9 @@ export class TokenEventParser {
         break;
       case "tok_meta":
         await this.handleMetadataUpdate(event);
+        break;
+      case "fee_chg":
+        await this.handleFeeChange(event);
         break;
     }
   }
@@ -127,5 +138,34 @@ export class TokenEventParser {
       where: { address: event.tokenAddress },
       data: { metadataUri: event.metadataUri ?? null },
     });
+  }
+
+  private async handleFeeChange(event: RawTokenEvent): Promise<void> {
+    // v1 payloads only carried the new value; v2 adds the previous value.
+    // Normalise both shapes so downstream consumers always see old + new.
+    const isV2 = (event.version ?? 1) >= 2;
+    const newValue = isV2 ? event.newValue : event.value;
+    const previousValue = isV2 ? event.previousValue : undefined;
+
+    if (newValue === undefined) {
+      console.warn(
+        `TokenEventParser: fee_chg for ${event.tokenAddress} missing new value, skipping`
+      );
+      return;
+    }
+
+    eventBus
+      .publish("fee.changed", {
+        version: isV2 ? 2 : 1,
+        tokenAddress: event.tokenAddress,
+        transactionHash: event.transactionHash,
+        ledger: event.ledger,
+        feeType: event.feeType ?? "unknown",
+        previousValue: previousValue ?? null,
+        newValue,
+      })
+      .catch((err) =>
+        console.error("[TokenEventParser] event emission failed:", err)
+      );
   }
 }

@@ -33,6 +33,82 @@ export interface AuditTrail {
   changes: Record<string, any>;
 }
 
+/**
+ * Version of the fee-parameter-change event payload.
+ *
+ * v1 payloads only carried the new value. v2 payloads carry both the
+ * previous and the new value so the audit trail is complete. Consumers must
+ * branch on `schemaVersion` (defaulting to 1 when absent) to stay wire
+ * compatible with historical events.
+ */
+export const FEE_PARAMETER_CHANGED_EVENT_TYPE = 'FeeParameterChanged';
+export const FEE_PARAMETER_CHANGED_SCHEMA_VERSION = 2;
+
+export interface FeeParameterChangedPayloadV1 {
+  parameter: string;
+  value: any;
+}
+
+export interface FeeParameterChangedPayloadV2 {
+  schemaVersion: typeof FEE_PARAMETER_CHANGED_SCHEMA_VERSION;
+  parameter: string;
+  previousValue: any;
+  newValue: any;
+  /** Legacy field kept for backward compatibility; mirrors `newValue`. */
+  value: any;
+}
+
+export type FeeParameterChangedPayload =
+  | FeeParameterChangedPayloadV1
+  | FeeParameterChangedPayloadV2;
+
+/**
+ * Builds the versioned payload for a fee parameter change, including both the
+ * previous and the new value.
+ */
+export function buildFeeParameterChangedPayload(
+  parameter: string,
+  previousValue: any,
+  newValue: any
+): FeeParameterChangedPayloadV2 {
+  return {
+    schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
+    parameter,
+    previousValue,
+    newValue,
+    value: newValue,
+  };
+}
+
+/**
+ * Normalizes a fee-parameter-change payload of any supported version into the
+ * latest shape. v1 payloads have no previous value, so `previousValue` is
+ * `undefined` for them.
+ */
+export function parseFeeParameterChangedPayload(
+  data: Record<string, any>
+): FeeParameterChangedPayloadV2 {
+  const schemaVersion = data?.schemaVersion ?? 1;
+
+  if (schemaVersion >= FEE_PARAMETER_CHANGED_SCHEMA_VERSION) {
+    return {
+      schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
+      parameter: data.parameter,
+      previousValue: data.previousValue,
+      newValue: data.newValue !== undefined ? data.newValue : data.value,
+      value: data.newValue !== undefined ? data.newValue : data.value,
+    };
+  }
+
+  return {
+    schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
+    parameter: data.parameter,
+    previousValue: undefined,
+    newValue: data.value,
+    value: data.value,
+  };
+}
+
 export class InMemoryEventStore implements EventStore {
   private events: Map<string, DomainEvent[]> = new Map();
   private allEvents: DomainEvent[] = [];
@@ -136,6 +212,29 @@ export class EventSourcingService {
     }
   }
 
+  /**
+   * Publishes a fee parameter change event carrying both the previous and the
+   * new value (schema v2). Use this instead of `publishEvent` directly so the
+   * payload stays versioned and parseable by `parseFeeParameterChangedPayload`.
+   */
+  async publishFeeParameterChanged(
+    aggregateId: string,
+    parameter: string,
+    previousValue: any,
+    newValue: any,
+    metadata?: Record<string, any>,
+    stateReducer?: (state: Record<string, any>, event: DomainEvent) => Record<string, any>
+  ): Promise<void> {
+    const data = buildFeeParameterChangedPayload(parameter, previousValue, newValue);
+    await this.publishEvent(
+      aggregateId,
+      FEE_PARAMETER_CHANGED_EVENT_TYPE,
+      data,
+      metadata,
+      stateReducer
+    );
+  }
+
   async getAggregateHistory(aggregateId: string): Promise<DomainEvent[]> {
     return this.eventStore.getEvents(aggregateId);
   }
@@ -217,9 +316,21 @@ export class EventSourcingService {
       eventType: event.type,
       timestamp: new Date(event.timestamp).toISOString(),
       actor: event.metadata?.actor,
-      changes: event.data,
+      changes: this.normalizeAuditChanges(event),
     };
     this.auditTrail.push(trail);
+  }
+
+  /**
+   * Normalizes event data for the audit trail. Fee parameter changes are
+   * expanded to the latest schema so the audit trail always records both the
+   * previous and the new value, even for historical v1 events.
+   */
+  private normalizeAuditChanges(event: DomainEvent): Record<string, any> {
+    if (event.type === FEE_PARAMETER_CHANGED_EVENT_TYPE) {
+      return parseFeeParameterChangedPayload(event.data);
+    }
+    return event.data;
   }
 
   private async getNextVersion(aggregateId: string): Promise<number> {

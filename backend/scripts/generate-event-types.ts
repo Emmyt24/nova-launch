@@ -33,6 +33,13 @@ export interface JsonSchemaProperty {
   format?: string;
   minimum?: number;
   enum?: unknown[];
+  /**
+   * Nested object properties. Used by schemas that embed a sub-object (e.g.
+   * the `previous`/`new` fee parameter snapshots in the v2 fee-change event).
+   */
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
 }
 
 /** A nested object schema, used standalone or as one branch of a top-level `anyOf`. */
@@ -63,6 +70,16 @@ export interface EventJsonSchema {
   required?: string[];
   additionalProperties?: boolean;
   anyOf?: ObjectSubSchema[];
+  /**
+   * Optional list of prior schema versions this event type still accepts on
+   * the wire. Each entry is a full schema (with its own `schemaVersion`) and
+   * is emitted as a versioned interface plus a union member, so parsers can
+   * discriminate on `schemaVersion` while keeping backward compatibility.
+   *
+   * Example: the v2 fee-change event lists its v1 schema here so both
+   * `FeeParameterChangedEventPayloadV1` and `...V2` are generated.
+   */
+  previousVersions?: EventJsonSchema[];
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +115,18 @@ export function jsonSchemaTypeToTs(prop: JsonSchemaProperty): string {
       case "null":
         return "null";
       case "object":
+        // Inline nested object schemas are rendered structurally so callers
+        // get real field types (e.g. `previous: { feeBps: number; ... }`).
+        if (prop.properties) {
+          const required = new Set(prop.required ?? []);
+          const fields = Object.entries(prop.properties)
+            .map(([key, sub]) => {
+              const optional = required.has(key) ? "" : "?";
+              return `${key}${optional}: ${jsonSchemaTypeToTs(sub)}`;
+            })
+            .join("; ");
+          return `{ ${fields} }`;
+        }
         return "Record<string, unknown>";
       case "array":
         return "unknown[]";
@@ -152,6 +181,37 @@ export function generateInterfaceForSchema(schema: EventJsonSchema): string {
   const docBlock = schema.description
     ? [`/**`, ` * ${schema.description}`, ` *`, ` * Event type: \`${schema.eventType}\``, ` */`]
     : [`/** Event type: \`${schema.eventType}\` */`];
+
+  // Versioned interfaces: when a schema declares `previousVersions`, emit one
+  // interface per version (V1, V2, ...) and a union alias with the canonical
+  // name. This keeps older wire payloads parseable while exposing the new
+  // fields (e.g. previous/new fee values) on the latest version.
+  const versions = [...(schema.previousVersions ?? []), schema];
+  if (versions.length > 1) {
+    const versionedNames = versions.map(
+      (v) => `${interfaceName}V${v.schemaVersion}`
+    );
+
+    const versionedInterfaces = versions.map((v, i) => {
+      const required = new Set(v.required ?? []);
+      const lines: string[] = [];
+      const versionDoc = v.description
+        ? `/** ${v.description} (schemaVersion ${v.schemaVersion}) */`
+        : `/** schemaVersion ${v.schemaVersion} */`;
+      lines.push(versionDoc);
+      lines.push(`export interface ${versionedNames[i]} {`);
+      lines.push(...renderObjectBody(v.properties ?? {}, required));
+      lines.push(`}`);
+      return lines.join("\n");
+    });
+
+    const unionAlias = [
+      ...docBlock,
+      `export type ${interfaceName} = ${versionedNames.join(" | ")};`,
+    ].join("\n");
+
+    return [...versionedInterfaces, unionAlias].join("\n\n");
+  }
 
   if (schema.anyOf && schema.anyOf.length > 0) {
     const branchNames = schema.anyOf.map((_, i) => `${interfaceName}Variant${i + 1}`);
@@ -226,7 +286,34 @@ export function generateEventTypesFile(schemas: EventJsonSchema[]): string {
     `} as const;`,
   ].join("\n");
 
-  return [header, interfaces, "", eventPayloadMap, "", versionsMap, ""].join("\n");
+  // All schema versions still accepted on the wire per event type, oldest
+  // first. Parsers can use this to validate `schemaVersion` before narrowing
+  // the payload union.
+  const supportedVersionEntries = sorted
+    .map((s) => {
+      const all = [...(s.previousVersions ?? []), s].map((v) => v.schemaVersion);
+      return `  "${s.eventType}": [${all.join(", ")}] as const,`;
+    })
+    .join("\n");
+
+  const supportedVersionsMap = [
+    `/** Every schemaVersion still accepted on the wire for each event type. */`,
+    `export const EVENT_SUPPORTED_SCHEMA_VERSIONS = {`,
+    supportedVersionEntries,
+    `} as const;`,
+  ].join("\n");
+
+  return [
+    header,
+    interfaces,
+    "",
+    eventPayloadMap,
+    "",
+    versionsMap,
+    "",
+    supportedVersionsMap,
+    "",
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------

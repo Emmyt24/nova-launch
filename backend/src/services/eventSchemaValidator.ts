@@ -49,7 +49,22 @@
  * a schema" case at CI time instead of relying on this documentation. Not
  * implemented here.
  *
- * Issue: #1406, #2087
+ * ## Versioned fee-change events (#2243)
+ *
+ * Fee-parameter change events carry both the previous and the new value so
+ * audit trails are complete. To keep wire compatibility, the payload is
+ * versioned via a `version` field:
+ *
+ * - `version: 1` (or absent, for legacy publishers) — the original shape,
+ *   which only carried the new value.
+ * - `version: 2` — the current shape, which additionally carries the previous
+ *   value (`oldValue`/`previousValue`) alongside the new value.
+ *
+ * Both shapes are accepted by the validator; see `FEE_CHANGE_EVENT_TYPES` and
+ * `validateFeeChangePayload` below. Parsers should branch on `version` and
+ * fall back to the v1 shape when it is missing.
+ *
+ * Issue: #1406, #2087, #2243
  */
 
 import { readFileSync, readdirSync } from "fs";
@@ -168,4 +183,113 @@ export function validateEventPayload(eventType: string, payload: unknown): void 
     const errors = ajv.errorsText(validate.errors, { separator: "; " });
     throw new EventSchemaValidationError(eventType, errors);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fee-parameter change events (#2243)
+// ---------------------------------------------------------------------------
+
+/**
+ * Event types that describe a fee-parameter change. These are validated with
+ * `validateFeeChangePayload` in addition to any JSON Schema registered for
+ * them, so that both the v1 (new value only) and v2 (old + new value) wire
+ * shapes are accepted.
+ */
+export const FEE_CHANGE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "fee.updated",
+  "fee.changed",
+  "fee.parameter.changed",
+  "fee.parameter.updated",
+]);
+
+/** Current (latest) version of the fee-change event payload. */
+export const FEE_CHANGE_EVENT_VERSION = 2;
+
+/** Highest version of the fee-change event payload this validator accepts. */
+export const FEE_CHANGE_EVENT_MAX_VERSION = 2;
+
+/** Fields that may carry the previous value in a v2 fee-change payload. */
+const OLD_VALUE_FIELDS = ["oldValue", "previousValue"] as const;
+
+/** Fields that may carry the new value in a fee-change payload. */
+const NEW_VALUE_FIELDS = ["newValue", "value"] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNumericValue(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/**
+ * Validates a fee-parameter change payload against the versioned wire format.
+ *
+ * - `version` absent or `1`: legacy shape — a new value is required, no
+ *   previous value is expected (but is tolerated for forward compatibility).
+ * - `version` `2`: current shape — both the previous and the new value are
+ *   required, and they must differ (a "change" that changes nothing is a bug).
+ *
+ * Throws `EventSchemaValidationError` on failure.
+ */
+export function validateFeeChangePayload(eventType: string, payload: unknown): void {
+  if (!isPlainObject(payload)) {
+    throw new EventSchemaValidationError(eventType, "payload must be an object");
+  }
+
+  const version = payload.version;
+  if (version !== undefined && version !== 1 && version !== 2) {
+    throw new EventSchemaValidationError(
+      eventType,
+      `unsupported version ${JSON.stringify(version)}; expected 1 or 2`
+    );
+  }
+
+  const newValueField = NEW_VALUE_FIELDS.find((f) => payload[f] !== undefined);
+  if (!newValueField) {
+    throw new EventSchemaValidationError(
+      eventType,
+      `missing new value (expected one of: ${NEW_VALUE_FIELDS.join(", ")})`
+    );
+  }
+  if (!isNumericValue(payload[newValueField])) {
+    throw new EventSchemaValidationError(
+      eventType,
+      `"${newValueField}" must be a finite number`
+    );
+  }
+
+  if (version === 2) {
+    const oldValueField = OLD_VALUE_FIELDS.find((f) => payload[f] !== undefined);
+    if (!oldValueField) {
+      throw new EventSchemaValidationError(
+        eventType,
+        `missing previous value for v2 payload (expected one of: ${OLD_VALUE_FIELDS.join(", ")})`
+      );
+    }
+    if (!isNumericValue(payload[oldValueField])) {
+      throw new EventSchemaValidationError(
+        eventType,
+        `"${oldValueField}" must be a finite number`
+      );
+    }
+    if (payload[oldValueField] === payload[newValueField]) {
+      throw new EventSchemaValidationError(
+        eventType,
+        `"${oldValueField}" and "${newValueField}" must differ`
+      );
+    }
+  }
+}
+
+/**
+ * Validates `payload` for `eventType`, applying the versioned fee-change rules
+ * on top of any registered JSON Schema. Use this instead of
+ * `validateEventPayload` when publishing fee-parameter change events.
+ */
+export function validateVersionedEventPayload(eventType: string, payload: unknown): void {
+  if (FEE_CHANGE_EVENT_TYPES.has(eventType)) {
+    validateFeeChangePayload(eventType, payload);
+  }
+  validateEventPayload(eventType, payload);
 }

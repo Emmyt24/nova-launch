@@ -8,8 +8,12 @@ const REQUIRED_OPERATIONS = [
   'claim',
   'propose',
   'vote',
-  'queue',
   'execute',
+  'bump_ttl',
+  'quote_fee',
+  'transfer_allowlist',
+  'mint_allowlist',
+  'queue',
   'delegate'
 ];
 const DEFAULT_THRESHOLD_PERCENT = 10;

@@ -389,4 +389,184 @@ mod arithmetic_boundaries {
             assert!(sum.is_some());
         }
     }
+
+    #[test]
+    fn test_quote_zero_fee_configuration() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0, &0);
+
+        let quote = client.quote_token_creation(&false, &false);
+        assert_eq!(quote, 0);
+
+        let quote = client.quote_token_creation(&true, &false);
+        assert_eq!(quote, 0);
+
+        let quote = client.quote_token_creation(&false, &true);
+        assert_eq!(quote, 0);
+
+        let quote = client.quote_token_creation(&true, &true);
+        assert_eq!(quote, 0);
+    }
+
+    #[test]
+    fn test_quote_matches_charge_at_max_fees() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &i128::MAX, &0);
+
+        let quote = client.quote_token_creation(&false, &false);
+        assert_eq!(quote, i128::MAX);
+
+        let quote = client.quote_token_creation(&true, &false);
+        assert_eq!(quote, i128::MAX);
+    }
+
+    #[test]
+    fn test_quote_overflow_returns_error() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &(i128::MAX - 1000), &2000);
+
+        let result = client.try_quote_token_creation(&true, &false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_quote_metadata_fee_boundary() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &1000, &i128::MAX);
+
+        let quote = client.quote_token_creation(&false, &false);
+        assert_eq!(quote, 1000);
+
+        let result = client.try_quote_token_creation(&false, &true);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod allowlist_boundaries {
+    use super::*;
+
+    fn setup(env: &Env) -> (TokenFactoryClient<'_>, Address, Address) {
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        let treasury = Address::generate(env);
+        client.initialize(&admin, &treasury, &1000, &1000);
+        (client, admin, treasury)
+    }
+
+    #[test]
+    fn test_allowlist_empty_denies_all() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _treasury) = setup(&env);
+
+        let token_id = client.create_token(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "TKN"),
+            &soroban_sdk::String::from_str(&env, "Token"),
+            &7,
+            &0,
+            &None,
+            &Some(true),
+        );
+
+        let holder = Address::generate(&env);
+        let result = client.try_transfer(&admin, &token_id, &admin, &holder, &1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_allowlist_max_entries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _treasury) = setup(&env);
+
+        let token_id = client.create_token(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "TKN"),
+            &soroban_sdk::String::from_str(&env, "Token"),
+            &7,
+            &0,
+            &None,
+            &Some(true),
+        );
+
+        for _ in 0..100 {
+            let addr = Address::generate(&env);
+            client.allowlist_add(&admin, &token_id, &addr);
+        }
+
+        let count = client.get_allowlist_count(&token_id);
+        assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn test_allowlist_remove_unknown_is_noop() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _treasury) = setup(&env);
+
+        let token_id = client.create_token(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "TKN"),
+            &soroban_sdk::String::from_str(&env, "Token"),
+            &7,
+            &0,
+            &None,
+            &Some(true),
+        );
+
+        let unknown = Address::generate(&env);
+        let result = client.try_allowlist_remove(&admin, &token_id, &unknown);
+        assert!(result.is_ok());
+        assert!(!client.is_allowlisted(&token_id, &unknown));
+    }
+
+    #[test]
+    fn test_allowlist_mint_blocked_for_non_member() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _treasury) = setup(&env);
+
+        let token_id = client.create_token(
+            &admin,
+            &soroban_sdk::String::from_str(&env, "TKN"),
+            &soroban_sdk::String::from_str(&env, "Token"),
+            &7,
+            &0,
+            &None,
+            &Some(true),
+        );
+
+        let outsider = Address::generate(&env);
+        let result = client.try_mint(&admin, &token_id, &outsider, &1);
+        assert!(result.is_err());
+    }
 }

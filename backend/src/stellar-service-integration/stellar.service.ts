@@ -45,6 +45,8 @@ import {
   TransactionDetails,
   TransactionStatus,
   MonitorTransactionResult,
+  TokenCreationFeeQuote,
+  TokenCreationFeeQuoteOptions,
 } from "./stellar.config";
 import {
   StellarNetworkException,
@@ -459,6 +461,57 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Quotes the fee that would be charged for creating a token with the given
+   * options, by invoking the factory contract's read-only `quote_creation_fee`
+   * view function.
+   *
+   * This mirrors the on-chain charge logic exactly: the contract computes the
+   * fee from the same options that `create_token` receives, so clients can
+   * display an accurate quote without reproducing the fee logic off-chain.
+   *
+   * @param options - Token creation options (name, symbol, decimals, initial supply)
+   * @returns The quoted fee breakdown for the creation
+   */
+  async quoteTokenCreationFee(
+    options: TokenCreationFeeQuoteOptions
+  ): Promise<TokenCreationFeeQuote> {
+    if (!this.config.factoryContractId) {
+      throw new StellarContractException(
+        "Factory contract ID is not configured"
+      );
+    }
+
+    if (!options || typeof options !== "object") {
+      throw new StellarContractException(
+        "Token creation fee quote requires options"
+      );
+    }
+
+    this.logger.log(
+      `Quoting token creation fee via ${this.config.factoryContractId}`
+    );
+
+    return this.withRetry(async () => {
+      this.rateLimiter.checkLimit();
+      try {
+        const raw = await this.callContract<any>(
+          this.config.factoryContractId,
+          "quote_creation_fee",
+          [StellarSdk.nativeToScVal(options, { type: "object" })]
+        );
+
+        return this.mapTokenCreationFeeQuote(raw);
+      } catch (error) {
+        this.logger.error("Failed to quote token creation fee", error);
+        throw new StellarContractException(
+          "Failed to quote token creation fee",
+          error
+        );
+      }
+    }, "quoteTokenCreationFee");
+  }
+
+  /**
    * Parses a raw Soroban contract event into a structured format.
    */
   parseContractEvent(
@@ -753,6 +806,50 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       );
       throw lastError;
     });
+  }
+
+  /**
+   * Normalizes the raw `quote_creation_fee` result into a TokenCreationFeeQuote.
+   * The contract may return either a plain integer (total fee in stroops) or a
+   * struct with a breakdown; both shapes are supported.
+   */
+  private mapTokenCreationFeeQuote(raw: any): TokenCreationFeeQuote {
+    if (raw === null || raw === undefined) {
+      throw new StellarParseException(
+        "Empty result from quote_creation_fee"
+      );
+    }
+
+    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+      const total = String(raw);
+      return {
+        totalFee: total,
+        baseFee: total,
+        additionalFee: "0",
+        currency: "stroops",
+      };
+    }
+
+    if (typeof raw === "object") {
+      const totalFee = String(
+        raw.total_fee ?? raw.totalFee ?? raw.fee ?? raw.amount ?? "0"
+      );
+      const baseFee = String(raw.base_fee ?? raw.baseFee ?? totalFee);
+      const additionalFee = String(
+        raw.additional_fee ?? raw.additionalFee ?? "0"
+      );
+
+      return {
+        totalFee,
+        baseFee,
+        additionalFee,
+        currency: String(raw.currency ?? "stroops"),
+      };
+    }
+
+    throw new StellarParseException(
+      `Unexpected quote_creation_fee result shape: ${typeof raw}`
+    );
   }
 
   /**

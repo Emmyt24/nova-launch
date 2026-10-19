@@ -126,6 +126,63 @@ All requirements from requirements.md are satisfied:
 - GetTokenInfo actions with random indices
 - Interleaved operation types in sequences
 
+## Cross-Feature Coverage Tasks
+
+The following tasks extend the stateful fuzzing suite to cover the new contract features (TTL extension, fee quote view, and whitelist/allowlist transfer mode). These are tracked here so the fuzzer exercises the new code paths alongside existing operations.
+
+- [ ] 1. Extend `FuzzAction` enum with new operation variants
+  - [ ] 1.1 Add `BumpTtl` action (admin/non-admin callers, target entry keys)
+  - [ ] 1.2 Add `QuoteCreationFee` action (random fee options, including negative/overflow values)
+  - [ ] 1.3 Add `SetAllowlistMode` action (enable/disable at creation and via admin)
+  - [ ] 1.4 Add `SetAllowlisted` action (add/remove addresses, random callers)
+  - [ ] 1.5 Add `Transfer` / `Mint` actions to exercise allowlist checks
+  - _Requirements: 1.2, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6_
+
+- [ ] 2. Extend `StateModel` to track new state
+  - [ ] 2.1 Track allowlist mode flag and allowlisted address set
+  - [ ] 2.2 Track expected TTL extension outcomes (success/unauthorized/not-found)
+  - [ ] 2.3 Track expected quoted fee to compare against actual charge
+  - _Requirements: 2.1, 2.3, 2.4_
+
+- [ ] 3. Extend `ActionGenerator` for new actions
+  - [ ] 3.1 Generate `BumpTtl` actions with valid and invalid entry keys
+  - [ ] 3.2 Generate `QuoteCreationFee` actions with boundary fee values
+  - [ ] 3.3 Generate allowlist toggles and allowlisted-address mutations
+  - [ ] 3.4 Generate transfer/mint actions targeting allowlisted and non-allowlisted addresses
+  - _Requirements: 1.2, 1.4, 1.5_
+
+- [ ] 4. Extend `execute_stateful_fuzz()` for new actions
+  - [ ] 4.1 Execute `BumpTtl` and verify TTL extension / authorization errors
+  - [ ] 4.2 Execute `QuoteCreationFee` and record quoted value in model
+  - [ ] 4.3 Execute allowlist admin functions and update model
+  - [ ] 4.4 Execute transfer/mint and verify allowlist enforcement (reject non-allowlisted)
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
+
+- [ ] 5. Extend `verify_invariants()` with new invariants
+  - [ ] 5.1 TTL extension only succeeds for authorized callers and existing entries
+  - [ ] 5.2 Quoted creation fee equals the fee actually charged on creation
+  - [ ] 5.3 When allowlist mode is enabled, transfers/mints to non-allowlisted addresses are rejected
+  - [ ] 5.4 Allowlist mode can only be changed by admin
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [ ] 6. Add focused scenario tests
+  - [ ] 6.1 `test_ttl_bump_sequence()` - repeated bumps and unauthorized bumps
+  - [ ] 6.2 `test_fee_quote_equivalence_sequence()` - quote vs. actual charge across random options
+  - [ ] 6.3 `test_allowlist_enforcement_sequence()` - transfers/mints under allowlist mode
+  - [ ] 6.4 `test_allowlist_admin_sequence()` - admin management and unauthorized attempts
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [ ] 7. Add gas benchmarks for new operations
+  - [ ] 7.1 Benchmark TTL bump (single and repeated)
+  - [ ] 7.2 Benchmark fee quote view
+  - [ ] 7.3 Benchmark allowlist check on transfer and mint
+  - _Requirements: 5.3_
+
+- [ ] 8. Update documentation
+  - [ ] 8.1 Document new fuzz actions and invariants in module docs
+  - [ ] 8.2 Document replay instructions for new failure modes
+  - _Requirements: 4.3, 4.5, 5.5_
+
 ## Original Task Breakdown (For Reference)
 
 The original tasks are preserved below for historical reference. The actual implementation achieved the same goals through an alternative architecture.

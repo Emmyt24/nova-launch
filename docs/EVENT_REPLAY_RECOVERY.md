@@ -333,6 +333,49 @@ Clear all projections and rebuild from scratch.
 - 400: Confirmation not provided
 - 500: Rebuild failed
 
+### POST /admin/event-replay/range
+
+Reprocess events for an explicit ledger range, typically to replay events that
+failed before a parser bug was fixed. Parameters may be sent as a JSON body or
+as query parameters.
+
+| Parameter     | Required | Default | Description                                             |
+| ------------- | -------- | ------- | ------------------------------------------------------- |
+| `startLedger` | yes      | —       | First ledger to replay (inclusive, positive integer)    |
+| `endLedger`   | yes      | —       | Last ledger to replay (inclusive, `>= startLedger`)     |
+| `dryRun`      | no       | `true`  | Validate events without writing. Set `false` to persist |
+| `batchSize`   | no       | `100`   | Events per Horizon request (1–200)                      |
+| `maxRetries`  | no       | `5`     | Network retry attempts (0–10)                           |
+
+`dryRun` defaults to `true`. Run a dry run first, check `errors`, then send the
+same range again with `"dryRun": false`.
+
+```bash
+curl -X POST https://api.example.com/admin/event-replay/range \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"startLedger": 51200000, "endLedger": 51205000, "dryRun": false}'
+```
+
+The response matches `/admin/event-replay` and adds a `dryRun` flag.
+
+**Safeguards**
+
+- **Authorization:** `super_admin` only.
+- **Rate limit:** each admin gets `EVENT_REPLAY_RATE_LIMIT_MAX` requests (default 5)
+  per `EVENT_REPLAY_RATE_LIMIT_WINDOW_MS` window (default 15 minutes). Requests
+  over the limit get `429` with a `Retry-After` header.
+- **Single flight:** only one range replay runs per process at a time. A
+  concurrent request gets `409`.
+- **Range cap:** a range can cover at most `EVENT_REPLAY_MAX_LEDGER_SPAN` ledgers
+  (default 100000).
+- **Audit:** every replay that passes validation writes an `AdminAuditLog` row with
+  `action = EVENT_REPLAY_RANGE` and `resourceId = "<start>-<end>"`. The row stores
+  the request parameters in `beforeState` and the outcome in `afterState`
+  (`status`, `eventsProcessed`, `eventsSkipped`, `errorCount`, `finalCursor`,
+  `duration`, or `error` on failure). You can query these rows through
+  `GET /api/admin/audit?action=EVENT_REPLAY_RANGE`.
+
 ## Related Documentation
 
 - [Backup and Recovery](./BACKUP_API.md)

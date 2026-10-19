@@ -61,6 +61,9 @@ vi.mock("prom-client", () => ({
   Gauge: class {
     set = vi.fn();
   },
+  Counter: class {
+    inc = vi.fn();
+  },
 }));
 
 // Now safe to import
@@ -73,6 +76,7 @@ import {
   HorizonTransport,
   MAX_CATCHUP_LEDGERS,
 } from "../services/stellarEventListener";
+import { ListenerLagTracker } from "../lib/metrics/listenerLagMetrics";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -318,5 +322,89 @@ describe("StellarEventListener: MAX_CATCHUP_LEDGERS catchup policy (#1370)", () 
 
     expect((listener as any).lastCursor).toBeNull();
     expect(transport.getCurrentLedger).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Chain head vs processed ledger lag metrics (#2200) ──────────────────────
+
+describe("StellarEventListener: ledger lag metrics (#2200)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function buildListener(transport: HorizonTransport) {
+    const listener = new StellarEventListener(transport);
+    const tracker = new ListenerLagTracker();
+    (listener as any).lagTracker = tracker;
+    (listener as any).cursorStore = new EventCursorStore(buildMockPrisma());
+    (listener as any).fencingToken = 1;
+    (listener as any).leaderElection = { validateFencingToken: vi.fn().mockResolvedValue(true) };
+    return { listener, tracker };
+  }
+
+  it("records each processed event ledger against the chain head", async () => {
+    const transport: HorizonTransport = {
+      getEvents: vi.fn().mockResolvedValueOnce({
+        data: { _embedded: { records: [makeStellarEvent(100, 1), makeStellarEvent(105, 1)] } },
+      }),
+      getCurrentLedger: vi.fn().mockResolvedValue(120),
+    };
+    const { listener, tracker } = buildListener(transport);
+
+    await (listener as any).refreshChainHeadIfDue();
+    await (listener as any).fetchAndProcessEvents();
+
+    expect(listener.getLedgerLag()).toEqual({ latestLedger: 120, processedLedger: 105, lag: 15 });
+    expect(tracker.snapshot().lag).toBe(15);
+  });
+
+  it("throttles chain head lookups to the refresh interval", async () => {
+    const transport: HorizonTransport = {
+      getEvents: vi.fn(),
+      getCurrentLedger: vi.fn().mockResolvedValue(500),
+    };
+    const { listener } = buildListener(transport);
+
+    await (listener as any).refreshChainHeadIfDue();
+    await (listener as any).refreshChainHeadIfDue();
+
+    expect(transport.getCurrentLedger).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts head fetch failures without throwing", async () => {
+    const transport: HorizonTransport = {
+      getEvents: vi.fn(),
+      getCurrentLedger: vi.fn().mockRejectedValue(new Error("horizon down")),
+    };
+    const { listener, tracker } = buildListener(transport);
+    const failureSpy = vi.spyOn(tracker, "recordHeadFetchFailure");
+
+    await expect((listener as any).refreshChainHeadIfDue()).resolves.toBeUndefined();
+    expect(failureSpy).toHaveBeenCalledTimes(1);
+    expect(tracker.snapshot().latestLedger).toBeNull();
+  });
+
+  it("treats a null head as a fetch failure", async () => {
+    const transport: HorizonTransport = {
+      getEvents: vi.fn(),
+      getCurrentLedger: vi.fn().mockResolvedValue(null),
+    };
+    const { listener, tracker } = buildListener(transport);
+    const failureSpy = vi.spyOn(tracker, "recordHeadFetchFailure");
+
+    await (listener as any).refreshChainHeadIfDue();
+    expect(failureSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("seeds lag from the stored cursor during the catchup check", async () => {
+    const transport: HorizonTransport = {
+      getEvents: vi.fn(),
+      getCurrentLedger: vi.fn().mockResolvedValue(1100),
+    };
+    const { listener } = buildListener(transport);
+    (listener as any).cursorStore = new EventCursorStore(buildMockPrisma("1000-1"));
+    (listener as any).lastCursor = "1000-1";
+
+    await (listener as any).applyCatchupPolicyIfNeeded();
+
+    expect(listener.getLedgerLag()).toEqual({ latestLedger: 1100, processedLedger: 1000, lag: 100 });
   });
 });

@@ -146,6 +146,8 @@ pub enum ProposalStatus {
     Rejected,
     Failed,
     Executed,
+    /// Cancelled by the proposer before any vote was cast (#2239).
+    Cancelled,
 }
 
 /// A single vote cast on a proposal.

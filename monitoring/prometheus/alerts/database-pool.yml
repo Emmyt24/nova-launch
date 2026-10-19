@@ -1,0 +1,34 @@
+##############################################################################
+# Alert Rules — Database connection pool (see docs/DB_POOL_METRICS.md)
+##############################################################################
+
+groups:
+  - name: database_pool_alerts
+    interval: 30s
+    rules:
+      # Pool saturation (active / DB_POOL_SIZE) stays high: requests are close
+      # to queueing for a connection.
+      - alert: DatabasePoolSaturationHigh
+        expr: db_pool_saturation > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "DB pool saturation above 80% on {{ $labels.instance }}"
+          description: >
+            Pool saturation is {{ $value | humanizePercentage }}. Consider raising
+            DB_POOL_SIZE or reducing query concurrency.
+
+      # Queries are queued beyond pool capacity: requests are already waiting.
+      - alert: DatabasePoolQueriesWaiting
+        expr: db_connections_waiting > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Queries are waiting for a DB connection on {{ $labels.instance }}"
+          description: >
+            {{ $value }} queries are queued beyond pool capacity. Requests will
+            time out if this persists.

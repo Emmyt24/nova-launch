@@ -12,6 +12,7 @@ import { authenticateAdmin } from '../../middleware/auth';
 import { successResponse, errorResponse } from '../../utils/response';
 import { runNetworkValidation } from '../../config/startupValidation';
 import { validateEnv } from '../../config/env';
+import { getEndpointHealthReport } from '../../services/rpcFailover';
 
 const router = Router();
 
@@ -24,13 +25,18 @@ const router = Router();
  *     horizon: { reachable: boolean; latencyMs: number | null; passphraseMatches: boolean }
  *     rpc:     { reachable: boolean }
  *     ipfs:    { reachable: boolean }
+ *     endpoints: {
+ *       horizon: { active: string | null; endpoints: Array<{ url: string; healthy: boolean; latencyMs: number | null; lastCheckedAt: string | null; lastError: string | null }> }
+ *       rpc:     { active: string | null; endpoints: Array<{ url: string; healthy: boolean; latencyMs: number | null; lastCheckedAt: string | null; lastError: string | null }> }
+ *     }
  *   }
  */
 router.get('/', authenticateAdmin, async (_req, res) => {
   try {
     const env = validateEnv();
     const report = await runNetworkValidation(env);
-    res.json(successResponse(report));
+    const endpoints = getEndpointHealthReport();
+    res.json(successResponse({ ...report, endpoints }));
   } catch (error) {
     console.error('Network validation error:', error);
     res.status(500).json(

@@ -256,6 +256,46 @@ export class Database {
   }
 
   /**
+   * Paginated audit log query. Filtering, ordering and pagination are pushed
+   * down to the database so large audit tables are never loaded in full.
+   */
+  static async queryAuditLogs(query: {
+    adminId?: string;
+    action?: string;
+    resource?: string;
+    startDate?: Date;
+    endDate?: Date;
+    skip: number;
+    take: number;
+  }): Promise<{ logs: AuditLog[]; total: number }> {
+    const where = {
+      ...(query.adminId ? { adminId: query.adminId } : {}),
+      ...(query.action ? { action: { contains: query.action } } : {}),
+      ...(query.resource ? { resource: query.resource } : {}),
+      ...(query.startDate || query.endDate
+        ? {
+            timestamp: {
+              ...(query.startDate ? { gte: query.startDate } : {}),
+              ...(query.endDate ? { lte: query.endDate } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.adminAuditLog.findMany({
+        where,
+        orderBy: [{ timestamp: "desc" }, { id: "desc" }],
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.adminAuditLog.count({ where }),
+    ]);
+
+    return { logs: rows.map(mapAuditLog), total };
+  }
+
+  /**
    * Test-only helper: delete all audit log rows created during a test.
    * Not used by production code paths.
    */

@@ -44,7 +44,16 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
   );
 
   const { network, setNetwork } = useNetwork();
-  const { wallet, connect, disconnect, isConnecting, isRestoring } = useWallet({ network });
+  const {
+    wallet,
+    connect,
+    disconnect,
+    isConnecting,
+    isRestoring,
+    availableWallets,
+    selectedWalletId,
+    selectWallet,
+  } = useWallet({ network });
 
   useEffect(() => {
     const handlePopState = () => {
@@ -181,12 +190,26 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
           connect={connect}
           disconnect={disconnect}
           isConnecting={isConnecting}
+          availableWallets={availableWallets}
+          selectedWalletId={selectedWalletId}
+          onSelectWallet={selectWallet}
         />
       );
     }
 
     return <NotFoundRoute />;
-  }, [pathname, wallet, connect, disconnect, isConnecting, network, setNetwork]);
+  }, [
+    pathname,
+    wallet,
+    connect,
+    disconnect,
+    isConnecting,
+    network,
+    setNetwork,
+    availableWallets,
+    selectedWalletId,
+    selectWallet,
+  ]);
 
   if (isRestoring) return <PageLoader />;
 

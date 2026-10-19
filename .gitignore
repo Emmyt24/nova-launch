@@ -100,3 +100,6 @@ git-diag.txt
 !frontend/docs/DEPLOY_PROGRESS_STEPPER.md
 
 !docs/security/**
+
+# Generated backend env reference — must be committed (checked in CI, #2211)
+!backend/docs/ENVIRONMENT.md

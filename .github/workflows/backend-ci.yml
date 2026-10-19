@@ -59,10 +59,19 @@ jobs:
             exit 1;
           }
 
+      # Blocking: docs/ENVIRONMENT.md must match src/config/envSchema.ts (#2211)
+      - name: Verify environment variable reference is up to date
+        run: npm run docs:env:check
+
       # Blocking: route responses must match the documented OpenAPI schemas
       # (tokens, streams, vaults, governance). See backend/docs/OPENAPI_CONTRACT_TESTS.md.
       - name: OpenAPI contract tests (fail on drift)
         run: npm run test:contract
+
+      # Blocking: retry exhaustion → dead-letter → redelivery flow (#2212).
+      # See docs/WEBHOOK_RETRY_DLQ_TESTS.md.
+      - name: Webhook retry and dead-letter integration tests
+        run: npm run test:webhook-dlq
 
       - name: Run tests
         run: npm test -- --run --coverage || true

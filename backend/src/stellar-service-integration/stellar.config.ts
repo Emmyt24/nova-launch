@@ -1,3 +1,10 @@
+export type ExplorerProvider = "stellar.expert" | "stellarchain";
+
+export interface ExplorerConfig {
+  provider: ExplorerProvider;
+  baseUrl: string;
+}
+
 export interface StellarConfig {
   network: "testnet" | "mainnet";
   horizonUrl: string;
@@ -19,6 +26,7 @@ export interface StellarConfig {
     successThreshold: number;
     timeoutMs: number;
   };
+  explorer: ExplorerConfig;
 }
 
 export const DEFAULT_STELLAR_CONFIG: StellarConfig = {
@@ -41,5 +49,9 @@ export const DEFAULT_STELLAR_CONFIG: StellarConfig = {
     failureThreshold: 5,
     successThreshold: 2,
     timeoutMs: 60000, // 1 minute
+  },
+  explorer: {
+    provider: "stellar.expert",
+    baseUrl: "https://stellar.expert/explorer/testnet",
   },
 };

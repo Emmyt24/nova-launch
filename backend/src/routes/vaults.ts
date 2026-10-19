@@ -66,8 +66,18 @@ import { Router } from "express";
 import { StreamStatus, StreamWithdrawalType } from "@prisma/client";
 import { streamProjectionService } from "../services/streamProjectionService";
 import { successResponse, errorResponse } from "../utils/response";
+import { getTxUrl } from "../config/explorer";
+import { config } from "../config/env";
 
 const router = Router();
+
+/**
+ * Build an explorer link for a transaction hash using the centralized
+ * explorer configuration, so callers never have to hardcode explorer URLs.
+ */
+function txExplorerUrl(txHash: string): string {
+  return getTxUrl(txHash, config.network, config.explorerProvider);
+}
 
 function parseListOpts(query: any) {
   const limit = Math.min(parseInt(query.limit as string) || 50, 200);
@@ -168,6 +178,7 @@ router.get("/:id/withdrawals", async (req, res) => {
       amount: w.amount,
       timestamp: w.timestamp.toISOString(),
       txHash: w.txHash,
+      explorerUrl: txExplorerUrl(w.txHash),
       recipient: w.recipient,
     }));
 

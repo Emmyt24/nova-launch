@@ -36,6 +36,7 @@ import {
 import { IntegrationMetrics } from "../lib/metrics";
 import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 import { getNotificationPreferences, isNotificationChannelEnabled } from "./notificationPreferences";
+import { getExplorerUrl, getTxUrl, getContractUrl } from "../config/explorer";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -628,6 +629,18 @@ export class NotificationService {
       actionUrl: "https://nova-launch.app",
       ...(payload.metadata as Record<string, string> | undefined ?? {}),
     };
+
+    // Build explorer links through the centralized explorer configuration so
+    // templates never hardcode a block explorer host or URL shape.
+    const network = payload.network ?? process.env.STELLAR_NETWORK;
+    const explorerBaseUrl = getExplorerUrl(network);
+    templateVars.explorerUrl = explorerBaseUrl;
+    if (payload.tokenAddress) {
+      templateVars.contractUrl = getContractUrl(payload.tokenAddress, network);
+    }
+    if (payload.txHash) {
+      templateVars.txUrl = getTxUrl(payload.txHash, network);
+    }
     const htmlBody = templateKey
       ? renderTemplate(templateKey, templateVars)
       : payload.message;

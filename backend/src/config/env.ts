@@ -22,6 +22,13 @@ const NETWORK_DEFAULTS: Record<Network, { horizonUrl: string; sorobanRpcUrl: str
   },
 };
 
+export type ExplorerProvider = 'stellar.expert' | 'stellarchain';
+
+export const SUPPORTED_EXPLORER_PROVIDERS: readonly ExplorerProvider[] = [
+  'stellar.expert',
+  'stellarchain',
+];
+
 export interface BackendEnv {
   NODE_ENV: string;
   PORT: number;
@@ -29,6 +36,8 @@ export interface BackendEnv {
   STELLAR_HORIZON_URL: string;
   STELLAR_SOROBAN_RPC_URL: string;
   STELLAR_NETWORK_PASSPHRASE: string;
+  STELLAR_EXPLORER_PROVIDER: ExplorerProvider;
+  STELLAR_EXPLORER_BASE_URL?: string;
   FACTORY_CONTRACT_ID: string;
   DATABASE_URL: string;
   JWT_SECRET: string;
@@ -71,6 +80,31 @@ export function validateEnv(): BackendEnv {
   }
 
   const defaults = NETWORK_DEFAULTS[network];
+
+  const rawExplorerProvider = process.env.STELLAR_EXPLORER_PROVIDER || 'stellar.expert';
+  if (!SUPPORTED_EXPLORER_PROVIDERS.includes(rawExplorerProvider as ExplorerProvider)) {
+    throw new Error(
+      `STELLAR_EXPLORER_PROVIDER must be one of ${SUPPORTED_EXPLORER_PROVIDERS.map((p) => `"${p}"`).join(', ')}, ` +
+      `got "${rawExplorerProvider}".`
+    );
+  }
+  const explorerProvider = rawExplorerProvider as ExplorerProvider;
+
+  const rawExplorerBaseUrl = process.env.STELLAR_EXPLORER_BASE_URL;
+  let explorerBaseUrl: string | undefined;
+  if (rawExplorerBaseUrl) {
+    try {
+      const parsed = new URL(rawExplorerBaseUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('unsupported protocol');
+      }
+      explorerBaseUrl = rawExplorerBaseUrl.replace(/\/+$/, '');
+    } catch {
+      throw new Error(
+        `STELLAR_EXPLORER_BASE_URL must be a valid http(s) URL, got "${rawExplorerBaseUrl}".`
+      );
+    }
+  }
 
   const factoryContractId = process.env.FACTORY_CONTRACT_ID || '';
   if (isProduction && !factoryContractId) {
@@ -140,6 +174,8 @@ export function validateEnv(): BackendEnv {
     STELLAR_HORIZON_URL: process.env.STELLAR_HORIZON_URL || defaults.horizonUrl,
     STELLAR_SOROBAN_RPC_URL: process.env.STELLAR_SOROBAN_RPC_URL || defaults.sorobanRpcUrl,
     STELLAR_NETWORK_PASSPHRASE: process.env.STELLAR_NETWORK_PASSPHRASE || defaults.networkPassphrase,
+    STELLAR_EXPLORER_PROVIDER: explorerProvider,
+    STELLAR_EXPLORER_BASE_URL: explorerBaseUrl,
     FACTORY_CONTRACT_ID: factoryContractId,
     DATABASE_URL: databaseUrl,
     JWT_SECRET: jwtSecret,

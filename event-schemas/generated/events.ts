@@ -118,6 +118,68 @@ export interface TokenDeployedEventPayloadVariant2 {
 }
 
 /**
+ * Published when a fee parameter is changed. Includes both the previous and the new value so consumers can build a complete audit trail. `schemaVersion` 2 adds `previousValue`/`newValue`; version 1 payloads only carried the new value.
+ *
+ * Event type: `fee.parameter.changed`
+ */
+export interface FeeParameterChangedEventPayload {
+  /** Schema version for this event type. Bump on breaking changes. */
+  schemaVersion?: 2;
+  /** Owning token's creator address, used for tenant scoping (TenantScopedPayload). */
+  creatorAddress: string;
+  /** Identifier of the fee parameter that changed (e.g. "transferFeeBps"). */
+  parameter: string;
+  /** Value of the fee parameter before the change — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive. */
+  previousValue: unknown;
+  /** Value of the fee parameter after the change — stringified bigint (string) or raw bigint depending on the publisher; type intentionally unconstrained since JSON Schema has no bigint primitive. */
+  newValue: unknown;
+  /** Address that performed the fee parameter change. */
+  changedBy: string;
+  txHash: string;
+  timestamp: string;
+}
+
+/**
+ * Published when the token transfer allowlist mode is enabled or disabled. Consumed by admin tooling and compliance audit trails.
+ *
+ * Event type: `token.allowlist.modeChanged`
+ */
+export interface TokenAllowlistModeChangedEventPayload {
+  /** Schema version for this event type. Bump on breaking changes. */
+  schemaVersion?: 1;
+  /** Owning token's creator address, used for tenant scoping (TenantScopedPayload). */
+  creatorAddress: string;
+  tokenAddress: string;
+  /** Whether allowlist (restricted transfer) mode is now enabled. */
+  enabled: boolean;
+  /** Address that changed the allowlist mode. */
+  changedBy: string;
+  txHash: string;
+  timestamp: string;
+}
+
+/**
+ * Published when an address is added to or removed from a token's transfer allowlist.
+ *
+ * Event type: `token.allowlist.updated`
+ */
+export interface TokenAllowlistUpdatedEventPayload {
+  /** Schema version for this event type. Bump on breaking changes. */
+  schemaVersion?: 1;
+  /** Owning token's creator address, used for tenant scoping (TenantScopedPayload). */
+  creatorAddress: string;
+  tokenAddress: string;
+  /** Address whose allowlist status changed. */
+  account: string;
+  /** Whether the account is now allowed to transfer/mint. */
+  allowed: boolean;
+  /** Address that performed the allowlist update. */
+  changedBy: string;
+  txHash: string;
+  timestamp: string;
+}
+
+/**
  * Published when a vesting/locking vault reaches maturity and is released. Consumed by the GraphQL `vaultMatured` subscription (backend/src/graphql/resolvers.ts, SUBSCRIPTION_TOPICS.vaultMatured).
  *
  * Event type: `vault.matured`
@@ -139,8 +201,11 @@ export interface VaultMaturedEventPayload {
 export interface EventPayloadMap {
   "burn.executed": BurnExecutedEventPayload;
   "example.generic": ExampleGenericEventPayload;
+  "fee.parameter.changed": FeeParameterChangedEventPayload;
   "governance.proposal.statusChanged": GovernanceProposalStatusChangedEventPayload;
   "governance.proposal.voteCast": GovernanceProposalVoteCastEventPayload;
+  "token.allowlist.modeChanged": TokenAllowlistModeChangedEventPayload;
+  "token.allowlist.updated": TokenAllowlistUpdatedEventPayload;
   "token.deployed": TokenDeployedEventPayload;
   "vault.matured": VaultMaturedEventPayload;
 }
@@ -149,8 +214,11 @@ export interface EventPayloadMap {
 export const EVENT_SCHEMA_VERSIONS = {
   "burn.executed": 1,
   "example.generic": 1,
+  "fee.parameter.changed": 2,
   "governance.proposal.statusChanged": 1,
   "governance.proposal.voteCast": 1,
+  "token.allowlist.modeChanged": 1,
+  "token.allowlist.updated": 1,
   "token.deployed": 1,
   "vault.matured": 1,
 } as const;

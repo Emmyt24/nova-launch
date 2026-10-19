@@ -18,6 +18,14 @@ const CampaignDashboard = lazy(() => import("./app/dashboard/CampaignDashboard")
 const GovernancePage = lazy(() => import("./pages/GovernancePage"));
 const StreamDashboard = lazy(() => import("./components/Streams/StreamDashboard"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+// Token creation fee quote + transfer allowlist admin tooling.
+// Usage docs: see `frontend/docs/token-fees-and-allowlist.md`.
+//   - `useTokenCreationFeeQuote(options)` mirrors the on-chain creation charge
+//     so clients can preview the exact fee before signing.
+//   - `useTokenAllowlist(tokenAddress)` exposes admin management calls
+//     (add/remove entries, enable/disable allowlist mode) for tokens created
+//     with allowlist mode enabled.
+const TokenAdminPage = lazy(() => import("./pages/TokenAdminPage"));
 // Analytics pulls in recharts; keep it (and the chart chunk) off the initial load.
 const TokenAnalyticsPage = lazy(() => import("./pages/TokenAnalyticsPage"));
 // Dev-only tooling: never part of the production entry chunk.
@@ -30,6 +38,7 @@ const PerformanceDashboard = import.meta.env.DEV
   : null;
 
 const ANALYTICS_ROUTE = /^\/analytics\/([A-Za-z0-9]+)$/;
+const TOKEN_ADMIN_ROUTE = /^\/tokens\/([A-Za-z0-9]+)\/admin$/;
 
 function normalizePath(pathname: string): string {
   if (pathname.length > 1 && pathname.endsWith("/")) {
@@ -155,6 +164,21 @@ function App({ compatibilityInfo }: { compatibilityInfo?: CompatibilityInfo }) {
           currentPath={pathname}
         >
           <SettingsPage network={network} onNetworkChange={setNetwork} />
+        </DashboardLayout>
+      );
+    }
+
+    const tokenAdminMatch = TOKEN_ADMIN_ROUTE.exec(pathname);
+    if (tokenAdminMatch) {
+      return (
+        <DashboardLayout
+          wallet={wallet}
+          onConnect={connect}
+          onDisconnect={disconnect}
+          isConnecting={isConnecting}
+          currentPath={pathname}
+        >
+          <TokenAdminPage address={tokenAdminMatch[1]} wallet={wallet} />
         </DashboardLayout>
       );
     }

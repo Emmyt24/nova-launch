@@ -241,7 +241,9 @@ export type WebhookEventType =
   | "token.burn.self"
   | "token.burn.admin"
   | "token.created"
-  | "token.metadata.updated";
+  | "token.metadata.updated"
+  | "token.fee.changed"
+  | "token.allowlist.updated";
 
 export interface WebhookSubscriptionRecord {
   id: string;
@@ -296,3 +298,73 @@ export interface WebhookTestResponse {
   success: boolean;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Contract events  –  versioned event payloads
+// ---------------------------------------------------------------------------
+
+/**
+ * Version tag carried by every contract event payload. Consumers must
+ * dispatch on `version` so that older parsers keep working when new fields
+ * are added (wire compatibility via event versioning).
+ */
+export type ContractEventVersion = "v1" | "v2";
+
+/**
+ * Fee parameter change event (issue #2243).
+ *
+ * `v1` payloads only carried the new value; `v2` adds the previous value so
+ * audit trails are complete. Parsers should treat `oldValue` as optional and
+ * fall back to `null` when reading `v1` events.
+ */
+export interface FeeChangeEventV1 {
+  version: "v1";
+  event: "fee.changed";
+  /** BigInt serialised as string */
+  newValue: string;
+  changedBy: string;
+  timestamp: string;
+}
+
+export interface FeeChangeEventV2 {
+  version: "v2";
+  event: "fee.changed";
+  /** BigInt serialised as string — value before the change */
+  oldValue: string;
+  /** BigInt serialised as string — value after the change */
+  newValue: string;
+  changedBy: string;
+  timestamp: string;
+}
+
+export type FeeChangeEvent = FeeChangeEventV1 | FeeChangeEventV2;
+
+/**
+ * Allowlist (whitelist) mode events (issue #2245).
+ *
+ * Emitted when allowlist mode is toggled at creation or by an admin, and when
+ * individual addresses are added to / removed from the allowlist.
+ */
+export interface AllowlistModeChangedEvent {
+  version: "v1";
+  event: "allowlist.mode_changed";
+  /** Whether allowlist mode is now enabled */
+  enabled: boolean;
+  changedBy: string;
+  timestamp: string;
+}
+
+export interface AllowlistAddressUpdatedEvent {
+  version: "v1";
+  event: "allowlist.address_updated";
+  address: string;
+  /** `true` when the address was added, `false` when removed */
+  allowed: boolean;
+  changedBy: string;
+  timestamp: string;
+}
+
+export type AllowlistEvent = AllowlistModeChangedEvent | AllowlistAddressUpdatedEvent;
+
+/** Discriminated union of all versioned contract events. */
+export type ContractEvent = FeeChangeEvent | AllowlistEvent;

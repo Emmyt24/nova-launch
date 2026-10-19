@@ -1089,6 +1089,331 @@ fn test_governance_proposal_all_action_types() {
     }
 }
 
+// ============================================================================
+// TTL Extension Tests - Issue #2242
+// ============================================================================
+
+#[test]
+fn test_ttl_bump_on_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Advance ledger time significantly
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10_000;
+        li.timestamp += 10_000;
+    });
+
+    // Accessing state should bump TTL without error
+    let state = client.get_state();
+    assert_eq!(state.admin, admin);
+
+    // Accessing again after further advancement should still succeed
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10_000;
+        li.timestamp += 10_000;
+    });
+    let state2 = client.get_state();
+    assert_eq!(state2.treasury, treasury);
+}
+
+#[test]
+fn test_admin_bump_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Advance ledger time
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 5_000;
+        li.timestamp += 5_000;
+    });
+
+    // Admin bump should succeed
+    client.bump_ttl(&admin);
+
+    // State remains intact after bump
+    let state = client.get_state();
+    assert_eq!(state.admin, admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_admin_bump_ttl_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.bump_ttl(&non_admin);
+}
+
+// ============================================================================
+// Fee Change Event Tests - Issue #2243
+// ============================================================================
+
+#[test]
+fn test_fee_update_event_v1_payload() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Update fees; event should be emitted with old and new values
+    client.update_fees(&admin, &Some(100_000_000), &Some(50_000_000));
+
+    let state = client.get_state();
+    assert_eq!(state.base_fee, 100_000_000);
+    assert_eq!(state.metadata_fee, 50_000_000);
+}
+
+#[test]
+fn test_fee_update_event_v2_payload_parsing() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    // Partial update: only base fee changes
+    client.update_fees(&admin, &Some(90_000_000), &None);
+    let state = client.get_state();
+    assert_eq!(state.base_fee, 90_000_000);
+    assert_eq!(state.metadata_fee, 30_000_000);
+
+    // Partial update: only metadata fee changes
+    client.update_fees(&admin, &None, &Some(40_000_000));
+    let state = client.get_state();
+    assert_eq!(state.base_fee, 90_000_000);
+    assert_eq!(state.metadata_fee, 40_000_000);
+}
+
+// ============================================================================
+// Fee Quote Equivalence Tests - Issue #2244
+// ============================================================================
+
+#[test]
+fn test_fee_quote_without_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let base_fee = 70_000_000;
+    let metadata_fee = 30_000_000;
+    client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+    let quote = client.quote_creation_fee(&false);
+    assert_eq!(quote, base_fee);
+
+    // Actual charge should match quote
+    let token_address = client.create_token(
+        &creator,
+        &String::from_str(&env, "Quote Test"),
+        &String::from_str(&env, "QTST"),
+        &7,
+        &1_000_000,
+        &None,
+        &quote,
+    );
+    let info = client.get_token_info_by_address(&token_address);
+    assert_eq!(info.creator, creator);
+}
+
+#[test]
+fn test_fee_quote_with_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let base_fee = 70_000_000;
+    let metadata_fee = 30_000_000;
+    client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+    let quote = client.quote_creation_fee(&true);
+    assert_eq!(quote, base_fee + metadata_fee);
+
+    // Actual charge should match quote
+    let token_address = client.create_token(
+        &creator,
+        &String::from_str(&env, "Quote Meta"),
+        &String::from_str(&env, "QMT"),
+        &7,
+        &1_000_000,
+        &Some(String::from_str(&env, "ipfs://QmQuote")),
+        &quote,
+    );
+    let info = client.get_token_info_by_address(&token_address);
+    assert_eq!(info.creator, creator);
+}
+
+#[test]
+fn test_fee_quote_reflects_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    assert_eq!(client.quote_creation_fee(&false), 70_000_000);
+    assert_eq!(client.quote_creation_fee(&true), 100_000_000);
+
+    client.update_fees(&admin, &Some(120_000_000), &Some(80_000_000));
+
+    assert_eq!(client.quote_creation_fee(&false), 120_000_000);
+    assert_eq!(client.quote_creation_fee(&true), 200_000_000);
+}
+
+// ============================================================================
+// Allowlist Mode Tests - Issue #2245
+// ============================================================================
+
+#[test]
+fn test_allowlist_mode_transfer_enforcement() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let allowed = Address::generate(&env);
+    let blocked = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = client.create_token(
+        &creator,
+        &String::from_str(&env, "Allow Token"),
+        &String::from_str(&env, "ALW"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    // Enable allowlist mode
+    client.set_allowlist_mode(&admin, &token_address, &true);
+    assert!(client.is_allowlist_mode(&token_address));
+
+    // Add allowed address
+    client.add_to_allowlist(&admin, &token_address, &allowed);
+    assert!(client.is_allowlisted(&token_address, &allowed));
+    assert!(!client.is_allowlisted(&token_address, &blocked));
+
+    // Transfer to allowed address succeeds
+    client.transfer(&token_address, &creator, &allowed, &100_000);
+
+    // Remove from allowlist
+    client.remove_from_allowlist(&admin, &token_address, &allowed);
+    assert!(!client.is_allowlisted(&token_address, &allowed));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_allowlist_management_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let target = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = client.create_token(
+        &creator,
+        &String::from_str(&env, "Unauth Allow"),
+        &String::from_str(&env, "UALW"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    client.add_to_allowlist(&non_admin, &token_address, &target);
+}
+
+#[test]
+fn test_allowlist_mode_mint_enforcement() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = client.create_token(
+        &creator,
+        &String::from_str(&env, "Mint Allow"),
+        &String::from_str(&env, "MALW"),
+        &7,
+        &1_000_000,
+        &None,
+        &70_000_000,
+    );
+
+    client.set_allowlist_mode(&admin, &token_address, &true);
+    client.add_to_allowlist(&admin, &token_address, &recipient);
+
+    // Mint to allowlisted recipient succeeds
+    client.mint_tokens(&admin, &token_address, &recipient, &500_000);
+
+    let info = client.get_token_info_by_address(&token_address);
+    assert_eq!(info.total_supply, 1_500_000);
+}
+
 #[test]
 fn test_governance_proposal_state_flags() {
     let env = Env::default();

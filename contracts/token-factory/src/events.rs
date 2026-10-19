@@ -256,6 +256,47 @@ pub fn emit_fees_updated_v2(env: &Env, admin: &Address, base_fee: i128, metadata
     );
 }
 
+/// Emit fees updated event (v3) — includes previous and new values (#2243)
+///
+/// **Schema Version**: 3
+/// **Event Name**: fee_up_v3
+///
+/// **Topics** (indexed):
+/// - Event name: "fee_up_v3"
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who performed the fee update
+/// - old_base_fee: i128 - Previous base fee amount in stroops
+/// - new_base_fee: i128 - New base fee amount in stroops
+/// - old_metadata_fee: i128 - Previous metadata fee amount in stroops
+/// - new_metadata_fee: i128 - New metadata fee amount in stroops
+///
+/// **Wire Compatibility**: The v1 (`fee_up_v1`) and v2 (`fee_up_v2`) events are
+/// still emitted alongside this event so existing indexers/parsers that only
+/// understand the older shapes continue to work. New consumers should prefer
+/// this event since it carries the full audit trail (old and new values).
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fees_updated_v3(
+    env: &Env,
+    admin: &Address,
+    old_base_fee: i128,
+    new_base_fee: i128,
+    old_metadata_fee: i128,
+    new_metadata_fee: i128,
+) {
+    env.events().publish(
+        (symbol_short!("fee_up_v3"),),
+        (
+            admin.clone(),
+            old_base_fee,
+            new_base_fee,
+            old_metadata_fee,
+            new_metadata_fee,
+        ),
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Fee Update Governance Events (#1385)
 // ═══════════════════════════════════════════════════════════════════════
@@ -348,6 +389,49 @@ pub fn emit_fee_update_executed(
     env.events().publish(
         (symbol_short!("fe_ex_v1"), proposal_id),
         (executor.clone(), base_fee, metadata_fee),
+    );
+}
+
+/// Emit fee update executed event (v2) — includes previous and new values (#2243)
+///
+/// Published alongside `fe_ex_v1` when a queued `FeeChange` proposal executes,
+/// carrying the full before/after audit trail for both fee parameters.
+///
+/// **Schema Version**: 2
+/// **Event Name**: fe_ex_v2
+///
+/// **Topics** (indexed):
+/// - Event name: "fe_ex_v2"
+/// - proposal_id: u64
+///
+/// **Payload** (non-indexed):
+/// - executor: Address - Address that triggered execution (the original proposer)
+/// - old_base_fee: i128 - Base fee in effect before execution, in stroops
+/// - new_base_fee: i128 - Base fee now in effect, in stroops
+/// - old_metadata_fee: i128 - Metadata fee in effect before execution, in stroops
+/// - new_metadata_fee: i128 - Metadata fee now in effect, in stroops
+///
+/// **Wire Compatibility**: `fe_ex_v1` remains emitted for older parsers.
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_fee_update_executed_v2(
+    env: &Env,
+    proposal_id: u64,
+    executor: &Address,
+    old_base_fee: i128,
+    new_base_fee: i128,
+    old_metadata_fee: i128,
+    new_metadata_fee: i128,
+) {
+    env.events().publish(
+        (symbol_short!("fe_ex_v2"), proposal_id),
+        (
+            executor.clone(),
+            old_base_fee,
+            new_base_fee,
+            old_metadata_fee,
+            new_metadata_fee,
+        ),
     );
 }
 
@@ -1671,6 +1755,79 @@ pub fn emit_trusted_caller_removed(env: &Env, admin: &Address, caller: &Address)
 pub fn emit_cross_contract_call(env: &Env, caller: &Address) {
     env.events()
         .publish((symbol_short!("cc_auth"),), (caller.clone(),));
+}
+
+// ── Token transfer allowlist mode (#2245) ─────────────────────────────────
+
+/// Emit allowlist mode toggled event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: alw_mod1
+///
+/// **Topics** (indexed):
+/// - Event name: "alw_mod1"
+/// - token_index: u32 - The token whose allowlist mode changed
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who toggled allowlist mode
+/// - enabled: bool - Whether allowlist mode is now enabled (true) or disabled (false)
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+///
+/// Emitted when an admin enables or disables restricted (allowlist-only)
+/// transfers for a token.
+pub fn emit_allowlist_mode_updated(env: &Env, token_index: u32, admin: &Address, enabled: bool) {
+    env.events().publish(
+        (symbol_short!("alw_mod1"), token_index),
+        (admin.clone(), enabled),
+    );
+}
+
+/// Emit allowlist entry added event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: alw_add1
+///
+/// **Topics** (indexed):
+/// - Event name: "alw_add1"
+/// - token_index: u32 - The token the entry applies to
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who added the entry
+/// - account: Address - The account now permitted to transfer/mint
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_allowlist_entry_added(env: &Env, token_index: u32, admin: &Address, account: &Address) {
+    env.events().publish(
+        (symbol_short!("alw_add1"), token_index),
+        (admin.clone(), account.clone()),
+    );
+}
+
+/// Emit allowlist entry removed event (v1)
+///
+/// **Schema Version**: 1
+/// **Event Name**: alw_rem1
+///
+/// **Topics** (indexed):
+/// - Event name: "alw_rem1"
+/// - token_index: u32 - The token the entry applies to
+///
+/// **Payload** (non-indexed):
+/// - admin: Address - The admin who removed the entry
+/// - account: Address - The account no longer permitted to transfer/mint
+///
+/// **Schema Stability**: This schema is immutable. Any changes require a new version.
+pub fn emit_allowlist_entry_removed(
+    env: &Env,
+    token_index: u32,
+    admin: &Address,
+    account: &Address,
+) {
+    env.events().publish(
+        (symbol_short!("alw_rem1"), token_index),
+        (admin.clone(), account.clone()),
+    );
 }
 
 // ── Issue #1131: Metadata content hash events ─────────────────────────────

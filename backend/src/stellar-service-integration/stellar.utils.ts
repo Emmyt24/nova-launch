@@ -79,6 +79,55 @@ export function formatTokenAmount(
 }
 
 /**
+ * Options accepted by the token creation fee quote view function.
+ * Mirrors the options accepted by the actual token creation charge logic.
+ */
+export interface TokenCreationFeeQuoteOptions {
+  /** Account (G...) or contract (C...) address of the token creator. */
+  creator: string;
+  /** Whether the token is being created as a wrapped asset. */
+  wrapped?: boolean;
+  /** Optional metadata bytes length, which may affect the fee tier. */
+  metadataLength?: number;
+}
+
+/**
+ * Encodes token creation fee quote options into a stable, deterministic
+ * string suitable for passing to the read-only quote view function.
+ * The encoding is order-independent so equivalent options always produce
+ * the same payload.
+ */
+export function encodeTokenCreationFeeQuoteOptions(
+  options: TokenCreationFeeQuoteOptions
+): string {
+  const normalized: Record<string, string> = {
+    creator: options.creator,
+    wrapped: options.wrapped ? "true" : "false",
+    metadataLength: String(options.metadataLength ?? 0),
+  };
+  return Object.keys(normalized)
+    .sort()
+    .map((key) => `${key}=${normalized[key]}`)
+    .join("&");
+}
+
+/**
+ * Decodes the raw quote result returned by the read-only view function.
+ * The view function returns the total fee in stroops as a string; this
+ * helper validates and normalizes it.
+ */
+export function decodeTokenCreationFeeQuoteResult(result: string | bigint): {
+  feeStroops: string;
+  feeXlm: string;
+} {
+  const feeStroops = BigInt(result).toString();
+  return {
+    feeStroops,
+    feeXlm: stroopsToXlm(feeStroops),
+  };
+}
+
+/**
  * Sleep utility for retry/backoff logic.
  */
 export function sleep(ms: number): Promise<void> {

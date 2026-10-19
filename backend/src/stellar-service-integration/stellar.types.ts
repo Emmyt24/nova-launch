@@ -81,3 +81,33 @@ export interface ContractCallOptions {
   timeout?: number;
   retries?: number;
 }
+
+export interface TokenCreationFeeQuoteOptions {
+  /** Account that would pay the creation fee. */
+  creator?: string;
+  /** Token name used for the quote (may affect metadata-based pricing). */
+  name?: string;
+  /** Token symbol used for the quote. */
+  symbol?: string;
+  /** Token decimals used for the quote. */
+  decimals?: number;
+  /** Initial supply used for the quote. */
+  initialSupply?: string;
+}
+
+export interface TokenCreationFeeQuote {
+  /** Total fee charged for token creation, in stroops. */
+  feeStroops: string;
+  /** Total fee charged for token creation, in XLM (decimal string). */
+  feeXlm: string;
+  /** Base fee component, in stroops. */
+  baseFeeStroops: string;
+  /** Additional fee component (e.g. metadata/supply based), in stroops. */
+  additionalFeeStroops: string;
+  /** Asset used to pay the fee. */
+  asset: string;
+  /** Whether the fee is currently waived (e.g. promotions or paused state). */
+  waived: boolean;
+  /** Ledger timestamp at which the quote was produced. */
+  quotedAt: string;
+}

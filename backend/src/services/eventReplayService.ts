@@ -291,7 +291,15 @@ export class EventReplayService {
     const topic = event.topic[0];
 
     // Token events
-    if (topic === 'tok_reg' || topic === 'tok_burn' || topic === 'adm_burn') {
+    if (
+      topic === 'tok_reg' ||
+      topic === 'tok_burn' ||
+      topic === 'adm_burn' ||
+      topic === 'fee_chg' ||
+      topic === 'fee_chg_v2' ||
+      topic === 'allowlist' ||
+      topic === 'allowlist_v2'
+    ) {
       await this.tokenEventParser.parseEvent(event as any);
       return;
     }

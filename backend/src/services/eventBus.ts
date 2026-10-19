@@ -45,6 +45,152 @@ export interface BusEvent<T = unknown> {
    * after a WebSocket reconnect (#1372).
    */
   sequence: number;
+  /**
+   * Schema version of the event payload (#2243). Absent on legacy events
+   * published before versioning was introduced; consumers should treat a
+   * missing `version` as `1`. New payload shapes bump this value so older
+   * parsers can keep working while newer ones read the richer payload.
+   */
+  version?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Versioned event payloads (#2243, #2245)
+// ---------------------------------------------------------------------------
+
+/**
+ * Current schema version for fee-change events. Version 2 adds the previous
+ * value alongside the new one so audit trails are complete; version 1
+ * payloads (new value only) remain parseable.
+ */
+export const FEE_CHANGE_EVENT_VERSION = 2;
+
+/** Current schema version for allowlist-mode change events (#2245). */
+export const ALLOWLIST_CHANGE_EVENT_VERSION = 1;
+
+/** Event type emitted when a fee parameter changes. */
+export const FEE_CHANGED_EVENT = "fee.changed";
+
+/** Event type emitted when a token's allowlist mode is toggled. */
+export const ALLOWLIST_MODE_CHANGED_EVENT = "token.allowlist_mode.changed";
+
+/**
+ * Payload for `fee.changed` (version 2). `oldValue` is `null` when the fee
+ * parameter had no prior value (e.g. first-time configuration).
+ */
+export interface FeeChangedPayload {
+  /** Version of this payload shape. */
+  version: number;
+  /** Identifier of the fee parameter that changed (e.g. "transfer_fee_bps"). */
+  parameter: string;
+  /** Previous value, or `null` if unset. */
+  oldValue: string | number | null;
+  /** New value. */
+  newValue: string | number;
+  /** Optional account/actor that performed the change. */
+  changedBy?: string;
+  /** Optional free-form reason for the change. */
+  reason?: string;
+}
+
+/**
+ * Payload for `token.allowlist_mode.changed` (#2245).
+ */
+export interface AllowlistModeChangedPayload {
+  /** Version of this payload shape. */
+  version: number;
+  /** Token contract address whose allowlist mode changed. */
+  tokenAddress: string;
+  /** Whether allowlist (restricted transfers) mode is now enabled. */
+  enabled: boolean;
+  /** Optional account/actor that performed the change. */
+  changedBy?: string;
+}
+
+/**
+ * Parse a `fee.changed` payload of any supported version into the current
+ * (v2) shape. Version 1 payloads carried only the new value, so `oldValue`
+ * is reported as `null` for them.
+ *
+ * @throws {Error} if the payload is not a recognised fee-change payload.
+ */
+export function parseFeeChangedPayload(payload: unknown): FeeChangedPayload {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid fee.changed payload: expected an object");
+  }
+  const raw = payload as Record<string, unknown>;
+  const version = typeof raw.version === "number" ? raw.version : 1;
+
+  if (version >= 2) {
+    if (typeof raw.parameter !== "string") {
+      throw new Error("Invalid fee.changed payload: missing parameter");
+    }
+    if (raw.newValue === undefined) {
+      throw new Error("Invalid fee.changed payload: missing newValue");
+    }
+    return {
+      version: FEE_CHANGE_EVENT_VERSION,
+      parameter: raw.parameter,
+      oldValue:
+        raw.oldValue === undefined
+          ? null
+          : (raw.oldValue as string | number | null),
+      newValue: raw.newValue as string | number,
+      changedBy: typeof raw.changedBy === "string" ? raw.changedBy : undefined,
+      reason: typeof raw.reason === "string" ? raw.reason : undefined,
+    };
+  }
+
+  // Version 1: only the new value was emitted.
+  if (typeof raw.parameter !== "string") {
+    throw new Error("Invalid fee.changed payload: missing parameter");
+  }
+  if (raw.value === undefined && raw.newValue === undefined) {
+    throw new Error("Invalid fee.changed payload: missing value");
+  }
+  return {
+    version: FEE_CHANGE_EVENT_VERSION,
+    parameter: raw.parameter,
+    oldValue: null,
+    newValue: (raw.newValue ?? raw.value) as string | number,
+    changedBy: typeof raw.changedBy === "string" ? raw.changedBy : undefined,
+    reason: typeof raw.reason === "string" ? raw.reason : undefined,
+  };
+}
+
+/**
+ * Parse a `token.allowlist_mode.changed` payload into the current shape.
+ *
+ * @throws {Error} if the payload is not a recognised allowlist-change payload.
+ */
+export function parseAllowlistModeChangedPayload(
+  payload: unknown
+): AllowlistModeChangedPayload {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error(
+      "Invalid token.allowlist_mode.changed payload: expected an object"
+    );
+  }
+  const raw = payload as Record<string, unknown>;
+  if (typeof raw.tokenAddress !== "string") {
+    throw new Error(
+      "Invalid token.allowlist_mode.changed payload: missing tokenAddress"
+    );
+  }
+  if (typeof raw.enabled !== "boolean") {
+    throw new Error(
+      "Invalid token.allowlist_mode.changed payload: missing enabled"
+    );
+  }
+  return {
+    version:
+      typeof raw.version === "number"
+        ? raw.version
+        : ALLOWLIST_CHANGE_EVENT_VERSION,
+    tokenAddress: raw.tokenAddress,
+    enabled: raw.enabled,
+    changedBy: typeof raw.changedBy === "string" ? raw.changedBy : undefined,
+  };
 }
 
 export type EventHandler<T = unknown> = (
@@ -184,7 +330,7 @@ export class EventBus {
   async publish<T = unknown>(
     type: string,
     payload: T,
-    options: { correlationId?: string } = {}
+    options: { correlationId?: string; version?: number } = {}
   ): Promise<BusEvent<T>> {
     if (!isProduction()) {
       validateEventPayload(type, payload);
@@ -199,6 +345,7 @@ export class EventBus {
       timestamp: new Date().toISOString(),
       correlationId: options.correlationId,
       sequence: ++this._sequence,
+      version: options.version,
     };
 
     this.recordHistory(event);
@@ -216,6 +363,59 @@ export class EventBus {
     );
 
     return event;
+  }
+
+  /**
+   * Publish a versioned `fee.changed` event carrying both the previous and
+   * new values (#2243). The payload is emitted at
+   * `FEE_CHANGE_EVENT_VERSION`; consumers on older versions can still parse
+   * it via `parseFeeChangedPayload`.
+   */
+  async publishFeeChanged(
+    change: {
+      parameter: string;
+      oldValue: string | number | null;
+      newValue: string | number;
+      changedBy?: string;
+      reason?: string;
+    },
+    options: { correlationId?: string } = {}
+  ): Promise<BusEvent<FeeChangedPayload>> {
+    const payload: FeeChangedPayload = {
+      version: FEE_CHANGE_EVENT_VERSION,
+      parameter: change.parameter,
+      oldValue: change.oldValue,
+      newValue: change.newValue,
+      changedBy: change.changedBy,
+      reason: change.reason,
+    };
+    return this.publish(FEE_CHANGED_EVENT, payload, {
+      ...options,
+      version: FEE_CHANGE_EVENT_VERSION,
+    });
+  }
+
+  /**
+   * Publish a `token.allowlist_mode.changed` event (#2245).
+   */
+  async publishAllowlistModeChanged(
+    change: {
+      tokenAddress: string;
+      enabled: boolean;
+      changedBy?: string;
+    },
+    options: { correlationId?: string } = {}
+  ): Promise<BusEvent<AllowlistModeChangedPayload>> {
+    const payload: AllowlistModeChangedPayload = {
+      version: ALLOWLIST_CHANGE_EVENT_VERSION,
+      tokenAddress: change.tokenAddress,
+      enabled: change.enabled,
+      changedBy: change.changedBy,
+    };
+    return this.publish(ALLOWLIST_MODE_CHANGED_EVENT, payload, {
+      ...options,
+      version: ALLOWLIST_CHANGE_EVENT_VERSION,
+    });
   }
 
   // ── Introspection ─────────────────────────────────────────────────────────

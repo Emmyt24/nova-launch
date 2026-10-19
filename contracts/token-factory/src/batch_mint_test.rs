@@ -47,6 +47,7 @@ fn setup_token(
         clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         
         };
 
@@ -343,4 +344,144 @@ fn test_batch_mint_preserves_invariants() {
         final_info.total_supply,
         initial_supply + amount1 + amount2
     );
+}
+
+fn enable_allowlist(env: &Env, client: &TokenFactoryClient, token_address: &Address) {
+    use crate::types::{DataKey, TokenInfo};
+
+    let mut token_info: TokenInfo = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenByAddress(token_address.clone()))
+            .unwrap()
+    });
+    token_info.allowlist_enabled = true;
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenByAddress(token_address.clone()), &token_info);
+    });
+}
+
+#[test]
+fn test_batch_mint_allowlist_all_allowed() {
+    let (env, client, admin, _treasury, token_address) = create_test_env();
+    setup_token(&env, &client, &token_address, &admin);
+    enable_allowlist(&env, &client, &token_address);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    client.add_to_allowlist(&token_address, &admin, &recipient1);
+    client.add_to_allowlist(&token_address, &admin, &recipient2);
+
+    let mints: Vec<MintRecipient> = vec![
+        &env,
+        MintRecipient {
+            recipient: recipient1.clone(),
+            amount: 1000_0000000,
+        },
+        MintRecipient {
+            recipient: recipient2.clone(),
+            amount: 2000_0000000,
+        },
+    ];
+
+    let result = client.try_batch_mint_tokens(&token_address, &admin, &mints);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_batch_mint_allowlist_rejects_unlisted_recipient() {
+    let (env, client, admin, _treasury, token_address) = create_test_env();
+    setup_token(&env, &client, &token_address, &admin);
+    enable_allowlist(&env, &client, &token_address);
+
+    let allowed = Address::generate(&env);
+    let not_allowed = Address::generate(&env);
+
+    client.add_to_allowlist(&token_address, &admin, &allowed);
+
+    let mints: Vec<MintRecipient> = vec![
+        &env,
+        MintRecipient {
+            recipient: allowed.clone(),
+            amount: 1000_0000000,
+        },
+        MintRecipient {
+            recipient: not_allowed.clone(),
+            amount: 2000_0000000,
+        },
+    ];
+
+    let result = client.try_batch_mint_tokens(&token_address, &admin, &mints);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_mint_allowlist_rejects_all_unlisted() {
+    let (env, client, admin, _treasury, token_address) = create_test_env();
+    setup_token(&env, &client, &token_address, &admin);
+    enable_allowlist(&env, &client, &token_address);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    let mints: Vec<MintRecipient> = vec![
+        &env,
+        MintRecipient {
+            recipient: recipient1.clone(),
+            amount: 1000_0000000,
+        },
+        MintRecipient {
+            recipient: recipient2.clone(),
+            amount: 2000_0000000,
+        },
+    ];
+
+    let result = client.try_batch_mint_tokens(&token_address, &admin, &mints);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_mint_allowlist_after_removal() {
+    let (env, client, admin, _treasury, token_address) = create_test_env();
+    setup_token(&env, &client, &token_address, &admin);
+    enable_allowlist(&env, &client, &token_address);
+
+    let recipient = Address::generate(&env);
+    client.add_to_allowlist(&token_address, &admin, &recipient);
+    client.remove_from_allowlist(&token_address, &admin, &recipient);
+
+    let mints: Vec<MintRecipient> = vec![
+        &env,
+        MintRecipient {
+            recipient: recipient.clone(),
+            amount: 1000_0000000,
+        },
+    ];
+
+    let result = client.try_batch_mint_tokens(&token_address, &admin, &mints);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_mint_allowlist_disabled_allows_any_recipient() {
+    let (env, client, admin, _treasury, token_address) = create_test_env();
+    setup_token(&env, &client, &token_address, &admin);
+
+    // Allowlist mode is off; unlisted recipients should still be mintable
+    let recipient = Address::generate(&env);
+
+    let mints: Vec<MintRecipient> = vec![
+        &env,
+        MintRecipient {
+            recipient: recipient.clone(),
+            amount: 1000_0000000,
+        },
+    ];
+
+    let result = client.try_batch_mint_tokens(&token_address, &admin, &mints);
+    assert!(result.is_ok());
 }

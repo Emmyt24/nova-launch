@@ -395,6 +395,101 @@ mod integration_boundary_tests {
         let total = base.checked_add(meta);
         assert_eq!(total, None); // Overflow
     }
+
+    // ---- Fee quote boundary tests ----
+
+    #[test]
+    fn test_fee_quote_overflow_matches_charge() {
+        let (env, contract_id, _admin, _treasury, _user) = setup_arithmetic_test_env();
+
+        env.as_contract(&contract_id, || {
+            storage::set_base_fee(&env, i128::MAX);
+            storage::set_metadata_fee(&env, 1);
+        });
+
+        // Quote must fail with ArithmeticError at the overflow boundary
+        let quote = env.as_contract(&contract_id, || {
+            crate::fee::quote_token_creation_fee(&env, true)
+        });
+        assert_eq!(quote, Err(Error::ArithmeticError));
+
+        // Charge logic must fail identically
+        let charge = env.as_contract(&contract_id, || {
+            crate::fee::calculate_token_creation_fee(&env, true)
+        });
+        assert_eq!(charge, Err(Error::ArithmeticError));
+    }
+
+    #[test]
+    fn test_fee_quote_at_i128_max_boundary() {
+        let (env, contract_id, _admin, _treasury, _user) = setup_arithmetic_test_env();
+
+        env.as_contract(&contract_id, || {
+            storage::set_base_fee(&env, i128::MAX);
+            storage::set_metadata_fee(&env, 0);
+        });
+
+        // Exactly i128::MAX is representable and must succeed
+        let quote = env.as_contract(&contract_id, || {
+            crate::fee::quote_token_creation_fee(&env, true)
+        });
+        assert_eq!(quote, Ok(i128::MAX));
+
+        let charge = env.as_contract(&contract_id, || {
+            crate::fee::calculate_token_creation_fee(&env, true)
+        });
+        assert_eq!(charge, Ok(i128::MAX));
+    }
+
+    #[test]
+    fn test_fee_quote_zero_fees() {
+        let (env, contract_id, _admin, _treasury, _user) = setup_arithmetic_test_env();
+
+        env.as_contract(&contract_id, || {
+            storage::set_base_fee(&env, 0);
+            storage::set_metadata_fee(&env, 0);
+        });
+
+        let quote = env.as_contract(&contract_id, || {
+            crate::fee::quote_token_creation_fee(&env, true)
+        });
+        assert_eq!(quote, Ok(0));
+
+        let charge = env.as_contract(&contract_id, || {
+            crate::fee::calculate_token_creation_fee(&env, true)
+        });
+        assert_eq!(charge, Ok(0));
+    }
+
+    #[test]
+    fn test_fee_quote_equivalence_across_boundaries() {
+        let (env, contract_id, _admin, _treasury, _user) = setup_arithmetic_test_env();
+
+        let cases: [(i128, i128); 5] = [
+            (0, 0),
+            (100, 50),
+            (i128::MAX, 0),
+            (i128::MAX - 1, 1),
+            (i128::MAX, 1),
+        ];
+
+        for (base, meta) in cases.iter() {
+            env.as_contract(&contract_id, || {
+                storage::set_base_fee(&env, *base);
+                storage::set_metadata_fee(&env, *meta);
+            });
+
+            for with_metadata in [false, true] {
+                let quote = env.as_contract(&contract_id, || {
+                    crate::fee::quote_token_creation_fee(&env, with_metadata)
+                });
+                let charge = env.as_contract(&contract_id, || {
+                    crate::fee::calculate_token_creation_fee(&env, with_metadata)
+                });
+                assert_eq!(quote, charge);
+            }
+        }
+    }
 }
 
 // ============================================================================

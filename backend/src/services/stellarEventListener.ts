@@ -11,6 +11,8 @@ import { PrismaClient } from "@prisma/client";
 import { GovernanceEventParser } from "./governanceEventParser";
 import governanceEventMapper from "./governanceEventMapper";
 import { TokenEventParser, RawTokenEvent } from "./tokenEventParser";
+import { FeeChangeEventParser } from "./feeChangeEventParser";
+import { AllowlistEventParser } from "./allowlistEventParser";
 import { EventCursorStore, parseLedgerFromCursor } from "./eventCursorStore";
 import { StreamEventParser } from "./streamEventParser";
 import { parseVaultCreatedEvent, parseVaultClaimedEvent, parseVaultCancelledEvent, parseVaultMetadataUpdatedEvent } from "./vaultEventParser";
@@ -111,6 +113,8 @@ export class StellarEventListener {
   private prisma: PrismaClient;
   private governanceParser: GovernanceEventParser;
   private tokenEventParser: TokenEventParser;
+  private feeChangeEventParser: FeeChangeEventParser;
+  private allowlistEventParser: AllowlistEventParser;
   private cursorStore: EventCursorStore;
   private streamEventParser: StreamEventParser;
   private recentLagMetrics: ProjectionLagMetrics[] = [];
@@ -131,6 +135,8 @@ export class StellarEventListener {
     this.prisma = new PrismaClient();
     this.governanceParser = new GovernanceEventParser(this.prisma);
     this.tokenEventParser = new TokenEventParser(this.prisma);
+    this.feeChangeEventParser = new FeeChangeEventParser(this.prisma);
+    this.allowlistEventParser = new AllowlistEventParser(this.prisma);
     this.cursorStore = new EventCursorStore(this.prisma);
     this.streamEventParser = new StreamEventParser(this.prisma);
     this.transport = transport || new DefaultHorizonTransport();
@@ -386,6 +392,22 @@ export class StellarEventListener {
       // ── Vault / Stream ──────────────────────────────────────────────────
       if (kind.startsWith('vault_')) {
         await this.processStreamOrVaultEvent(event);
+        IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
+        IntegrationMetrics.recordEventProcessed(kind, 'success');
+        return;
+      }
+
+      // ── Fee parameter changes (versioned: carries old + new values) ─────
+      if (kind === 'fee_updated' || kind === 'fee_change') {
+        await this.feeChangeEventParser.parseEvent(normalized);
+        IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
+        IntegrationMetrics.recordEventProcessed(kind, 'success');
+        return;
+      }
+
+      // ── Allowlist / whitelist mode ──────────────────────────────────────
+      if (kind.startsWith('allowlist_') || kind === 'whitelist_mode_updated') {
+        await this.allowlistEventParser.parseEvent(normalized);
         IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
         IntegrationMetrics.recordEventProcessed(kind, 'success');
         return;

@@ -21,6 +21,28 @@ export interface GetTokenOptions {
   include?: TokenInclude[];
 }
 
+export interface TokenCreationFeeQuoteOptions {
+  /** Number of decimal places for the token (defaults to 7, matching Stellar). */
+  decimals?: number;
+  /** Whether the token requires an issuer authorization flag. */
+  requiresAuth?: boolean;
+  /** Optional metadata payload size in bytes, which may affect the fee. */
+  metadataSizeBytes?: number;
+}
+
+export interface TokenCreationFeeQuote {
+  /** Total fee in stroops (1 XLM = 10,000,000 stroops). */
+  feeStroops: string;
+  /** Total fee in XLM, formatted with 7 decimal places. */
+  feeXlm: string;
+  /** Base fee component in stroops. */
+  baseFeeStroops: string;
+  /** Additional fee component in stroops. */
+  additionalFeeStroops: string;
+  /** The options the quote was computed for. */
+  options: Required<TokenCreationFeeQuoteOptions>;
+}
+
 @Injectable()
 export class TokensService {
   private readonly logger = new Logger(TokensService.name);
@@ -164,6 +186,43 @@ export class TokensService {
     }
 
     return token;
+  }
+
+  /**
+   * Returns a read-only quote of the fee that would be charged for creating a
+   * token with the given options. This mirrors the on-chain fee calculation so
+   * clients can display the expected charge without submitting a transaction.
+   */
+  async getTokenCreationFeeQuote(
+    options: TokenCreationFeeQuoteOptions = {}
+  ): Promise<TokenCreationFeeQuote> {
+    const resolvedOptions: Required<TokenCreationFeeQuoteOptions> = {
+      decimals: options.decimals ?? 7,
+      requiresAuth: options.requiresAuth ?? false,
+      metadataSizeBytes: options.metadataSizeBytes ?? 0,
+    };
+
+    if (resolvedOptions.decimals < 0 || resolvedOptions.decimals > 18) {
+      throw new BadRequestException(
+        "decimals must be between 0 and 18 inclusive"
+      );
+    }
+
+    if (resolvedOptions.metadataSizeBytes < 0) {
+      throw new BadRequestException("metadataSizeBytes must not be negative");
+    }
+
+    const quote = await this.stellarService.getTokenCreationFeeQuote(
+      resolvedOptions
+    );
+
+    return {
+      feeStroops: quote.feeStroops,
+      feeXlm: quote.feeXlm,
+      baseFeeStroops: quote.baseFeeStroops,
+      additionalFeeStroops: quote.additionalFeeStroops,
+      options: resolvedOptions,
+    };
   }
 
   private async fetchMetadataForAsset(

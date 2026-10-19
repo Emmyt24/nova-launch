@@ -19,6 +19,16 @@ const rootDir = join(__dirname, "..");
 const schemasDir = join(rootDir, "event-schemas");
 const committedFile = join(schemasDir, "generated", "events.ts");
 
+/**
+ * Event schemas that must exist for versioned fee-change and allowlist events.
+ * Issue: #2243 (fee parameter changes with old/new values)
+ * Issue: #2245 (whitelist mode for token transfers)
+ */
+const REQUIRED_SCHEMA_FILES = [
+  "fee-change.schema.json",
+  "allowlist-mode-change.schema.json",
+];
+
 console.log("Checking event schema codegen drift...");
 
 let schemas;
@@ -26,6 +36,25 @@ try {
   schemas = loadEventSchemas(schemasDir);
 } catch (err) {
   console.error(`Failed to load event schemas from ${schemasDir}: ${(err as Error).message}`);
+  process.exit(1);
+}
+
+// Ensure the versioned fee-change and allowlist event schemas are present so
+// that generated types always include their old/new value payloads.
+const loadedSchemaNames: string[] = (Array.isArray(schemas) ? schemas : Object.values(schemas ?? {}))
+  .map((schema: any) => (typeof schema === "string" ? schema : schema?.file ?? schema?.name ?? ""))
+  .filter((name: string) => typeof name === "string" && name.length > 0);
+
+const missingSchemas = REQUIRED_SCHEMA_FILES.filter(
+  (required) => !loadedSchemaNames.some((name) => name.endsWith(required)),
+);
+
+if (missingSchemas.length > 0) {
+  console.error("ERROR: Missing required event schema files:");
+  for (const missing of missingSchemas) {
+    console.error(`  - event-schemas/${missing}`);
+  }
+  console.error("Fee-change and allowlist events must be versioned and include old/new values.");
   process.exit(1);
 }
 

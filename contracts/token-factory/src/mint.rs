@@ -123,6 +123,12 @@ pub fn mint(env: &Env, token_index: u32, to: &Address, amount: i128) -> Result<(
         },
     )?;
 
+    // Allowlist gate (#2245): when the token was created in allowlist mode,
+    // only addresses explicitly approved by the admin may receive mints.
+    if token_info.allowlist_enabled && !storage::is_allowlisted(env, token_index, to) {
+        return Err(Error::NotAllowlisted);
+    }
+
     // Validate max supply constraint
     validate_max_supply(token_info.total_supply, amount, token_info.max_supply)?;
 
@@ -178,9 +184,13 @@ pub fn batch_mint(
     // Validate upfront to preserve atomic/event-noise guarantees.
     let mut total_mint: i128 = 0;
     for (to, amount) in mints.iter() {
-        let _ = to;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        // Allowlist gate (#2245): reject the whole batch if any recipient is
+        // not approved while the token is in allowlist mode.
+        if token_info.allowlist_enabled && !storage::is_allowlisted(env, token_index, &to) {
+            return Err(Error::NotAllowlisted);
         }
         total_mint = total_mint
             .checked_add(amount)
@@ -326,6 +336,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -365,6 +376,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -404,6 +416,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -443,6 +456,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -477,6 +491,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -511,6 +526,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -544,6 +560,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -576,6 +593,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -608,6 +626,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
 
         env.as_contract(&contract_id, || {
@@ -643,6 +662,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
         env.as_contract(&contract_id, || {
             storage::set_token_info(&env, 0, &token_info);
@@ -681,6 +701,7 @@ mod tests {
             clawback_enabled: false,
             freeze_enabled: false,
             is_paused: false,
+            allowlist_enabled: false,
         };
         env.as_contract(&contract_id, || {
             storage::set_token_info(&env, 0, &token_info);
@@ -706,5 +727,138 @@ mod tests {
         assert_eq!(b1, 0);
         assert_eq!(b2, 0);
         assert_eq!(s, supply_before);
+    }
+
+    fn allowlist_token_info(env: &Env) -> crate::types::TokenInfo {
+        crate::types::TokenInfo {
+            address: Address::generate(env),
+            creator: Address::generate(env),
+            name: soroban_sdk::String::from_str(env, "Allowlist Token"),
+            symbol: soroban_sdk::String::from_str(env, "ALW"),
+            decimals: 7,
+            total_supply: 1_000_000,
+            initial_supply: 1_000_000,
+            max_supply: Some(10_000_000),
+            total_burned: 0,
+            burn_count: 0,
+            metadata_uri: None,
+            metadata_version: 0,
+            created_at: env.ledger().timestamp(),
+            clawback_enabled: false,
+            freeze_enabled: false,
+            is_paused: false,
+            allowlist_enabled: true,
+        }
+    }
+
+    #[test]
+    fn test_mint_rejected_when_not_allowlisted() {
+        let env = Env::default();
+        let contract_id = install_contract(&env);
+        let to = Address::generate(&env);
+
+        let token_info = allowlist_token_info(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_token_info(&env, 0, &token_info);
+        });
+
+        let result = env.as_contract(&contract_id, || mint(&env, 0, &to, 100_000));
+        assert_eq!(result, Err(Error::NotAllowlisted));
+
+        // Supply and balance must be untouched.
+        let unchanged = env.as_contract(&contract_id, || storage::get_token_info(&env, 0).unwrap());
+        assert_eq!(unchanged.total_supply, 1_000_000);
+        let balance = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &to));
+        assert_eq!(balance, 0);
+    }
+
+    #[test]
+    fn test_mint_allowed_when_allowlisted() {
+        let env = Env::default();
+        let contract_id = install_contract(&env);
+        let to = Address::generate(&env);
+
+        let token_info = allowlist_token_info(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_token_info(&env, 0, &token_info);
+            storage::set_allowlisted(&env, 0, &to, true);
+        });
+
+        let result = env.as_contract(&contract_id, || mint(&env, 0, &to, 100_000));
+        assert!(result.is_ok());
+
+        let updated = env.as_contract(&contract_id, || storage::get_token_info(&env, 0).unwrap());
+        assert_eq!(updated.total_supply, 1_100_000);
+        let balance = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &to));
+        assert_eq!(balance, 100_000);
+    }
+
+    #[test]
+    fn test_mint_allowlist_disabled_ignores_allowlist() {
+        let env = Env::default();
+        let contract_id = install_contract(&env);
+        let to = Address::generate(&env);
+
+        let mut token_info = allowlist_token_info(&env);
+        token_info.allowlist_enabled = false;
+        env.as_contract(&contract_id, || {
+            storage::set_token_info(&env, 0, &token_info);
+        });
+
+        let result = env.as_contract(&contract_id, || mint(&env, 0, &to, 100_000));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_batch_mint_rejected_when_any_recipient_not_allowlisted() {
+        let env = Env::default();
+        let contract_id = install_contract(&env);
+        env.mock_all_auths();
+        let allowed = Address::generate(&env);
+        let blocked = Address::generate(&env);
+
+        let token_info = allowlist_token_info(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_token_info(&env, 0, &token_info);
+            storage::set_allowlisted(&env, 0, &allowed, true);
+        });
+
+        let mints = soroban_sdk::vec![&env, (allowed.clone(), 100_000), (blocked.clone(), 50_000)];
+        let err = env.as_contract(&contract_id, || batch_mint(&env, 0, &mints).unwrap_err());
+        assert_eq!(err, Error::NotAllowlisted);
+
+        // Atomicity: no balances or supply changes.
+        let b1 = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &allowed));
+        let b2 = env.as_contract(&contract_id, || storage::get_balance(&env, 0, &blocked));
+        let supply = env.as_contract(&contract_id, || {
+            storage::get_token_info(&env, 0).unwrap().total_supply
+        });
+        assert_eq!(b1, 0);
+        assert_eq!(b2, 0);
+        assert_eq!(supply, 1_000_000);
+    }
+
+    #[test]
+    fn test_batch_mint_succeeds_when_all_recipients_allowlisted() {
+        let env = Env::default();
+        let contract_id = install_contract(&env);
+        env.mock_all_auths();
+        let r1 = Address::generate(&env);
+        let r2 = Address::generate(&env);
+
+        let token_info = allowlist_token_info(&env);
+        env.as_contract(&contract_id, || {
+            storage::set_token_info(&env, 0, &token_info);
+            storage::set_allowlisted(&env, 0, &r1, true);
+            storage::set_allowlisted(&env, 0, &r2, true);
+        });
+
+        let mints = soroban_sdk::vec![&env, (r1.clone(), 100_000), (r2.clone(), 200_000)];
+        env.as_contract(&contract_id, || batch_mint(&env, 0, &mints).unwrap());
+
+        let supply = env.as_contract(&contract_id, || {
+            storage::get_token_info(&env, 0).unwrap().total_supply
+        });
+        assert_eq!(supply, 1_300_000);
     }
 }

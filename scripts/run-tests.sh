@@ -138,12 +138,20 @@ echo ""
 
 cd "$WORKING_DIR"
 
+# Feature-specific test modules (TTL extension, fee quote, allowlist)
+run_feature_tests() {
+    run_test "TTL Extension Tests" "cargo test ttl --lib --tests" || true
+    run_test "Fee Quote Tests" "cargo test fee_quote --lib --tests" || true
+    run_test "Allowlist Tests" "cargo test allowlist --lib --tests" || true
+}
+
 # Fast mode: Unit + Integration tests
 if [[ "$MODE" == "fast" ]]; then
     print_header "Fast Mode: Unit + Integration Tests"
     
     run_test "Unit Tests" "cargo test --lib --tests" || true
     run_test "Integration Tests" "cargo test --test '*'" || true
+    run_feature_tests
 fi
 
 # Full mode: Unit + Integration + Property tests
@@ -153,6 +161,7 @@ if [[ "$MODE" == "full" ]]; then
     run_test "Unit Tests" "cargo test --lib --tests" || true
     run_test "Integration Tests" "cargo test --test '*'" || true
     run_test "Property Tests" "cargo test --lib --profile ci -- --nocapture" || true
+    run_feature_tests
 fi
 
 # Nightly mode: All tests + Benchmarks + Fuzz
@@ -162,10 +171,12 @@ if [[ "$MODE" == "nightly" ]]; then
     run_test "Unit Tests" "cargo test --lib --tests" || true
     run_test "Integration Tests" "cargo test --test '*'" || true
     run_test "Property Tests (Extended)" "PROPTEST_CASES=200 cargo test --lib --profile ci -- --nocapture" || true
+    run_feature_tests
     
     # Benchmarks (if available)
     if [ -d "benches" ]; then
         run_test "Benchmarks" "cargo bench --no-run" || true
+        run_test "TTL Gas Benchmarks" "cargo bench --bench ttl_bench --no-run" || true
     fi
     
     # Build optimized WASM

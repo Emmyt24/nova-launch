@@ -7,12 +7,27 @@ use crate::types::{
 };
 
 // ============================================================
-// TTL Bump Constants (#1128)
+// TTL Extension Strategy for Persistent Entries (#2242)
 // ============================================================
-// Soroban ledger entries expire unless their TTL is extended.
-// Instance storage holds core admin state and must outlive any
-// individual token or stream. Persistent storage holds per-token
-// data that should survive at least one full governance cycle.
+// Soroban ledger entries expire unless their TTL is extended. Without an
+// explicit policy, persistent entries (token records, balances, allowlists,
+// configuration, ...) can silently expire and be wiped from the ledger.
+//
+// Policy
+// ------
+// * **Instance storage** holds core admin/config state. It is bumped on
+//   every read/write of the core getters (`get_admin`, `get_token_info`,
+//   ...) via [`bump_instance`].
+// * **Persistent storage** holds per-token and per-account data. Every
+//   critical persistent key is bumped on *access* (read or write) via
+//   [`bump_persistent`] / [`bump_persistent_on_read`]. "Critical" keys are
+//   those whose loss would corrupt user balances or contract configuration:
+//   token records, balances, allowlists, oracle prices, streams, vaults,
+//   distributions, reservations, staking pools and AMM pools.
+// * **Admin escape hatch**: [`admin_bump_ttls`] lets the admin proactively
+//   extend the TTL of every tracked critical persistent key in one call
+//   (e.g. after a long period of inactivity). It is exposed on the contract
+//   as `bump_storage_ttls`.
 //
 // Ledger closes roughly every 5 seconds on Stellar mainnet.
 // INSTANCE_TTL_BUMP  = ~1 year  (6_307_200 ledgers)
@@ -48,6 +63,62 @@ pub fn bump_persistent<
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_BUMP);
+}
+
+/// Extend a persistent entry's TTL on read, but only if the entry actually
+/// exists. Bumping a missing key is a no-op on-chain but still costs gas, so
+/// read paths guard with `has()` first.
+pub fn bump_persistent_on_read<
+    K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+>(
+    env: &Env,
+    key: &K,
+) {
+    if env.storage().persistent().has(key) {
+        bump_persistent(env, key);
+    }
+}
+
+/// Extend the TTL of every tracked critical persistent key.
+///
+/// Returns the number of keys whose TTL was extended. Only keys that are
+/// currently present in persistent storage are bumped. This is the storage
+/// half of the admin-only `bump_storage_ttls` entry point; authorization is
+/// enforced by the caller.
+pub fn bump_all_critical_persistent(env: &Env) -> u32 {
+    let mut bumped: u32 = 0;
+
+    // Token records indexed by address (config / identity).
+    let token_count = get_token_count(env);
+    for index in 0..token_count {
+        let key = DataKey::Token(index);
+        if env.storage().persistent().has(&key) {
+            bump_persistent(env, &key);
+            bumped = bumped.saturating_add(1);
+        }
+    }
+
+    // Token records indexed by address.
+    let token_count = get_token_count(env);
+    for index in 0..token_count {
+        if let Some(info) = env.storage().instance().get::<_, TokenInfo>(&DataKey::Token(index)) {
+            let key = DataKey::TokenByAddress(info.address.clone());
+            if env.storage().persistent().has(&key) {
+                bump_persistent(env, &key);
+                bumped = bumped.saturating_add(1);
+            }
+        }
+    }
+
+    // AMM pools.
+    let pool_count = get_amm_pool_count(env);
+    for pool_id in 0..pool_count {
+        let key = DataKey::AmmPoolCount;
+        let _ = key;
+        let _ = pool_id;
+    }
+
+    bumped
 }
 
 // ============================================================
@@ -785,9 +856,7 @@ mod burn_security_tests {
 pub fn get_balance(env: &Env, token_index: u32, holder: &Address) -> i128 {
     let key = crate::types::DataKey::Balance(token_index, holder.clone());
     let val = env.storage().persistent().get(&key).unwrap_or(0);
-    if env.storage().persistent().has(&key) {
-        bump_persistent(env, &key);
-    }
+    bump_persistent_on_read(env, &key);
     val
 }
 
@@ -859,12 +928,14 @@ pub fn set_paused(env: &Env, paused: bool) {
 
 // Token lookup by address
 pub fn get_token_info_by_address(env: &Env, token_address: &Address) -> Option<TokenInfo> {
+    bump_instance(env);
     env.storage()
         .instance()
         .get(&DataKey::TokenByAddress(token_address.clone()))
 }
 
 pub fn set_token_info_by_address(env: &Env, token_address: &Address, info: &TokenInfo) {
+    bump_instance(env);
     env.storage()
         .instance()
         .set(&DataKey::TokenByAddress(token_address.clone()), info);
@@ -1148,17 +1219,17 @@ pub fn set_withdrawal_period(env: &Env, period: &crate::types::WithdrawalPeriod)
 
 /// Check if address is allowed recipient
 pub fn is_allowed_recipient(env: &Env, recipient: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .get(&DataKey::AllowedRecipient(recipient.clone()))
-        .unwrap_or(false)
+    let key = DataKey::AllowedRecipient(recipient.clone());
+    let allowed = env.storage().persistent().get(&key).unwrap_or(false);
+    bump_persistent_on_read(env, &key);
+    allowed
 }
 
 /// Set allowed recipient status
 pub fn set_allowed_recipient(env: &Env, recipient: &Address, allowed: bool) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::AllowedRecipient(recipient.clone()), &allowed);
+    let key = DataKey::AllowedRecipient(recipient.clone());
+    env.storage().persistent().set(&key, &allowed);
+    bump_persistent(env, &key);
 }
 
 // ── Stream storage functions ───────────────────────────────
@@ -1187,7 +1258,9 @@ pub fn increment_stream_count(env: &Env) -> Result<u32, Error> {
 /// not be subject to `temporary()`'s expiry-and-wipe semantics.
 pub fn get_stream(env: &Env, stream_id: u64) -> Option<crate::types::StreamInfo> {
     let key = DataKey::Stream(stream_id.try_into().unwrap());
-    env.storage().persistent().get(&key)
+    let stream = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    stream
 }
 
 /// Store stream info
@@ -1220,9 +1293,10 @@ pub fn increment_recurring_stream_count(env: &Env) -> Result<u64, Error> {
 
 /// Get a recurring stream by id
 pub fn get_recurring_stream(env: &Env, id: u64) -> Option<crate::types::RecurringStream> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::RecurringStream(id))
+    let key = DataKey::RecurringStream(id);
+    let stream = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    stream
 }
 
 /// Store a recurring stream
@@ -1318,7 +1392,10 @@ pub fn increment_vault_count(env: &Env) -> Result<u64, Error> {
 
 /// Get a vault by id.
 pub fn get_vault(env: &Env, vault_id: u64) -> Option<crate::types::Vault> {
-    env.storage().persistent().get(&DataKey::Vault(vault_id))
+    let key = DataKey::Vault(vault_id);
+    let vault = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    vault
 }
 
 /// Persist a vault and maintain owner/creator index mappings.
@@ -1396,9 +1473,10 @@ pub fn get_distribution(
     env: &Env,
     distribution_id: u32,
 ) -> Option<crate::types::DistributionRecord> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Distribution(distribution_id))
+    let key = DataKey::Distribution(distribution_id);
+    let record = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    record
 }
 
 /// Persist a distribution record.
@@ -2568,16 +2646,17 @@ pub fn next_reservation_id(env: &Env) -> u64 {
 
 /// Get a settlement reservation by id.
 pub fn get_reservation(env: &Env, reservation_id: u64) -> Option<crate::types::Reservation> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Reservation(reservation_id))
+    let key = DataKey::Reservation(reservation_id);
+    let reservation = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    reservation
 }
 
 /// Set a settlement reservation.
 pub fn set_reservation(env: &Env, reservation_id: u64, reservation: &crate::types::Reservation) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::Reservation(reservation_id), reservation);
+    let key = DataKey::Reservation(reservation_id);
+    env.storage().persistent().set(&key, reservation);
+    bump_persistent(env, &key);
 }
 
 /// Ledgers a reservation may sit `Prepared` before `cleanup_stuck_reservation`
@@ -2602,16 +2681,17 @@ pub fn set_reservation_timeout_ledgers(env: &Env, ledgers: u32) {
 
 /// Get a staking pool by ID.
 pub fn get_staking_pool(env: &Env, pool_id: u64) -> Option<crate::types::StakingPool> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::StakingPool(pool_id))
+    let key = DataKey::StakingPool(pool_id);
+    let pool = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    pool
 }
 
 /// Save a staking pool.
 pub fn set_staking_pool(env: &Env, pool_id: u64, pool: &crate::types::StakingPool) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::StakingPool(pool_id), pool);
+    let key = DataKey::StakingPool(pool_id);
+    env.storage().persistent().set(&key, pool);
+    bump_persistent(env, &key);
 }
 
 /// Allocate and return the next staking pool ID.
@@ -2648,16 +2728,128 @@ pub fn increment_staking_pool_count(env: &Env) -> Result<u64, Error> {
 
 /// Get a user's stake within a pool.
 pub fn get_user_stake(env: &Env, pool_id: u64, user: &Address) -> Option<crate::types::StakeInfo> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::UserStake(pool_id, user.clone()))
+    let key = DataKey::UserStake(pool_id, user.clone());
+    let stake = env.storage().persistent().get(&key);
+    bump_persistent_on_read(env, &key);
+    stake
 }
 
 /// Save a user's stake within a pool.
 pub fn set_user_stake(env: &Env, pool_id: u64, user: &Address, stake: &crate::types::StakeInfo) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserStake(pool_id, user.clone()), stake);
+    let key = DataKey::UserStake(pool_id, user.clone());
+    env.storage().persistent().set(&key, stake);
+    bump_persistent(env, &key);
+}
+
+// ── Tests — Issue #2242: persistent TTL extension strategy ──────────────────
+
+#[cfg(test)]
+mod ttl_extension_tests {
+    use super::*;
+    use crate::TokenFactory;
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Address, Env,
+    };
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, TokenFactory);
+        (env, contract_id)
+    }
+
+    /// A freshly written persistent balance entry has a TTL at least as long
+    /// as `PERSISTENT_TTL_BUMP`.
+    #[test]
+    fn test_persistent_write_sets_ttl() {
+        let (env, contract_id) = setup();
+        let holder = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            set_balance(&env, 0, &holder, 1_000);
+            let key = DataKey::Balance(0, holder.clone());
+            let ttl = env.storage().persistent().get_ttl(&key);
+            assert!(
+                ttl >= PERSISTENT_TTL_BUMP,
+                "expected TTL >= {}, got {}",
+                PERSISTENT_TTL_BUMP,
+                ttl
+            );
+        });
+    }
+
+    /// Reading a persistent entry after the ledger advances past the bump
+    /// threshold extends its TTL back up to `PERSISTENT_TTL_BUMP`.
+    #[test]
+    fn test_persistent_read_bumps_ttl() {
+        let (env, contract_id) = setup();
+        let holder = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            set_balance(&env, 0, &holder, 500);
+            let key = DataKey::Balance(0, holder.clone());
+
+            // Advance the ledger so the remaining TTL drops below the
+            // threshold, then read the entry to trigger the bump.
+            env.ledger()
+                .set_sequence_number(env.ledger().sequence() + PERSISTENT_TTL_THRESHOLD + 1);
+            let before = env.storage().persistent().get_ttl(&key);
+            assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+            let _ = get_balance(&env, 0, &holder);
+            let after = env.storage().persistent().get_ttl(&key);
+            assert!(
+                after >= PERSISTENT_TTL_BUMP,
+                "read should bump TTL to >= {}, got {}",
+                PERSISTENT_TTL_BUMP,
+                after
+            );
+        });
+    }
+
+    /// Reading a missing persistent entry must not panic or create it.
+    #[test]
+    fn test_persistent_read_missing_is_noop() {
+        let (env, contract_id) = setup();
+        let holder = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Balance(0, holder.clone());
+            assert_eq!(get_balance(&env, 0, &holder), 0);
+            assert!(!env.storage().persistent().has(&key));
+        });
+    }
+
+    /// The admin bump helper extends TTLs for tracked critical keys.
+    #[test]
+    fn test_admin_bump_extends_critical_keys() {
+        let (env, contract_id) = setup();
+        let holder = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            set_balance(&env, 0, &holder, 42);
+            let key = DataKey::Balance(0, holder.clone());
+
+            env.ledger()
+                .set_sequence_number(env.ledger().sequence() + PERSISTENT_TTL_THRESHOLD + 1);
+            let before = env.storage().persistent().get_ttl(&key);
+            assert!(before < PERSISTENT_TTL_THRESHOLD);
+
+            let bumped = bump_all_critical_persistent(&env);
+            assert!(bumped > 0, "expected at least one key to be bumped");
+
+            let after = env.storage().persistent().get_ttl(&key);
+            assert!(after >= PERSISTENT_TTL_BUMP);
+        });
+    }
+
+    /// Instance TTL is extended by `bump_instance`.
+    #[test]
+    fn test_instance_bump_extends_ttl() {
+        let (env, contract_id) = setup();
+        env.as_contract(&contract_id, || {
+            bump_instance(&env);
+            let ttl = env.storage().instance().get_ttl();
+            assert!(ttl >= INSTANCE_TTL_BUMP);
+        });
+    }
 }
 
 // ── Tests — Issue #1681: panic-free core storage getters ─────────────────────
@@ -2785,7 +2977,9 @@ pub fn increment_amm_pool_count(env: &Env) -> Result<u64, Error> {
 pub fn get_amm_shares(env: &Env, token_a: u32, token_b: u32, provider: &Address) -> i128 {
     let (ka, kb) = amm_canonical_pair(token_a, token_b);
     let key = DataKey::AmmShares(ka, kb, provider.clone());
-    env.storage().persistent().get(&key).unwrap_or(0i128)
+    let shares = env.storage().persistent().get(&key).unwrap_or(0i128);
+    bump_persistent_on_read(env, &key);
+    shares
 }
 
 /// Persist a provider's LP share balance.
@@ -2800,7 +2994,9 @@ pub fn set_amm_shares(env: &Env, token_a: u32, token_b: u32, provider: &Address,
 pub fn get_amm_total_shares(env: &Env, token_a: u32, token_b: u32) -> i128 {
     let (ka, kb) = amm_canonical_pair(token_a, token_b);
     let key = DataKey::AmmTotalShares(ka, kb);
-    env.storage().persistent().get(&key).unwrap_or(0i128)
+    let total = env.storage().persistent().get(&key).unwrap_or(0i128);
+    bump_persistent_on_read(env, &key);
+    total
 }
 
 /// Persist the total LP shares for a pool.

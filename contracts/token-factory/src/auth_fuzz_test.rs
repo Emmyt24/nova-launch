@@ -305,6 +305,97 @@ proptest! {
         prop_assert!(result.is_err(),
             "Non-creator should not be able to mint tokens");
     }
+
+    /// Fuzz Test: Storage TTL bump with non-admin signer
+    /// 
+    /// Attempts to extend storage TTL for persistent entries with
+    /// unauthorized addresses. Must fail closed.
+    #[test]
+    fn fuzz_bump_ttl_unauthorized(
+        attacker_seed in arb_address(),
+        extend_ledgers in 1u32..=1_000_000u32,
+    ) {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        let attacker = Address::generate(&env);
+        env.mock_all_auths();
+        
+        // Attempt: attacker tries to bump TTL
+        let result = client.try_bump_storage_ttl(&attacker, &extend_ledgers);
+        
+        prop_assert!(result.is_err(),
+            "Non-admin should not be able to bump storage TTL");
+        
+        // Verify admin still works (fail-closed did not corrupt state)
+        let admin_result = client.try_bump_storage_ttl(&admin, &extend_ledgers);
+        prop_assert!(admin_result.is_ok(),
+            "Admin should still be able to bump storage TTL");
+    }
+
+    /// Fuzz Test: Allowlist mode toggle with non-admin signer
+    /// 
+    /// Attempts to enable/disable allowlist mode with unauthorized addresses.
+    #[test]
+    fn fuzz_set_allowlist_mode_unauthorized(
+        attacker_seed in arb_address(),
+        enabled in any::<bool>(),
+    ) {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        let attacker = Address::generate(&env);
+        env.mock_all_auths();
+        
+        // Attempt: attacker tries to toggle allowlist mode
+        let result = client.try_set_allowlist_mode(&attacker, &enabled);
+        
+        prop_assert!(result.is_err(),
+            "Non-admin should not be able to toggle allowlist mode");
+        
+        // Verify mode unchanged (defaults to disabled)
+        prop_assert!(!client.is_allowlist_mode(),
+            "Allowlist mode should remain disabled after failed attack");
+        
+        // Verify admin can still toggle
+        client.set_allowlist_mode(&admin, &enabled).unwrap();
+        prop_assert_eq!(client.is_allowlist_mode(), enabled,
+            "Admin should be able to toggle allowlist mode");
+    }
+
+    /// Fuzz Test: Token allowlist management with non-admin signer
+    /// 
+    /// Attempts to add/remove addresses from the token transfer allowlist
+    /// without authorization.
+    #[test]
+    fn fuzz_token_allowlist_management_unauthorized(
+        attacker_seed in arb_address(),
+        account_seed in arb_address(),
+        add_or_remove in any::<bool>(),
+    ) {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        client.set_allowlist_mode(&admin, &true).unwrap();
+        
+        let attacker = Address::generate(&env);
+        let account = Address::generate(&env);
+        env.mock_all_auths();
+        
+        // Attempt: attacker tries to modify the transfer allowlist
+        let result = if add_or_remove {
+            client.try_add_to_allowlist(&attacker, &account)
+        } else {
+            client.try_remove_from_allowlist(&attacker, &account)
+        };
+        
+        prop_assert!(result.is_err(),
+            "Non-admin should not be able to modify the transfer allowlist");
+        
+        // Verify account not allowlisted after failed attack
+        prop_assert!(!client.is_allowlisted(&account),
+            "Account should not be allowlisted after failed attack");
+    }
 }
 
 /// Replay-style sequence fuzzing tests
@@ -803,6 +894,54 @@ mod privilege_escalation_tests {
             prop_assert!(!client.is_paused(),
                 "Contract should not be paused");
         }
+
+        /// Escalation Test: Allowlist self-addition via token allowlist
+        /// 
+        /// Tests that non-admin cannot add themselves to the token
+        /// transfer allowlist to bypass compliance restrictions.
+        #[test]
+        fn fuzz_token_allowlist_self_escalation(
+            attacker_seed in arb_address(),
+        ) {
+            let env = Env::default();
+            let (client, admin, _treasury) = setup_factory(&env);
+            
+            client.set_allowlist_mode(&admin, &true).unwrap();
+            
+            let attacker = Address::generate(&env);
+            env.mock_all_auths();
+            
+            // Attempt: attacker tries to allowlist themselves
+            let result = client.try_add_to_allowlist(&attacker, &attacker);
+            
+            prop_assert!(result.is_err(),
+                "Attacker should not be able to allowlist themselves");
+            
+            prop_assert!(!client.is_allowlisted(&attacker),
+                "Attacker should not be allowlisted");
+        }
+
+        /// Escalation Test: TTL bump privilege escalation
+        /// 
+        /// Tests that non-admin cannot extend storage TTL to keep
+        /// stale or malicious state alive.
+        #[test]
+        fn fuzz_ttl_bump_escalation(
+            attacker_seed in arb_address(),
+            extend_ledgers in 1u32..=1_000_000u32,
+        ) {
+            let env = Env::default();
+            let (client, _admin, _treasury) = setup_factory(&env);
+            
+            let attacker = Address::generate(&env);
+            env.mock_all_auths();
+            
+            // Attempt: attacker tries to bump TTL
+            let result = client.try_bump_storage_ttl(&attacker, &extend_ledgers);
+            
+            prop_assert!(result.is_err(),
+                "Attacker should not be able to bump storage TTL");
+        }
     }
 }
 
@@ -999,5 +1138,82 @@ mod corpus_seeds {
         
         // New admin can cancel
         client.cancel_change(&new_admin, &id2).unwrap();
+    }
+
+    /// Corpus: TTL bump after admin transfer
+    #[test]
+    fn corpus_ttl_bump_after_admin_transfer() {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        env.mock_all_auths();
+        
+        // Old admin bumps TTL successfully
+        client.bump_storage_ttl(&admin, &100_000).unwrap();
+        
+        // Transfer admin
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin).unwrap();
+        
+        // Old admin cannot bump TTL anymore
+        let result = client.try_bump_storage_ttl(&admin, &100_000);
+        assert!(result.is_err(), "Old admin cannot bump TTL after transfer");
+        
+        // New admin can bump TTL
+        client.bump_storage_ttl(&new_admin, &100_000).unwrap();
+    }
+
+    /// Corpus: Allowlist mode toggle after admin transfer
+    #[test]
+    fn corpus_allowlist_mode_after_admin_transfer() {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        env.mock_all_auths();
+        
+        // Enable allowlist mode as admin
+        client.set_allowlist_mode(&admin, &true).unwrap();
+        assert!(client.is_allowlist_mode());
+        
+        // Transfer admin
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin).unwrap();
+        
+        // Old admin cannot toggle allowlist mode
+        let result = client.try_set_allowlist_mode(&admin, &false);
+        assert!(result.is_err(), "Old admin cannot toggle allowlist mode");
+        assert!(client.is_allowlist_mode(), "Mode should remain enabled");
+        
+        // New admin can toggle allowlist mode
+        client.set_allowlist_mode(&new_admin, &false).unwrap();
+        assert!(!client.is_allowlist_mode());
+    }
+
+    /// Corpus: Allowlist management after admin transfer
+    #[test]
+    fn corpus_allowlist_management_after_admin_transfer() {
+        let env = Env::default();
+        let (client, admin, _treasury) = setup_factory(&env);
+        
+        env.mock_all_auths();
+        
+        client.set_allowlist_mode(&admin, &true).unwrap();
+        
+        let account = Address::generate(&env);
+        client.add_to_allowlist(&admin, &account).unwrap();
+        assert!(client.is_allowlisted(&account));
+        
+        // Transfer admin
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin).unwrap();
+        
+        // Old admin cannot remove from allowlist
+        let result = client.try_remove_from_allowlist(&admin, &account);
+        assert!(result.is_err(), "Old admin cannot modify allowlist");
+        assert!(client.is_allowlisted(&account), "Account should remain allowlisted");
+        
+        // New admin can remove from allowlist
+        client.remove_from_allowlist(&new_admin, &account).unwrap();
+        assert!(!client.is_allowlisted(&account));
     }
 }

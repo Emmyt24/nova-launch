@@ -80,3 +80,31 @@ export interface StellarLedgerData {
   created_at: string;
   transaction_hash: string;
 }
+
+export interface TokenCreationFeeQuoteOptions {
+  /** Number of metadata attributes attached to the token (affects metadata fee). */
+  metadataAttributeCount?: number;
+  /** Whether an image is attached to the token metadata. */
+  hasImage?: boolean;
+  /** Whether a description is attached to the token metadata. */
+  hasDescription?: boolean;
+  /** Whether an external URL is attached to the token metadata. */
+  hasExternalUrl?: boolean;
+  /** Optional override for the base creation fee (in stroops). */
+  baseFeeOverride?: string;
+}
+
+export interface TokenCreationFeeQuote {
+  /** Base creation fee in stroops. */
+  baseFee: string;
+  /** Metadata-related fee in stroops. */
+  metadataFee: string;
+  /** Total fee in stroops (baseFee + metadataFee). */
+  totalFee: string;
+  /** Total fee expressed in XLM. */
+  totalFeeXlm: string;
+  /** Currency/asset used for the fee. */
+  currency: string;
+  /** Timestamp of when the quote was generated. */
+  timestamp: string;
+}

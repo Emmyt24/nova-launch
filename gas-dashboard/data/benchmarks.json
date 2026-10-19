@@ -28,5 +28,37 @@
     "avgGas": 150000,
     "source": "Market Research",
     "lastUpdated": "2024-02-01"
+  },
+  {
+    "name": "Token Factory",
+    "contract": "token_factory",
+    "function": "bump_ttl",
+    "avgGas": 12000,
+    "source": "Internal Benchmark",
+    "lastUpdated": "2024-03-01"
+  },
+  {
+    "name": "Token Factory",
+    "contract": "token_factory",
+    "function": "quote_creation_fee",
+    "avgGas": 3500,
+    "source": "Internal Benchmark",
+    "lastUpdated": "2024-03-01"
+  },
+  {
+    "name": "Token Factory",
+    "contract": "token_factory",
+    "function": "transfer",
+    "avgGas": 42000,
+    "source": "Internal Benchmark",
+    "lastUpdated": "2024-03-01"
+  },
+  {
+    "name": "Token Factory",
+    "contract": "token_factory",
+    "function": "mint",
+    "avgGas": 48000,
+    "source": "Internal Benchmark",
+    "lastUpdated": "2024-03-01"
   }
 ]

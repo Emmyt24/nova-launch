@@ -594,6 +594,118 @@ mod manual_atomicity_tests {
         }
     }
 
+    /// Manual test: Verify atomicity when allowlist mode is enabled at creation
+    #[test]
+    #[ignore] // Remove when create_token is implemented
+    fn test_atomicity_with_allowlist_mode() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let creator = Address::generate(&env);
+
+        let base_fee = 70_000_000i128;
+        let metadata_fee = 30_000_000i128;
+
+        client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+        let initial_state = ContractState::capture(&client);
+
+        let name = String::from_str(&env, "Allowlist Token");
+        let symbol = String::from_str(&env, "ALWL");
+        let metadata_uri = Some(String::from_str(&env, "ipfs://QmAllowlist"));
+        let allowlist_enabled = true;
+
+        // Fee quote must match the actual charge for the same options
+        let quoted_fee = client.get_creation_fee_quote(&metadata_uri.is_some(), &allowlist_enabled);
+        let expected_fee = base_fee + metadata_fee;
+        assert_eq!(quoted_fee, expected_fee, "Quote must match expected charge");
+
+        /*
+        let result = client.try_create_token(
+            &creator,
+            &name,
+            &symbol,
+            &7u32,
+            &1_000_000i128,
+            &metadata_uri,
+            &allowlist_enabled,
+            &quoted_fee,
+        );
+        */
+
+        let result: Result<Address, Error> = Ok(Address::generate(&env));
+
+        if result.is_ok() {
+            // Atomic success: token count incremented exactly once
+            let final_state = ContractState::capture(&client);
+            assert_eq!(final_state.token_count, initial_state.token_count + 1);
+
+            // Token stored with allowlist mode enabled
+            let token_info = client.get_token_info(&initial_state.token_count);
+            assert_eq!(token_info.metadata_uri, metadata_uri);
+            assert!(token_info.allowlist_enabled, "Allowlist mode must be persisted");
+
+            // Other state unchanged
+            assert_eq!(final_state.admin, initial_state.admin);
+            assert_eq!(final_state.treasury, initial_state.treasury);
+            assert_eq!(final_state.base_fee, initial_state.base_fee);
+            assert_eq!(final_state.metadata_fee, initial_state.metadata_fee);
+        } else {
+            // Atomic failure: no state changes, no token stored
+            let final_state = ContractState::capture(&client);
+            initial_state.assert_unchanged(&final_state);
+
+            let token_result = client.try_get_token_info(&initial_state.token_count);
+            assert!(
+                token_result.is_err(),
+                "No token should exist after failed allowlist creation"
+            );
+        }
+    }
+
+    /// Manual test: Verify fee quote equivalence across creation option combinations
+    #[test]
+    #[ignore] // Remove when create_token is implemented
+    fn test_fee_quote_matches_charge_for_all_option_combinations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        let base_fee = 70_000_000i128;
+        let metadata_fee = 30_000_000i128;
+
+        client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+        for has_metadata in [false, true] {
+            for allowlist_enabled in [false, true] {
+                let quoted_fee =
+                    client.get_creation_fee_quote(&has_metadata, &allowlist_enabled);
+
+                let expected_fee = if has_metadata {
+                    base_fee + metadata_fee
+                } else {
+                    base_fee
+                };
+
+                assert_eq!(
+                    quoted_fee, expected_fee,
+                    "Quote mismatch for metadata={}, allowlist={}",
+                    has_metadata, allowlist_enabled
+                );
+            }
+        }
+    }
+
     /// Manual test: Verify state consistency after multiple operations
     #[test]
     #[ignore] // Remove when create_token is implemented

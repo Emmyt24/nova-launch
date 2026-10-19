@@ -924,6 +924,206 @@ impl TokenFactory {
         Ok(info)
     }
 
+    // ── Storage TTL extension (#2242) ─────────────────────────────────────
+
+    /// Extend the TTL of a critical persistent entry (admin only).
+    ///
+    /// Persistent entries (factory config, token registry entries, allowlist
+    /// entries, …) are only guaranteed to live until their TTL expires. This
+    /// admin entry point lets operators bump the TTL of a specific critical
+    /// entry so it does not silently disappear from ledger state.
+    ///
+    /// The `kind` argument selects which critical entry to bump:
+    /// * `0` – factory configuration (`Admin`, `Treasury`, fees, pause flag)
+    /// * `1` – token registry entry for `index`
+    /// * `2` – allowlist entry for (`index`, `account`)
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` – caller is not the factory admin
+    /// * `Error::TokenNotFound` – no entry exists for the requested target
+    /// * `Error::InvalidParameters` – unknown `kind`
+    pub fn bump_ttl(
+        env: Env,
+        admin: Address,
+        kind: u32,
+        index: u32,
+        account: Option<Address>,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env).ok_or(Error::MissingAdmin)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::bump_critical_ttl(&env, kind, index, account.as_ref())
+    }
+
+    // ── Token creation fee quote (#2244) ──────────────────────────────────
+
+    /// Quote the fee that `create_token_with_options` would charge.
+    ///
+    /// Read-only: performs no state mutation and requires no authorization.
+    /// The quote is produced by the exact same internal helper used by the
+    /// charge path, so the quoted amount always matches the amount actually
+    /// charged for identical options.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `options` - The same creation options that would be passed to
+    ///   `create_token_with_options`
+    ///
+    /// # Returns
+    /// The total fee in stroops that would be charged.
+    pub fn quote_token_creation_fee(env: Env, options: types::TokenCreationOptions) -> i128 {
+        token_creation::compute_creation_fee(&env, &options)
+    }
+
+    // ── Allowlist (whitelist) transfer mode (#2245) ───────────────────────
+
+    /// Enable or disable allowlist mode for a token (creator only).
+    ///
+    /// When enabled, only allowlisted addresses may send or receive the token
+    /// and only allowlisted addresses may be minted to. The mode is chosen at
+    /// creation time via `TokenCreationOptions::allowlist_mode`; this entry
+    /// point lets the creator toggle it afterwards for compliance changes.
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` – contract is paused
+    /// * `Error::TokenNotFound` – token address not found
+    /// * `Error::Unauthorized` – caller is not the token creator
+    pub fn set_allowlist_mode(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        if storage::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        admin.require_auth();
+
+        let mut token_info =
+            storage::get_token_info_by_address(&env, &token_address).ok_or(Error::TokenNotFound)?;
+
+        if token_info.creator != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        token_info.allowlist_enabled = enabled;
+        storage::set_token_info_by_address(&env, &token_address, &token_info);
+
+        events::emit_allowlist_mode_set(&env, &token_address, &admin, enabled);
+        Ok(())
+    }
+
+    /// Add an address to a token's allowlist (creator only).
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` – contract is paused
+    /// * `Error::TokenNotFound` – token address not found
+    /// * `Error::Unauthorized` – caller is not the token creator
+    pub fn add_to_allowlist(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        account: Address,
+    ) -> Result<(), Error> {
+        if storage::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        admin.require_auth();
+
+        let token_info =
+            storage::get_token_info_by_address(&env, &token_address).ok_or(Error::TokenNotFound)?;
+
+        if token_info.creator != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::set_allowlisted(&env, &token_address, &account, true);
+        events::emit_allowlist_updated(&env, &token_address, &admin, &account, true);
+        Ok(())
+    }
+
+    /// Remove an address from a token's allowlist (creator only).
+    ///
+    /// # Errors
+    /// * `Error::ContractPaused` – contract is paused
+    /// * `Error::TokenNotFound` – token address not found
+    /// * `Error::Unauthorized` – caller is not the token creator
+    pub fn remove_from_allowlist(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        account: Address,
+    ) -> Result<(), Error> {
+        if storage::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        admin.require_auth();
+
+        let token_info =
+            storage::get_token_info_by_address(&env, &token_address).ok_or(Error::TokenNotFound)?;
+
+        if token_info.creator != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::set_allowlisted(&env, &token_address, &account, false);
+        events::emit_allowlist_updated(&env, &token_address, &admin, &account, false);
+        Ok(())
+    }
+
+    /// Check whether an address is allowlisted for a token.
+    pub fn is_allowlisted(env: Env, token_address: Address, account: Address) -> bool {
+        storage::is_allowlisted(&env, &token_address, &account)
+    }
+
+    /// Return whether allowlist mode is enabled for a token.
+    pub fn is_allowlist_mode(env: Env, token_address: Address) -> bool {
+        storage::get_token_info_by_address(&env, &token_address)
+            .map(|info| info.allowlist_enabled)
+            .unwrap_or(false)
+    }
+
+    /// Enforce allowlist mode for a transfer or mint (internal helper).
+    ///
+    /// No-op when allowlist mode is disabled for the token. When enabled, both
+    /// `from` (if any) and `to` must be allowlisted.
+    ///
+    /// # Errors
+    /// * `Error::TokenNotFound` – token address not found
+    /// * `Error::TransferRestricted` – an involved address is not allowlisted
+    pub fn check_allowlist(
+        env: Env,
+        token_address: Address,
+        from: Option<Address>,
+        to: Address,
+    ) -> Result<(), Error> {
+        let token_info =
+            storage::get_token_info_by_address(&env, &token_address).ok_or(Error::TokenNotFound)?;
+
+        if !token_info.allowlist_enabled {
+            return Ok(());
+        }
+
+        if let Some(from) = from {
+            if !storage::is_allowlisted(&env, &token_address, &from) {
+                return Err(Error::TransferRestricted);
+            }
+        }
+
+        if !storage::is_allowlisted(&env, &token_address, &to) {
+            return Err(Error::TransferRestricted);
+        }
+
+        Ok(())
+    }
+
     /// Batch update admin operations (Phase 2 optimization)
     ///
     /// Updates multiple admin parameters in a single transaction,
@@ -4986,6 +5186,108 @@ impl TokenFactory {
     /// mutating any state.
     pub fn pending_rewards(env: Env, caller: Address, pool_id: u64) -> Result<i128, Error> {
         staking::pending_rewards(&env, caller, pool_id)
+    }
+}
+
+#[cfg(test)]
+mod ttl_quote_allowlist_test {
+    use crate::{types::TokenCreationOptions, TokenFactory, TokenFactoryClient};
+    use soroban_sdk::{Address, Env};
+
+    fn setup() -> (Env, Address, Address, Address, TokenFactoryClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+        client.initialize(&admin, &treasury, &100, &50);
+        (env, admin, treasury, creator, client)
+    }
+
+    fn default_options() -> TokenCreationOptions {
+        TokenCreationOptions {
+            metadata_uri: None,
+            allowlist_mode: false,
+        }
+    }
+
+    // ── #2242 TTL bump ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_bump_ttl_requires_admin() {
+        let (_env, _admin, _treasury, creator, client) = setup();
+        let result = client.bump_ttl(&creator, &0, &0, &None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bump_ttl_factory_config_succeeds() {
+        let (_env, admin, _treasury, _creator, client) = setup();
+        assert!(client.bump_ttl(&admin, &0, &0, &None).is_ok());
+    }
+
+    #[test]
+    fn test_bump_ttl_unknown_kind_rejected() {
+        let (_env, admin, _treasury, _creator, client) = setup();
+        assert!(client.bump_ttl(&admin, &99, &0, &None).is_err());
+    }
+
+    // ── #2244 Fee quote ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_quote_matches_base_fee_without_metadata() {
+        let (_env, _admin, _treasury, _creator, client) = setup();
+        let quote = client.quote_token_creation_fee(&default_options());
+        assert_eq!(quote, client.get_base_fee());
+    }
+
+    #[test]
+    fn test_quote_includes_metadata_fee() {
+        let (env, _admin, _treasury, _creator, client) = setup();
+        let mut options = default_options();
+        options.metadata_uri = Some(soroban_sdk::String::from_str(&env, "ipfs://cid"));
+        let quote = client.quote_token_creation_fee(&options);
+        assert_eq!(quote, client.get_base_fee() + client.get_metadata_fee());
+    }
+
+    #[test]
+    fn test_quote_is_read_only() {
+        let (_env, _admin, _treasury, _creator, client) = setup();
+        let before = client.get_state();
+        let _ = client.quote_token_creation_fee(&default_options());
+        let after = client.get_state();
+        assert_eq!(before.base_fee, after.base_fee);
+        assert_eq!(before.metadata_fee, after.metadata_fee);
+    }
+
+    // ── #2245 Allowlist mode ─────────────────────────────────────────────
+
+    #[test]
+    fn test_allowlist_mode_defaults_off() {
+        let (_env, _admin, _treasury, _creator, client) = setup();
+        let token = Address::generate(&_env);
+        assert!(!client.is_allowlist_mode(&token));
+    }
+
+    #[test]
+    fn test_add_to_allowlist_requires_creator() {
+        let (env, _admin, _treasury, _creator, client) = setup();
+        let token = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let account = Address::generate(&env);
+        assert!(client
+            .add_to_allowlist(&token, &stranger, &account)
+            .is_err());
+    }
+
+    #[test]
+    fn test_allowlist_check_noop_when_disabled() {
+        let (env, _admin, _treasury, _creator, client) = setup();
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+        assert!(client.check_allowlist(&token, &None, &to).is_err());
     }
 }
 

@@ -184,6 +184,39 @@ else
     exit 1
 fi
 
+# Run feature-specific tests (TTL extension, fee quote, allowlist)
+print_stage "Running feature tests (TTL, fee quote, allowlist)..."
+if cargo test --all-features ttl; then
+    print_success "TTL extension tests passed"
+else
+    print_error "TTL extension tests failed"
+    exit 1
+fi
+
+if cargo test --all-features fee_quote; then
+    print_success "Fee quote tests passed"
+else
+    print_error "Fee quote tests failed"
+    exit 1
+fi
+
+if cargo test --all-features allowlist; then
+    print_success "Allowlist tests passed"
+else
+    print_error "Allowlist tests failed"
+    exit 1
+fi
+
+# Validate versioned event schemas
+print_stage "Validating versioned event schemas..."
+if cargo test --all-features event_version; then
+    print_success "Event schema versioning tests passed"
+else
+    print_error "Event schema versioning tests failed"
+    exit 1
+fi
+=======
+
 # Check if tarpaulin is installed
 if ! command -v cargo-tarpaulin &> /dev/null; then
     print_warning "Installing cargo-tarpaulin..."

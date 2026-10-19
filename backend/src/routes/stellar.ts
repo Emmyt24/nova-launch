@@ -1,6 +1,8 @@
 import { Router, Request, Response } from "express";
 import axios from "axios";
 import { successResponse, errorResponse } from "../utils/response";
+import { getExplorerUrl, getTxUrl } from "../config/explorer";
+import { env } from "../config/env";
 import { getHorizonEndpointPool } from "../services/endpointPool";
 
 const router = Router();
@@ -84,12 +86,7 @@ function mapFeeBucket(bucket: HorizonFeeBucket) {
 }
 
 function getHorizonUrl(): string {
-  if (process.env.STELLAR_HORIZON_URL) {
-    return process.env.STELLAR_HORIZON_URL;
-  }
-  return process.env.STELLAR_NETWORK === "mainnet"
-    ? "https://horizon.stellar.org"
-    : "https://horizon-testnet.stellar.org";
+  return env.STELLAR_HORIZON_URL;
 }
 
 /**
@@ -155,7 +152,17 @@ router.get("/fee-stats", async (_req: Request, res: Response) => {
 
     feeStatsCache = { data: feeStats, timestamp: now };
 
-    res.json(successResponse(feeStats));
+    res.json(
+      successResponse({
+        ...feeStats,
+        explorerUrl: getExplorerUrl(env.STELLAR_NETWORK, env.STELLAR_EXPLORER_PROVIDER),
+        txExplorerUrl: getTxUrl(
+          env.STELLAR_NETWORK,
+          env.STELLAR_EXPLORER_PROVIDER,
+          String(feeStats.lastLedger)
+        ),
+      })
+    );
   } catch (error) {
     console.error("Error fetching Horizon fee stats:", error);
     res.status(502).json(

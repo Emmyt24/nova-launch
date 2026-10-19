@@ -6,7 +6,11 @@
  *
  * Design decisions:
  *  - BigInt fields are serialised as String to avoid JS precision loss.
- *  - All list queries accept optional `limit` (max 100) and `offset` args.
+ *  - Legacy list queries accept optional `limit` (max 100) and `offset` args.
+ *  - Relay-style `*Connection` queries (`tokensConnection`, `streamsConnection`)
+ *    accept `first` (max 100, default 20) and an opaque `after` cursor and
+ *    return `edges` / `pageInfo` / `totalCount` (#2206). Prefer these for new
+ *    clients; the offset-based fields are kept for backwards compatibility.
  *  - Enum values mirror the Prisma enums so resolvers can pass them through directly.
  *  - Mutations are intentionally excluded – writes go through the existing REST
  *    endpoints which carry full validation / auth middleware.
@@ -206,12 +210,45 @@ export const typeDefs = /* GraphQL */ `
     timestamp: DateTime!
   }
 
+  # ── Relay connections (#2206) ──────────────────────────────────────────────
+
+  type PageInfo {
+    hasNextPage: Boolean!
+    hasPreviousPage: Boolean!
+    startCursor: String
+    endCursor: String
+  }
+
+  type TokenEdge {
+    cursor: String!
+    node: Token!
+  }
+
+  type TokenConnection {
+    edges: [TokenEdge!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
+  }
+
+  type StreamEdge {
+    cursor: String!
+    node: Stream!
+  }
+
+  type StreamConnection {
+    edges: [StreamEdge!]!
+    pageInfo: PageInfo!
+    totalCount: Int!
+  }
+
   # ── Root Query ─────────────────────────────────────────────────────────────
 
   type Query {
     # Token queries
     token(address: String!): Token
     tokens(creator: String, limit: Int, offset: Int): [Token!]!
+    # Cursor-paginated tokens, newest first. first: 1-100 (default 20).
+    tokensConnection(creator: String, first: Int, after: String): TokenConnection!
 
     # Stream queries
     stream(streamId: Int!): Stream
@@ -222,6 +259,14 @@ export const typeDefs = /* GraphQL */ `
       limit: Int
       offset: Int
     ): [Stream!]!
+    # Cursor-paginated streams, newest first. first: 1-100 (default 20).
+    streamsConnection(
+      creator: String
+      recipient: String
+      status: StreamStatus
+      first: Int
+      after: String
+    ): StreamConnection!
 
     # Governance queries
     proposal(proposalId: Int!): Proposal

@@ -4,7 +4,8 @@
  * All resolvers are read-only (Query only). BigInt values from Prisma are
  * converted to strings before returning so JSON serialisation is lossless.
  *
- * Pagination: `limit` is capped at 100; `offset` defaults to 0.
+ * Pagination: `limit` is capped at 100; `offset` defaults to 0. The Relay
+ * `*Connection` resolvers use `first` / `after` instead — see ./connection.ts.
  *
  * Error-sanitization convention
  * -----------------------------
@@ -22,6 +23,11 @@ import { GraphQLError } from "graphql";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { eventBus, EventBus } from "../services/eventBus";
+import {
+  ConnectionArgs,
+  buildConnection,
+  connectionQueryArgs,
+} from "./connection";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +92,41 @@ export function bigintToString<T>(obj: T): T {
     ) as T;
   }
   return obj;
+}
+
+/**
+ * Shared implementation for Relay connection resolvers. Argument validation
+ * errors (bad `first` / `after`) are surfaced to the client as-is; only
+ * database errors are sanitized through `handleDbError`.
+ */
+async function resolveConnection<T extends { id: string }>(
+  resolver: string,
+  args: ConnectionArgs,
+  where: Record<string, unknown>,
+  delegate: {
+    findMany: (q: any) => Promise<T[]>;
+    count: (q: any) => Promise<number>;
+  }
+) {
+  const { first, ...query } = connectionQueryArgs(args);
+  try {
+    const [rows, totalCount] = await Promise.all([
+      delegate.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        ...query,
+      }),
+      delegate.count({ where }),
+    ]);
+    return buildConnection(
+      bigintToString(rows),
+      first,
+      args.after != null,
+      totalCount
+    );
+  } catch (err) {
+    handleDbError(resolver, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +335,19 @@ export const resolvers = {
       }
     },
 
+    /** Relay connection over tokens, optionally filtered by creator. */
+    async tokensConnection(
+      _: unknown,
+      args: ConnectionArgs & { creator?: string }
+    ) {
+      return resolveConnection(
+        "tokensConnection",
+        args,
+        args.creator ? { creator: args.creator } : {},
+        prisma.token as any
+      );
+    },
+
     // ── Stream ──────────────────────────────────────────────────────────────
 
     /** Fetch a single stream by its on-chain streamId. */
@@ -334,6 +388,27 @@ export const resolvers = {
       } catch (err) {
         handleDbError("streams", err);
       }
+    },
+
+    /** Relay connection over streams with optional filters. */
+    async streamsConnection(
+      _: unknown,
+      args: ConnectionArgs & {
+        creator?: string;
+        recipient?: string;
+        status?: string;
+      }
+    ) {
+      const where: Record<string, unknown> = {};
+      if (args.creator) where.creator = args.creator;
+      if (args.recipient) where.recipient = args.recipient;
+      if (args.status) where.status = args.status;
+      return resolveConnection(
+        "streamsConnection",
+        args,
+        where,
+        prisma.stream as any
+      );
     },
 
     // ── Governance ──────────────────────────────────────────────────────────

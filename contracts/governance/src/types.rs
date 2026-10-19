@@ -184,6 +184,10 @@ pub enum Error {
     CircularDelegation = 9,
     /// Snapshot not found for the requested ledger
     SnapshotNotFound = 10,
+    /// An address parameter was the zero address (all-zero Stellar account/contract ID)
+    ZeroAddress = 11,
+    /// An address parameter referred to the caller itself where self-reference is not allowed
+    SelfReferential = 12,
 }
 
 /// Errors for the proposal voting system.

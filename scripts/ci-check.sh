@@ -219,7 +219,36 @@ fi
 
 cd ../..
 
-print_stage "Stage 5: Deployment Simulation"
+print_stage "Stage 5: Gas Regression Gate"
+
+# Measure governance operation gas usage and compare against stored baselines.
+# Regressions over the configured threshold (10%) fail the pipeline.
+if [ -f "gas-dashboard/scripts/measure.js" ] && [ -f "gas-dashboard/scripts/check-thresholds.js" ]; then
+    if command -v node &> /dev/null; then
+        print_stage "Measuring gas usage for governance operations..."
+        if node gas-dashboard/scripts/measure.js; then
+            print_success "Gas measurement complete"
+        else
+            print_error "Gas measurement failed"
+            exit 1
+        fi
+
+        print_stage "Checking gas usage against baselines..."
+        if node gas-dashboard/scripts/check-thresholds.js; then
+            print_success "Gas regression check passed"
+        else
+            print_error "Gas regression detected (over 10% vs baseline). See gas-dashboard/README.md for updating baselines."
+            exit 1
+        fi
+    else
+        print_error "Node.js not found, cannot run gas regression gate"
+        exit 1
+    fi
+else
+    print_warning "Gas regression scripts not found, skipping gas gate"
+fi
+
+print_stage "Stage 6: Deployment Simulation"
 
 # Check if deployment orchestrator is available
 if [ -d "scripts/deployment" ]; then

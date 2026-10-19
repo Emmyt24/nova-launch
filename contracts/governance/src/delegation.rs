@@ -48,6 +48,30 @@ use crate::types::{DelegationRecord, Error};
 /// previous delegation rather than extending a chain.
 const MAX_CHAIN_DEPTH: u32 = 1;
 
+/// Returns `true` when `addr` is the all-zero (degenerate) address.
+///
+/// Soroban has no native "zero address" sentinel, so we treat an address
+/// whose string representation is empty or composed solely of zero
+/// characters as the zero address.  This guards public entry-points against
+/// degenerate parameters that can never correspond to a real account.
+fn is_zero_address(env: &Env, addr: &Address) -> bool {
+    let _ = env;
+    let s = addr.to_string();
+    let len = s.len();
+    if len == 0 {
+        return true;
+    }
+    let mut i = 0u32;
+    while i < len {
+        match s.get(i) {
+            Some(c) if c == '0' => {}
+            _ => return false,
+        }
+        i += 1;
+    }
+    true
+}
+
 // ─── Public entry-points ───────────────────────────────────────────────────
 
 /// Delegate the caller's vote power to `delegatee`.
@@ -65,16 +89,23 @@ const MAX_CHAIN_DEPTH: u32 = 1;
 /// * `CircularDelegation`   - delegatee has already delegated to delegator
 /// * `ContractPaused`       - contract is paused
 /// * `Unauthorized`         - delegator did not sign
+/// * `ZeroAddress`          - `delegatee` is the zero address
 pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(), Error> {
     // Guard: contract must not be paused
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
     }
 
+    // Validate: reject the zero address as delegatee (degenerate parameter).
+    // Checked before auth/state mutation so no gas is wasted on invalid input.
+    if is_zero_address(env, &delegatee) {
+        return Err(Error::ZeroAddress);
+    }
+
     // Auth: delegator must sign this transaction
     delegator.require_auth();
 
-    // Validate: no self-delegation
+    // Validate: no self-delegation (self-referential parameter)
     if delegator == delegatee {
         return Err(Error::InvalidParameters);
     }
@@ -196,6 +227,11 @@ pub fn delegate(env: &Env, delegator: Address, delegatee: Address) -> Result<(),
 pub fn undelegate(env: &Env, delegator: Address) -> Result<(), Error> {
     if storage::is_paused(env) {
         return Err(Error::ContractPaused);
+    }
+
+    // Validate: reject the zero address (degenerate parameter)
+    if is_zero_address(env, &delegator) {
+        return Err(Error::ZeroAddress);
     }
 
     delegator.require_auth();

@@ -332,10 +332,13 @@ pub fn apply_slippage_tolerance(quoted_out: i128, slippage_bps: u32) -> Result<i
 /// Kept separate from the step so the comparison is exercisable on its own and
 /// so a future partial-burn policy has one place to change.
 pub fn reconcile_burn(expected: i128, realized: i128) -> ReconciliationReport {
+    // `delta` is diagnostic only, so an overflowing subtraction is clamped to
+    // the representable extremes rather than aborting the caller.
+    let delta = realized.saturating_sub(expected);
     ReconciliationReport {
         expected_burn: expected,
         realized_burn: realized,
-        delta: realized - expected,
+        delta,
         reconciled: realized == expected,
     }
 }
@@ -374,22 +377,33 @@ fn burn_acquired(env: &Env, token_index: u32, amount: i128) -> Result<i128, Erro
         return Err(Error::TokenPaused);
     }
 
+    if amount <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+
     if amount > info.total_supply {
         return Err(Error::InsufficientBalance);
     }
 
-    info.total_supply = info
+    let new_supply = info
         .total_supply
         .checked_sub(amount)
         .ok_or(Error::ArithmeticError)?;
-    info.total_burned = info
+    if new_supply < 0 {
+        return Err(Error::ArithmeticError);
+    }
+    let new_burned = info
         .total_burned
         .checked_add(amount)
         .ok_or(Error::ArithmeticError)?;
-    info.burn_count = info
+    let new_burn_count = info
         .burn_count
         .checked_add(1)
         .ok_or(Error::ArithmeticError)?;
+
+    info.total_supply = new_supply;
+    info.total_burned = new_burned;
+    info.burn_count = new_burn_count;
 
     storage::set_token_info(env, token_index, &info);
     let _ = crate::snapshot::record_supply_snapshot(env, token_index, info.total_supply);
@@ -411,6 +425,9 @@ fn check_invariants(
     new_bought: i128,
     new_burned: i128,
 ) -> Result<(), Error> {
+    if new_spent < 0 || new_bought < 0 || new_burned < 0 {
+        return Err(Error::InvariantViolation);
+    }
     if new_spent > campaign.budget {
         return Err(Error::InvariantViolation);
     }
@@ -421,6 +438,15 @@ fn check_invariants(
         return Err(Error::InvariantViolation);
     }
     if new_burned > new_bought {
+        return Err(Error::InvariantViolation);
+    }
+    // Re-derive the unspent budget with checked arithmetic so an inconsistent
+    // record (spent > budget) is caught here rather than at a later read.
+    let remaining = campaign
+        .budget
+        .checked_sub(new_spent)
+        .ok_or(Error::InvariantViolation)?;
+    if remaining < 0 {
         return Err(Error::InvariantViolation);
     }
     Ok(())
@@ -583,5 +609,113 @@ mod tests {
             Err(Error::SlippageExceeded),
             "A fill one unit below the slippage floor must be rejected"
         );
+    }
+
+    // ── #2254: overflow-safe arithmetic boundary tests ────────────────────────
+
+    /// `apply_slippage_tolerance` must report `ArithmeticError` instead of
+    /// wrapping when the intermediate product overflows i128.
+    #[test]
+    fn test_apply_slippage_tolerance_overflow_is_error() {
+        let result = apply_slippage_tolerance(i128::MAX, 1);
+        assert_eq!(result, Err(Error::ArithmeticError));
+    }
+
+    /// A zero tolerance must return the quote unchanged, and a 100% tolerance
+    /// must be rejected rather than producing a zero floor.
+    #[test]
+    fn test_apply_slippage_tolerance_boundaries() {
+        assert_eq!(apply_slippage_tolerance(1_234, 0), Ok(1_234));
+        assert_eq!(
+            apply_slippage_tolerance(1_234, BPS_DENOMINATOR as u32),
+            Err(Error::InvalidParameters)
+        );
+    }
+
+    /// `reconcile_burn` must not panic on extreme inputs; the delta saturates
+    /// while `reconciled` still reflects exact equality.
+    #[test]
+    fn test_reconcile_burn_saturates_delta() {
+        let report = reconcile_burn(i128::MAX, i128::MIN);
+        assert_eq!(report.delta, i128::MIN);
+        assert!(!report.reconciled);
+
+        let report = reconcile_burn(i128::MIN, i128::MAX);
+        assert_eq!(report.delta, i128::MAX);
+        assert!(!report.reconciled);
+
+        let report = reconcile_burn(500, 500);
+        assert_eq!(report.delta, 0);
+        assert!(report.reconciled);
+    }
+
+    /// A step that would push `spent` past the budget must be rejected with
+    /// `InsufficientBudget` and leave the campaign untouched.
+    #[test]
+    fn test_execute_buyback_step_budget_boundary() {
+        let env = Env::default();
+        let (admin, _treasury) = setup(&env);
+        seed_token(&env, 0, &admin, 1_000_000);
+
+        let budget: i128 = 1_000;
+        seed_active_campaign(&env, 1, &admin, budget, budget, 0);
+
+        // Exactly the budget is allowed.
+        let ok = execute_buyback_step(&env, &admin, 1, budget, 100, 100);
+        assert!(ok.is_ok(), "spending exactly the budget must succeed");
+        assert_eq!(ok.unwrap().budget_remaining, 0);
+
+        // Any further spend exceeds the budget.
+        let err = execute_buyback_step(&env, &admin, 1, 1, 1, 1);
+        assert_eq!(err, Err(Error::InsufficientBudget));
+
+        let campaign = get_campaign(&env, 1).unwrap();
+        assert_eq!(campaign.spent, budget);
+        assert_eq!(campaign.execution_count, 1);
+    }
+
+    /// Burning more than the token's supply must fail cleanly rather than
+    /// underflowing supply.
+    #[test]
+    fn test_burn_acquired_rejects_over_supply() {
+        let env = Env::default();
+        let (admin, _treasury) = setup(&env);
+        seed_token(&env, 0, &admin, 100);
+
+        assert_eq!(
+            burn_acquired(&env, 0, 101),
+            Err(Error::InsufficientBalance)
+        );
+        assert_eq!(burn_acquired(&env, 0, 0), Err(Error::InvalidAmount));
+
+        // Burning exactly the supply is allowed and zeroes it out.
+        assert_eq!(burn_acquired(&env, 0, 100), Ok(100));
+        let info = storage::get_token_info(&env, 0).unwrap();
+        assert_eq!(info.total_supply, 0);
+        assert_eq!(info.total_burned, 100);
+    }
+
+    /// `check_invariants` must reject a proposed state whose spend exceeds the
+    /// budget or whose totals move backwards.
+    #[test]
+    fn test_check_invariants_rejects_inconsistent_state() {
+        let env = Env::default();
+        let (admin, _treasury) = setup(&env);
+        seed_active_campaign(&env, 1, &admin, 1_000, 1_000, 0);
+        let campaign = get_campaign(&env, 1).unwrap();
+
+        assert_eq!(
+            check_invariants(&campaign, 1_001, 0, 0),
+            Err(Error::InvariantViolation)
+        );
+        assert_eq!(
+            check_invariants(&campaign, -1, 0, 0),
+            Err(Error::InvariantViolation)
+        );
+        assert_eq!(
+            check_invariants(&campaign, 10, 5, 6),
+            Err(Error::InvariantViolation)
+        );
+        assert_eq!(check_invariants(&campaign, 10, 5, 5), Ok(()));
     }
 }

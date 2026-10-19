@@ -32,17 +32,29 @@ const FEE_DENOMINATOR: i128 = 1000;
 
 /// Integer square root via Newton-Raphson (floor).
 /// Returns 0 for n = 0.
-fn isqrt(n: i128) -> i128 {
+fn isqrt(n: i128) -> Result<i128, Error> {
     if n <= 0 {
-        return 0;
+        return Ok(0);
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    // (x + 1) / 2 — x is positive here so the addition cannot overflow for
+    // any value that fits in i128 except i128::MAX; guard it explicitly.
+    let mut y = x
+        .checked_add(1)
+        .ok_or(Error::ArithmeticError)?
+        .checked_div(2)
+        .ok_or(Error::ArithmeticError)?;
     while y < x {
         x = y;
-        y = (x + n / x) / 2;
+        // (x + n / x) / 2
+        let n_over_x = n.checked_div(x).ok_or(Error::ArithmeticError)?;
+        y = x
+            .checked_add(n_over_x)
+            .ok_or(Error::ArithmeticError)?
+            .checked_div(2)
+            .ok_or(Error::ArithmeticError)?;
     }
-    x
+    Ok(x)
 }
 
 /// Apply the constant-product swap formula with a 0.3 % fee retained in the
@@ -205,7 +217,7 @@ pub fn add_liquidity(
             desired_a
                 .checked_mul(desired_b)
                 .ok_or(Error::ArithmeticError)?,
-        );
+        )?;
         if shares == 0 {
             return Err(Error::ZeroLiquidity);
         }

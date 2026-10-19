@@ -41,3 +41,17 @@ cases = 100
 max_shrink_iters = 1000
 # Timeout per test case (in milliseconds)
 timeout = 5000
+
+# Release profile tuned for Soroban contract WASM.
+# - overflow-checks: trap on arithmetic overflow instead of silently wrapping
+#   (required for the overflow-safe arithmetic audit).
+# - opt-level = "z": optimize for size to keep WASM within ledger limits.
+# - lto: link-time optimization to further reduce binary size.
+# - panic = "abort": no unwinding machinery in the WASM binary.
+# - strip = "symbols": drop symbol tables from the final artifact.
+[profile.release]
+overflow-checks = true
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = "symbols"

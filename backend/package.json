@@ -28,6 +28,8 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json}\"",
     "type-check": "tsc --noEmit",
     "docs:generate": "tsx scripts/generate-openapi.ts && tsx scripts/generate-docs.ts",
+    "docs:env": "tsx scripts/generate-env-docs.ts",
+    "docs:env:check": "tsx scripts/generate-env-docs.ts --check",
     "generate:event-types": "tsx scripts/generate-event-types.ts",
     "incident:test": "vitest run --config ../monitoring/pagerduty/vitest.config.ts ../monitoring/pagerduty/incident-response.test.ts",
     "test:health-monitor": "vitest run --root ../monitoring/health-checks",

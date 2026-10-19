@@ -38,7 +38,7 @@ const nonEmptyString = z.string().min(1, 'must be a non-empty string');
  * Required vars: missing any of these triggers process.exit(1).
  * Optional vars: absence produces a warning but execution continues.
  */
-const REQUIRED_SCHEMAS = {
+export const REQUIRED_SCHEMAS = {
   // ── Auth ──────────────────────────────────────────────────────────────────
   Auth: z.object({
     JWT_SECRET: nonEmptyString.describe('JWT signing secret'),
@@ -81,7 +81,7 @@ const REQUIRED_SCHEMAS = {
   }),
 } as const;
 
-const OPTIONAL_VARS: Record<string, { service: string; description: string }> = {
+export const OPTIONAL_VARS: Record<string, { service: string; description: string }> = {
   REDIS_URL: { service: 'Cache', description: 'Redis connection URL (defaults to localhost)' },
   SENTRY_DSN: { service: 'Observability', description: 'Sentry DSN for error tracking' },
   FACTORY_CONTRACT_ID: { service: 'Stellar', description: 'Soroban factory contract ID (required on mainnet)' },

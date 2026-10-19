@@ -6,6 +6,9 @@
  */
 
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { withRequestIdPropagation } from "./requestIdPropagation";
+
+export { withRequestIdPropagation } from "./requestIdPropagation";
 
 export interface StellarNetworkConfig {
   network: "testnet" | "mainnet";
@@ -28,16 +31,20 @@ export const stellarConfig: StellarNetworkConfig = {
 export function getHorizonServer(
   config: StellarNetworkConfig = stellarConfig
 ): StellarSdk.Horizon.Server {
-  return new StellarSdk.Horizon.Server(config.horizonUrl);
+  return withRequestIdPropagation(
+    new StellarSdk.Horizon.Server(config.horizonUrl)
+  );
 }
 
 /** Get or create Soroban RPC server instance */
 export function getSorobanServer(
   config: StellarNetworkConfig = stellarConfig
 ): StellarSdk.rpc.Server {
-  return new StellarSdk.rpc.Server(config.sorobanRpcUrl, {
-    timeout: 30 * 1000,
-  });
+  return withRequestIdPropagation(
+    new StellarSdk.rpc.Server(config.sorobanRpcUrl, {
+      timeout: 30 * 1000,
+    })
+  );
 }
 
 /**

@@ -22,6 +22,8 @@ export interface TraceContext {
 
 interface RequestContext {
   correlationId: string;
+  /** Per-request ID (`X-Request-Id`), accepted from the client or generated — see issue #2186. */
+  requestId?: string;
   transactionId?: string;
   /** Parsed incoming W3C `traceparent` context, when present on the request. */
   traceContext?: TraceContext;
@@ -35,6 +37,10 @@ export const asyncContext = new AsyncLocalStorage<RequestContext>();
 
 export function getCorrelationId(): string | undefined {
   return asyncContext.getStore()?.correlationId;
+}
+
+export function getRequestId(): string | undefined {
+  return asyncContext.getStore()?.requestId;
 }
 
 export function getTransactionId(): string | undefined {
@@ -57,9 +63,10 @@ export function runWithContext<T>(
   correlationId: string,
   fn: () => T,
   transactionId?: string,
-  traceContext?: TraceContext
+  traceContext?: TraceContext,
+  requestId?: string
 ): T {
-  return asyncContext.run({ correlationId, transactionId, traceContext }, fn);
+  return asyncContext.run({ correlationId, transactionId, traceContext, requestId }, fn);
 }
 
 export function runWithTenant<T>(tenantId: string, fn: () => T): T {
@@ -67,7 +74,9 @@ export function runWithTenant<T>(tenantId: string, fn: () => T): T {
   return asyncContext.run(
     {
       correlationId: store?.correlationId ?? '',
+      requestId: store?.requestId,
       transactionId: store?.transactionId,
+      traceContext: store?.traceContext,
       tenantId,
     },
     fn
@@ -79,7 +88,9 @@ export function runBypassing<T>(fn: () => T): T {
   return asyncContext.run(
     {
       correlationId: store?.correlationId ?? '',
+      requestId: store?.requestId,
       transactionId: store?.transactionId,
+      traceContext: store?.traceContext,
       tenantId: store?.tenantId,
       bypassTenant: true,
     },

@@ -62,6 +62,7 @@ import {
   sleep
 } from "./rate-limiter";
 import { CircuitBreaker } from "../lib/circuitBreaker";
+import { withRequestIdPropagation } from "../lib/stellar/requestIdPropagation";
 import {
   assertValidAddress,
   isValidAddress,
@@ -143,13 +144,17 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    this.horizon = new StellarSdk.Horizon.Server(this.config.horizonUrl, {
-      allowHttp: this.config.network === "testnet",
-    });
+    this.horizon = withRequestIdPropagation(
+      new StellarSdk.Horizon.Server(this.config.horizonUrl, {
+        allowHttp: this.config.network === "testnet",
+      })
+    );
 
-    this.soroban = new StellarSdk.rpc.Server(this.config.sorobanRpcUrl, {
-      allowHttp: this.config.network === "testnet",
-    });
+    this.soroban = withRequestIdPropagation(
+      new StellarSdk.rpc.Server(this.config.sorobanRpcUrl, {
+        allowHttp: this.config.network === "testnet",
+      })
+    );
 
     this.logger.log(
       `StellarService initialized on ${this.config.network}. ` +

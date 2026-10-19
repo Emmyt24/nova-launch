@@ -95,3 +95,17 @@ traceparent: <version>-<trace-id>-<parent-id>-<trace-flags>
 - Backend capture/re-emission: `cd backend && npx vitest run src/__tests__/otel-trace-propagation.smoke.test.ts`
   — proves the backend parses an inbound `traceparent` into its async
   context and re-emits it on outbound calls, with or without a live OTel SDK.
+
+## Request ID (`X-Request-Id`) — issue #2186
+
+Every HTTP request gets a request ID that ties together its middleware logs, service logs, Stellar RPC calls and webhook deliveries.
+
+| Step | Behaviour |
+|------|-----------|
+| Inbound | `requestLoggingMiddleware` accepts the client's `X-Request-Id` if it is 1–128 characters from `[A-Za-z0-9._:-]`. Otherwise it generates a UUID v4. A malformed value is discarded, not sanitized. |
+| Context | The ID is stored in the AsyncLocalStorage context (`getRequestId()` in `lib/async-context.ts`) and on `req.requestId`. `runWithTenant` and `runBypassing` keep it. |
+| Logs | `logger.*` adds `requestId` to every structured entry written inside a request. The access log line also includes it. |
+| Outbound HTTP | `buildPropagationHeaders()` / `outboundFetch()` forward the inbound request ID. Outside a request (background jobs), a fresh ID is generated for each call. |
+| Stellar RPC / Horizon | `withRequestIdPropagation(server)` (in `lib/stellar/requestIdPropagation.ts`) registers a request interceptor on the SDK `httpClient`. The interceptor adds `X-Request-Id`, `X-Correlation-Id`, `X-Transaction-Id` and `traceparent`. `getSorobanServer`, `getHorizonServer` and `StellarService` use it. |
+| Webhooks | `triggerEvent` records the request ID when the delivery is queued, because pool workers may run outside the request context. Each delivery attempt sends it as `X-Request-Id`, alongside `X-Correlation-Id`. |
+| Response | The ID is returned in the `X-Request-Id` response header. Structured error bodies also include it as `requestId`. |

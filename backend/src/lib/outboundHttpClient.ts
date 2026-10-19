@@ -11,7 +11,7 @@
  * ─────────────────
  *   X-Correlation-Id   — per-request trace ID (backend-generated if absent)
  *   X-Transaction-Id   — logical transaction ID originated at the frontend page load
- *   X-Request-Id       — unique ID for each individual HTTP call
+ *   X-Request-Id       — the inbound request's ID (#2186); a fresh one outside a request
  *   traceparent         — W3C distributed-trace context (#1333)
  *
  * Usage
@@ -40,11 +40,12 @@
  */
 
 import { context, propagation } from '@opentelemetry/api';
-import { getCorrelationId, getTransactionId, getTraceContext } from './async-context.js';
+import { getCorrelationId, getRequestId, getTransactionId, getTraceContext } from './async-context.js';
 import {
   HEADER_CORRELATION_ID,
   HEADER_TRANSACTION_ID,
   HEADER_REQUEST_ID,
+  generateRequestId,
 } from '../middleware/request-logging.middleware.js';
 import { CircuitBreaker, CircuitBreakerOptions, registerCircuitBreaker } from './circuitBreaker.js';
 
@@ -91,9 +92,9 @@ export function buildPropagationHeaders(): Record<string, string> {
     headers[HEADER_TRACEPARENT] = traceParent;
   }
 
-  // Generate a fresh per-call request ID so individual hops are traceable
-  headers[HEADER_REQUEST_ID] =
-    `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  // Forward the inbound request ID so downstream logs join on the same value;
+  // outside a request (background jobs) generate one per call.
+  headers[HEADER_REQUEST_ID] = getRequestId() ?? generateRequestId();
 
   return headers;
 }

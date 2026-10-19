@@ -7,7 +7,9 @@
 #[cfg(test)]
 extern crate std;
 
+mod admin_transfer_timeout;
 mod compliance_reporting;
+mod function_pause;
 mod fractionalization;
 #[cfg(test)]
 mod fractionalization_test;
@@ -84,6 +86,7 @@ mod token_creation_snapshot_test;
 mod token_recovery;
 mod treasury;
 mod types;
+mod upgrade_migration;
 mod validation;
 mod vault;
 mod vesting;
@@ -641,6 +644,7 @@ impl TokenFactory {
 
         // Overwrite any existing pending admin (prevents stale proposals)
         storage::set_pending_admin(&env, &new_admin);
+        admin_transfer_timeout::record_proposal(&env);
 
         // Emit both the legacy and new explicit AdminTransferProposed events
         events::emit_admin_proposed(&env, &current_admin, &new_admin);
@@ -667,6 +671,7 @@ impl TokenFactory {
         new_admin.require_auth();
 
         let pending = storage::get_pending_admin(&env).ok_or(Error::Unauthorized)?;
+        admin_transfer_timeout::require_not_expired(&env)?;
 
         if new_admin != pending {
             return Err(Error::Unauthorized);
@@ -705,6 +710,11 @@ impl TokenFactory {
         events::emit_admin_cancelled(&env, &admin, &pending);
 
         Ok(())
+    }
+
+    /// Expiry timestamp of the pending admin proposal (None if none recorded)
+    pub fn pending_admin_expiry(env: Env) -> Option<u64> {
+        admin_transfer_timeout::get_expiry(&env)
     }
 
     /// Register a trusted cross-contract caller (admin only)
@@ -861,6 +871,31 @@ impl TokenFactory {
     /// ```
     pub fn is_paused(env: Env) -> bool {
         storage::is_paused(&env)
+    }
+
+    /// Pause a single function by symbol (admin only). Global pause keeps precedence.
+    pub fn pause_function(env: Env, admin: Address, func: Symbol) -> Result<(), Error> {
+        function_pause::set_function_paused(&env, &admin, func, true)
+    }
+
+    /// Clear a single function's pause flag (admin only)
+    pub fn unpause_function(env: Env, admin: Address, func: Symbol) -> Result<(), Error> {
+        function_pause::set_function_paused(&env, &admin, func, false)
+    }
+
+    /// Whether a function is effectively paused (globally or individually)
+    pub fn is_function_paused(env: Env, func: Symbol) -> bool {
+        function_pause::is_function_paused(&env, &func)
+    }
+
+    /// Current contract version number used by the upgrade migration hook
+    pub fn contract_version_number(env: Env) -> u32 {
+        upgrade_migration::get_version(&env)
+    }
+
+    /// Run the migration to `target_version` (admin only, once per version, in order)
+    pub fn run_migration(env: Env, admin: Address, target_version: u32) -> Result<u32, Error> {
+        upgrade_migration::run_migration(&env, &admin, target_version)
     }
 
     /// Propose a fee update through the governance flow (#1385)
@@ -2061,6 +2096,7 @@ impl TokenFactory {
         metadata_uri: Option<String>,
         fee_payment: i128,
     ) -> Result<Address, Error> {
+        function_pause::require_not_paused(&env, &symbol_short!("create"))?;
         token_creation::create_token(
             &env,
             creator,
@@ -2903,6 +2939,7 @@ impl TokenFactory {
         to: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        function_pause::require_not_paused(&env, &symbol_short!("mint"))?;
         // Check if contract is paused
         if storage::is_paused(&env) {
             return Err(Error::ContractPaused);

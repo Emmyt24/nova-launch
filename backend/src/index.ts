@@ -28,7 +28,8 @@ import eventsRoutes from "./routes/events";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
-import { successResponse } from "./utils/response";
+import { successResponse, sendError } from "./utils/response";
+import { ErrorCode } from "./lib/errors";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
 import { initTracing, tracingMiddleware, shutdownTracing } from "./monitoring/tracing";
 import { createTimeoutMiddleware } from "./middleware/timeout";
@@ -85,11 +86,22 @@ app.use(createMetricsMiddleware());
 app.use(helmet());
 app.use(cors(corsOptions));
 
-// Rate limiting
+// Rate limiting — emits standard RateLimit-* headers (draft-6), the legacy
+// X-RateLimit-* headers and Retry-After on 429 (#2188)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
+  standardHeaders: "draft-6",
+  legacyHeaders: true,
+  handler: (_req, res, _next, options) => {
+    sendError(
+      res,
+      options.statusCode,
+      ErrorCode.RATE_LIMITED,
+      "Too many requests from this IP, please try again later.",
+      { limit: options.limit, windowMs: options.windowMs }
+    );
+  },
 });
 
 // Body parsing middleware

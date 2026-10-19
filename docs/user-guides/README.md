@@ -84,6 +84,14 @@ Solutions to common problems and error messages.
 - Browser compatibility
 - Network-specific issues
 
+**[Contract Error Codes Reference](CONTRACT_ERROR_CODES.md)**  
+Every contract error code, what it means, and what callers should do about it.
+
+**Topics covered:**
+- Table of error codes and meanings
+- Remediation hints for each code
+- How the reference is kept in sync with the contract
+
 **[Glossary](GLOSSARY.md)**  
 Definitions of terms used in Nova Launch and the Stellar ecosystem.
 
@@ -130,8 +138,9 @@ Tips and recommendations for successful token deployment.
 
 **Fix a problem**
 1. Check [Troubleshooting Guide](TROUBLESHOOTING.md)
-2. Search [FAQ](FAQ.md)
-3. Join our Discord for help
+2. Look up the code in the [Contract Error Codes Reference](CONTRACT_ERROR_CODES.md)
+3. Search [FAQ](FAQ.md)
+4. Join our Discord for help
 
 **Learn best practices**
 1. Read [Best Practices Guide](BEST_PRACTICES.md)
@@ -194,6 +203,11 @@ Tips and recommendations for successful token deployment.
 - [FAQ: Testnet vs Mainnet](FAQ.md#whats-the-difference-between-testnet-and-mainnet)
 - [Troubleshooting: Network Issues](TROUBLESHOOTING.md#network-specific-issues)
 - [Glossary: Network](GLOSSARY.md#n)
+
+### Errors
+- [Contract Error Codes Reference](CONTRACT_ERROR_CODES.md) - Codes, meanings, and remediation hints
+- [Troubleshooting: Transaction Failures](TROUBLESHOOTING.md#transaction-failures)
+- [FAQ: Technical Questions](FAQ.md#technical-questions)
 
 ---
 
@@ -269,6 +283,7 @@ Help us improve this documentation!
 | Wallet Setup Guide | ✅ Complete | 2026-02-24 |
 | FAQ | ✅ Complete | 2026-02-24 |
 | Troubleshooting Guide | ✅ Complete | 2026-02-24 |
+| Contract Error Codes Reference | ✅ Complete | 2026-02-24 |
 | Glossary | ✅ Complete | 2026-02-24 |
 | Best Practices | ✅ Complete | 2026-02-24 |
 

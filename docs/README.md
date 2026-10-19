@@ -155,6 +155,22 @@
 
 ---
 
+## Contract Reference
+
+- **[CONTRACT_STORAGE_LAYOUT.md](./CONTRACT_STORAGE_LAYOUT.md)**
+  — Issue [#2256](https://github.com/Emmyt24/nova-launch/issues/2256)
+  - Table of every storage key: type, TTL, and owning module
+  - Namespacing convention and collision-avoidance rules
+  - Duplicate-key detection test (`contracts/token-factory/src/storage_keys_test.rs`)
+
+- **[CONTRACT_ERROR_CODES.md](./CONTRACT_ERROR_CODES.md)**
+  — Issue [#2257](https://github.com/Emmyt24/nova-launch/issues/2257)
+  - Table of contract error codes and their meanings
+  - Remediation hints for callers and integrators
+  - Sync test that fails when codes drift from the contract source
+
+---
+
 ## Incident Response & Runbooks
 
 Operational runbooks backing Prometheus alert rules:

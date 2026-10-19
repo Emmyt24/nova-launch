@@ -2235,6 +2235,265 @@ mod tests {
             assert_eq!(decoded, campaign);
         });
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Error-code documentation sync (#2257)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// The canonical error-code documentation table. It must stay in sync
+    /// with the `Error` associated constants; `test_error_docs_match_error_enum`
+    /// enforces this.
+    const ERROR_DOCS: &str = include_str!("../../../../docs/ERROR_CODES.md");
+
+    /// Parse the markdown table in `docs/ERROR_CODES.md` into
+    /// `(code, name)` pairs.
+    ///
+    /// Rows are expected to look like:
+    /// `| 14 | `ContractPaused` | ... | ... |`
+    fn parse_error_docs(docs: &str) -> Vec<(u32, String)> {
+        let mut entries = Vec::new();
+        for line in docs.lines() {
+            let line = line.trim();
+            if !line.starts_with('|') {
+                continue;
+            }
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            if cells.len() < 2 {
+                continue;
+            }
+            let code = match cells[0].parse::<u32>() {
+                Ok(code) => code,
+                // Header / separator rows are not numeric.
+                Err(_) => continue,
+            };
+            let name = cells[1].trim_matches('`').trim().to_string();
+            entries.push((code, name));
+        }
+        entries
+    }
+
+    /// Every documented `(code, name)` pair must correspond to an `Error`
+    /// constant, and every `Error` constant must be documented.
+    #[test]
+    fn test_error_docs_match_error_enum() {
+        use super::Error;
+
+        // (code, name) for every public error constant.
+        let expected: &[(u32, &str)] = &[
+            (Error::InsufficientFee.0, "InsufficientFee"),
+            (Error::Unauthorized.0, "Unauthorized"),
+            (Error::InvalidParameters.0, "InvalidParameters"),
+            (Error::TokenNotFound.0, "TokenNotFound"),
+            (Error::MetadataAlreadySet.0, "MetadataAlreadySet"),
+            (Error::AlreadyInitialized.0, "AlreadyInitialized"),
+            (Error::InsufficientBalance.0, "InsufficientBalance"),
+            (Error::ArithmeticError.0, "ArithmeticError"),
+            (Error::BatchTooLarge.0, "BatchTooLarge"),
+            (Error::InvalidAmount.0, "InvalidAmount"),
+            (Error::ClawbackDisabled.0, "ClawbackDisabled"),
+            (Error::InvalidBurnAmount.0, "InvalidBurnAmount"),
+            (Error::BurnAmountExceedsBalance.0, "BurnAmountExceedsBalance"),
+            (Error::ContractPaused.0, "ContractPaused"),
+            (Error::InvalidTokenParams.0, "InvalidTokenParams"),
+            (Error::BatchCreationFailed.0, "BatchCreationFailed"),
+            (Error::StreamNotFound.0, "StreamNotFound"),
+            (Error::InvalidSchedule.0, "InvalidSchedule"),
+            (Error::StreamCancelled.0, "StreamCancelled"),
+            (Error::CliffNotReached.0, "CliffNotReached"),
+            (Error::NothingToClaim.0, "NothingToClaim"),
+            (Error::MissingAdmin.0, "MissingAdmin"),
+            (Error::MissingTreasury.0, "MissingTreasury"),
+            (Error::InvalidBaseFee.0, "InvalidBaseFee"),
+            (Error::InvalidMetadataFee.0, "InvalidMetadataFee"),
+            (Error::InconsistentTokenCount.0, "InconsistentTokenCount"),
+            (Error::WithdrawalCapExceeded.0, "WithdrawalCapExceeded"),
+            (Error::RecipientNotAllowed.0, "RecipientNotAllowed"),
+            (Error::TimelockNotExpired.0, "TimelockNotExpired"),
+            (Error::ChangeAlreadyExecuted.0, "ChangeAlreadyExecuted"),
+            (Error::ChangeNotFound.0, "ChangeNotFound"),
+            (Error::MaxSupplyExceeded.0, "MaxSupplyExceeded"),
+            (Error::InvalidMaxSupply.0, "InvalidMaxSupply"),
+            (Error::MintingDisabled.0, "MintingDisabled"),
+            (Error::TokenPaused.0, "TokenPaused"),
+            (Error::FreezeNotEnabled.0, "FreezeNotEnabled"),
+            (Error::AddressFrozen.0, "AddressFrozen"),
+            (Error::AddressNotFrozen.0, "AddressNotFrozen"),
+            (Error::ProposalInTerminalState.0, "ProposalInTerminalState"),
+            (Error::InvalidStateTransition.0, "InvalidStateTransition"),
+            (Error::InvalidTimeWindow.0, "InvalidTimeWindow"),
+            (Error::PayloadTooLarge.0, "PayloadTooLarge"),
+            (Error::ProposalNotFound.0, "ProposalNotFound"),
+            (Error::VotingNotStarted.0, "VotingNotStarted"),
+            (Error::VotingEnded.0, "VotingEnded"),
+            (Error::VotingClosed.0, "VotingClosed"),
+            (Error::AlreadyVoted.0, "AlreadyVoted"),
+            (Error::ProposalNotQueued.0, "ProposalNotQueued"),
+            (Error::ProposalCancelled.0, "ProposalCancelled"),
+            (Error::QuorumNotMet.0, "QuorumNotMet"),
+            (Error::CampaignNotFound.0, "CampaignNotFound"),
+            (Error::InvalidBudget.0, "InvalidBudget"),
+            (Error::InsufficientBudget.0, "InsufficientBudget"),
+            (Error::PriceTriggerNotMet.0, "PriceTriggerNotMet"),
+            (Error::CampaignExpiredError.0, "CampaignExpiredError"),
+            (Error::IntervalNotElapsed.0, "IntervalNotElapsed"),
+            (Error::AirdropNotFound.0, "AirdropNotFound"),
+            (Error::AirdropAlreadyClaimed.0, "AirdropAlreadyClaimed"),
+            (Error::InvalidMerkleProof.0, "InvalidMerkleProof"),
+            (Error::AirdropExpired.0, "AirdropExpired"),
+            (Error::AirdropNotStarted.0, "AirdropNotStarted"),
+            (Error::TemplateNotFound.0, "TemplateNotFound"),
+            (Error::UpgradeUnauthorized.0, "UpgradeUnauthorized"),
+            (Error::MigrationFailed.0, "MigrationFailed"),
+            (Error::CampaignAlreadyPaused.0, "CampaignAlreadyPaused"),
+            (Error::CampaignNotPaused.0, "CampaignNotPaused"),
+            (Error::CampaignCompleted.0, "CampaignCompleted"),
+            (Error::CampaignCancelled.0, "CampaignCancelled"),
+            (Error::DynamicQuorumDisabled.0, "DynamicQuorumDisabled"),
+            (
+                Error::InsufficientParticipationHistory.0,
+                "InsufficientParticipationHistory",
+            ),
+            (Error::InvalidQuorumBounds.0, "InvalidQuorumBounds"),
+            (Error::MultiSigNotConfigured.0, "MultiSigNotConfigured"),
+            (Error::MultiSigProposalNotFound.0, "MultiSigProposalNotFound"),
+            (Error::MultiSigAlreadyApproved.0, "MultiSigAlreadyApproved"),
+            (Error::MultiSigProposalExecuted.0, "MultiSigProposalExecuted"),
+            (Error::MultiSigProposalCancelled.0, "MultiSigProposalCancelled"),
+            (Error::MultiSigThresholdNotMet.0, "MultiSigThresholdNotMet"),
+            (Error::NotASigner.0, "NotASigner"),
+            (Error::InvalidThreshold.0, "InvalidThreshold"),
+            (Error::MetadataNotSet.0, "MetadataNotSet"),
+            (Error::BurnScheduleNotFound.0, "BurnScheduleNotFound"),
+            (Error::BurnScheduleLocked.0, "BurnScheduleLocked"),
+            (Error::StorageMigrationAlreadyRun.0, "StorageMigrationAlreadyRun"),
+            (
+                Error::StorageMigrationNotRequired.0,
+                "StorageMigrationNotRequired",
+            ),
+            (Error::DividendDistributionFailed.0, "DividendDistributionFailed"),
+            (Error::DividendZeroHolders.0, "DividendZeroHolders"),
+            (Error::DividendOverflow.0, "DividendOverflow"),
+            (Error::DividendExceedsPool.0, "DividendExceedsPool"),
+            (Error::BurnScheduleAlreadyExecuted.0, "BurnScheduleAlreadyExecuted"),
+            (Error::BurnScheduleCancelled.0, "BurnScheduleCancelled"),
+            (Error::InvalidUnlockTime.0, "InvalidUnlockTime"),
+            (Error::PartialBatchFailure.0, "PartialBatchFailure"),
+            (Error::StreamDisputed.0, "StreamDisputed"),
+            (Error::StreamNotDisputed.0, "StreamNotDisputed"),
+            (Error::DisputeAlreadyRaised.0, "DisputeAlreadyRaised"),
+            (Error::CampaignFinalizationFailed.0, "CampaignFinalizationFailed"),
+            (Error::ProposalNotCancellable.0, "ProposalNotCancellable"),
+            (Error::BurnReentrancyDetected.0, "BurnReentrancyDetected"),
+            (Error::InvalidMetadataHash.0, "InvalidMetadataHash"),
+            (Error::MetadataHashMismatch.0, "MetadataHashMismatch"),
+            (Error::MilestoneUnauthorized.0, "MilestoneUnauthorized"),
+            (Error::MilestoneAlreadyVerified.0, "MilestoneAlreadyVerified"),
+            (Error::VaultOwnerChangePending.0, "VaultOwnerChangePending"),
+            (Error::VaultOwnerChangeNotFound.0, "VaultOwnerChangeNotFound"),
+            (
+                Error::VaultOwnerChangeAlreadyApproved.0,
+                "VaultOwnerChangeAlreadyApproved",
+            ),
+            (Error::DistributionNotFound.0, "DistributionNotFound"),
+            (Error::DistributionWindowClosed.0, "DistributionWindowClosed"),
+            (Error::DistributionWindowOpen.0, "DistributionWindowOpen"),
+            (Error::DistributionAlreadyClaimed.0, "DistributionAlreadyClaimed"),
+            (
+                Error::DistributionAlreadyReclaimed.0,
+                "DistributionAlreadyReclaimed",
+            ),
+            (Error::DistributionZeroSupply.0, "DistributionZeroSupply"),
+            (Error::CommitRevealSessionNotFound.0, "CommitRevealSessionNotFound"),
+            (Error::CommitWindowClosed.0, "CommitWindowClosed"),
+            (Error::RevealWindowClosed.0, "RevealWindowClosed"),
+            (Error::RevealWindowOpen.0, "RevealWindowOpen"),
+            (Error::AlreadyCommitted.0, "AlreadyCommitted"),
+            (Error::AlreadyRevealed.0, "AlreadyRevealed"),
+            (Error::CommitmentMismatch.0, "CommitmentMismatch"),
+            (Error::NoBidderCommitment.0, "NoBidderCommitment"),
+            (Error::NoValidReveals.0, "NoValidReveals"),
+            (Error::AlreadyFinalised.0, "AlreadyFinalised"),
+            (Error::TooManyBidders.0, "TooManyBidders"),
+            (Error::ComplianceRuleExists.0, "ComplianceRuleExists"),
+            (Error::ComplianceRuleNotFound.0, "ComplianceRuleNotFound"),
+            (Error::ComplianceCheckFailed.0, "ComplianceCheckFailed"),
+            (Error::FreezeCooldownActive.0, "FreezeCooldownActive"),
+            (Error::ContinuationAlreadyPending.0, "ContinuationAlreadyPending"),
+            (Error::NoContinuationPending.0, "NoContinuationPending"),
+            (
+                Error::ContinuationNotYetEligible.0,
+                "ContinuationNotYetEligible",
+            ),
+            (Error::ReservationNotFound.0, "ReservationNotFound"),
+            (Error::ReservationNotPending.0, "ReservationNotPending"),
+            (Error::ReservationNotYetStuck.0, "ReservationNotYetStuck"),
+            (Error::InvalidProof.0, "InvalidProof"),
+            (Error::VerificationUnavailable.0, "VerificationUnavailable"),
+            (Error::ProposalNotAtQueueFront.0, "ProposalNotAtQueueFront"),
+            (Error::VaultCircuitBreakerActive.0, "VaultCircuitBreakerActive"),
+            (Error::MetadataImmutable.0, "MetadataImmutable"),
+            (Error::DuplicateSigners.0, "DuplicateSigners"),
+            (Error::StakingPoolNotFound.0, "StakingPoolNotFound"),
+            (Error::StakingNotActive.0, "StakingNotActive"),
+            (Error::InvalidRewardRate.0, "InvalidRewardRate"),
+            (Error::InsufficientStake.0, "InsufficientStake"),
+            (Error::PoolAlreadyExists.0, "PoolAlreadyExists"),
+            (Error::PoolNotFound.0, "PoolNotFound"),
+            (Error::IdenticalTokens.0, "IdenticalTokens"),
+            (Error::ZeroLiquidity.0, "ZeroLiquidity"),
+            (Error::ZeroAmountIn.0, "ZeroAmountIn"),
+            (Error::ZeroAmountOut.0, "ZeroAmountOut"),
+            (Error::ZeroShares.0, "ZeroShares"),
+            (Error::InsufficientReserves.0, "InsufficientReserves"),
+            (Error::SharesExceedBalance.0, "SharesExceedBalance"),
+        ];
+
+        let documented = parse_error_docs(ERROR_DOCS);
+        assert!(
+            !documented.is_empty(),
+            "docs/ERROR_CODES.md must contain a markdown table of error codes"
+        );
+
+        // Every documented row must match a known constant.
+        for (code, name) in &documented {
+            let found = expected
+                .iter()
+                .find(|(c, n)| c == code && n == name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "docs/ERROR_CODES.md documents `{name}` = {code}, \
+                         which does not match any Error constant"
+                    )
+                });
+            assert_eq!(found.0, *code);
+        }
+
+        // Every constant must be documented.
+        for (code, name) in expected {
+            assert!(
+                documented.iter().any(|(c, n)| c == code && n == name),
+                "Error::{name} = {code} is missing from docs/ERROR_CODES.md"
+            );
+        }
+    }
+
+    /// Every code mapped by `Error::name()` must be documented, and the
+    /// documented name must agree with `Error::name()`.
+    #[test]
+    fn test_error_name_matches_docs() {
+        use super::Error;
+
+        let documented = parse_error_docs(ERROR_DOCS);
+        for (code, name) in &documented {
+            let mapped = Error(*code).name();
+            if mapped != "UnknownError" {
+                assert_eq!(
+                    mapped, name,
+                    "Error::name() for code {code} is `{mapped}` but docs say `{name}`"
+                );
+            }
+        }
+    }
 }
 // ═══════════════════════════════════════════════════════════════════════
 // Token Fractionalization Types

@@ -12,3 +12,10 @@ soroban-sdk = "21.0.0"
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 proptest = "1.4"
+
+[profile.release]
+overflow-checks = true
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = "symbols"

@@ -67,6 +67,38 @@ Lag between ledger close time and the moment the backend finishes processing the
 
 ---
 
+### Listener ledger lag (chain head vs processed ledger)
+
+Source: `backend/src/lib/metrics/listenerLagMetrics.ts`. The listener looks up
+the chain head (`core_latest_ledger` from Horizon) at most once every
+`LISTENER_HEAD_REFRESH_MS` (default `15000`) during polling, and once more during
+the reconnect catchup check. It records the processed ledger after each event's
+cursor is saved.
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `stellar_listener_latest_ledger` | Gauge | Latest ledger reported by Horizon |
+| `stellar_listener_processed_ledger` | Gauge | Ledger of the last processed event |
+| `stellar_listener_ledger_lag` | Gauge | `latest_ledger - processed_ledger`, floored at 0 |
+| `stellar_listener_head_last_updated_timestamp_seconds` | Gauge | Unix time of the last successful head lookup |
+| `stellar_listener_ledgers_processed_total` | Counter | Total ledgers the processed ledger has advanced |
+| `stellar_listener_head_fetch_failures_total` | Counter | Failed or empty head lookups |
+
+The head never moves backwards. If a processed event's ledger is beyond the last
+known head, the head is raised to match it, so lag is never negative.
+
+`StellarEventListener#getLedgerLag()` returns the same values as
+`{ latestLedger, processedLedger, lag }`.
+
+**Alert rules:** see `monitoring/prometheus/alerts/listener-lag.yml`. It defines:
+
+- `EventListenerLagWarning`: lag above 60 ledgers for 5 minutes
+- `EventListenerLagCritical`: lag above 720 ledgers for 5 minutes
+- `EventListenerStalled`: lag with no progress
+- `EventListenerHeadStale`: head not refreshed for more than 5 minutes
+
+---
+
 ## Webhook Reliability
 
 ### `webhook_deliveries_total`
@@ -128,6 +160,9 @@ sum(rate(wallet_submissions_total{status="success"}[5m]))
 
 # p95 confirmation latency
 histogram_quantile(0.95, sum by (le) (rate(tx_confirmation_duration_seconds_bucket[5m])))
+
+# Listener ledger lag
+max(stellar_listener_ledger_lag)
 
 # p99 ingestion lag
 histogram_quantile(0.99, sum by (le, event_type) (rate(event_ingestion_lag_seconds_bucket[10m])))

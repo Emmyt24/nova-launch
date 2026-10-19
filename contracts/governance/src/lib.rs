@@ -31,6 +31,48 @@ use types::{
 /// Maximum allowed voting period in seconds (approximately 10 years)
 const MAX_VOTING_PERIOD: u64 = 315_360_000;
 
+/// Returns `true` if `address` is the all-zero (degenerate) address.
+///
+/// The zero address is not a valid participant: it cannot authorize calls and
+/// cannot hold balances, so accepting it would create unreachable state.
+fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let zero = Address::from_string(&String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    address == &zero
+}
+
+/// Reject the zero address for a required address parameter.
+fn require_non_zero_address(env: &Env, address: &Address) -> Result<(), Error> {
+    if is_zero_address(env, address) {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(())
+}
+
+/// Reject the zero address for a required address parameter, mapping the
+/// failure onto the proposal-vote error domain.
+fn require_non_zero_voter(env: &Env, voter: &Address) -> Result<(), VoteError> {
+    if is_zero_address(env, voter) {
+        return Err(VoteError::InvalidAddress);
+    }
+    Ok(())
+}
+
+/// Reject self-referential parameters (e.g. `caller == target`).
+fn require_distinct_addresses(
+    env: &Env,
+    first: &Address,
+    second: &Address,
+) -> Result<(), Error> {
+    if first == second {
+        let _ = env;
+        return Err(Error::InvalidParameters);
+    }
+    Ok(())
+}
+
 #[contract]
 /// The governance contract struct.
 pub struct GovernanceContract;
@@ -53,8 +95,10 @@ impl GovernanceContract {
     /// # Errors
     /// * [`Error::AlreadyInitialized`] – Contract has already been initialized.
     /// * [`Error::InvalidParameters`] – `total_supply` is zero or negative.
+    /// * [`Error::InvalidAddress`] – `admin` is the zero address.
     /// * [`Error::Unauthorized`] – `admin` address did not authorize this call.
     pub fn initialize(env: Env, admin: Address, total_supply: i128) -> Result<(), Error> {
+        require_non_zero_address(&env, &admin)?;
         admin.require_auth();
         if storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
@@ -272,6 +316,7 @@ impl GovernanceContract {
     /// # Errors
     /// * [`Error::ContractPaused`] – Contract is paused.
     /// * [`Error::Unauthorized`]   – Caller is not the stored admin.
+    /// * [`Error::InvalidAddress`] – `admin` or `holder` is the zero address.
     /// * [`Error::InvalidParameters`] – `new_balance` is negative.
     /// * [`Error::ArithmeticError`]   – Overflow computing the vote-power delta.
     pub fn set_balance(
@@ -280,6 +325,8 @@ impl GovernanceContract {
         holder: Address,
         new_balance: i128,
     ) -> Result<(), Error> {
+        require_non_zero_address(&env, &admin)?;
+        require_non_zero_address(&env, &holder)?;
         if storage::is_paused(&env) {
             return Err(Error::ContractPaused);
         }
@@ -336,20 +383,22 @@ impl GovernanceContract {
     ///
     /// # Errors
     /// * [`Error::Unauthorized`]      – Caller is not the stored admin.
+    /// * [`Error::InvalidAddress`]    – `current_admin` or `new_admin` is the
+    ///   zero address.
     /// * [`Error::InvalidParameters`] – `new_admin == current_admin`.
     pub fn transfer_admin(
         env: Env,
         current_admin: Address,
         new_admin: Address,
     ) -> Result<(), Error> {
+        require_non_zero_address(&env, &current_admin)?;
+        require_non_zero_address(&env, &new_admin)?;
         current_admin.require_auth();
         let stored_admin = storage::get_admin(&env);
         if current_admin != stored_admin {
             return Err(Error::Unauthorized);
         }
-        if new_admin == current_admin {
-            return Err(Error::InvalidParameters);
-        }
+        require_distinct_addresses(&env, &current_admin, &new_admin)?;
         storage::set_admin(&env, &new_admin);
         events::emit_admin_transfer(&env, &current_admin, &new_admin);
         Ok(())
@@ -392,8 +441,12 @@ impl GovernanceContract {
     /// `Ok(())` on success.
     ///
     /// # Errors
-    /// * [`Error::Unauthorized`] – Caller is not the stored admin.
+    /// * [`Error::Unauthorized`]   – Caller is not the stored admin.
+    /// * [`Error::InvalidAddress`] – `admin` or `token_factory` is the zero
+    ///   address.
     pub fn set_token_factory(env: Env, admin: Address, token_factory: Address) -> Result<(), Error> {
+        require_non_zero_address(&env, &admin)?;
+        require_non_zero_address(&env, &token_factory)?;
         admin.require_auth();
         let stored_admin = storage::get_admin(&env);
         if admin != stored_admin {
@@ -459,6 +512,10 @@ impl GovernanceContract {
     ///
     /// # Returns
     /// The newly created proposal's numeric ID.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidAddress`]    – `creator` is the zero address.
+    /// * [`Error::InvalidParameters`] – A parameter is out of bounds.
     pub fn create_proposal(
         env: Env,
         creator: Address,
@@ -468,6 +525,7 @@ impl GovernanceContract {
         quorum: i128,
         threshold_percent: u32,
     ) -> Result<u32, Error> {
+        require_non_zero_address(&env, &creator)?;
         creator.require_auth();
 
         // Bounds validation — reject malformed proposals before any storage write
@@ -570,6 +628,7 @@ impl GovernanceContract {
     /// `Ok(())` on success.
     ///
     /// # Errors
+    /// * [`VoteError::InvalidAddress`]      – `voter` is the zero address.
     /// * [`VoteError::ProposalNotFound`]    – No proposal with this ID.
     /// * [`VoteError::ProposalNotActive`]   – Proposal is not in Active state.
     /// * [`VoteError::VotingPeriodEnded`]   – The voting deadline has passed.
@@ -583,6 +642,7 @@ impl GovernanceContract {
         proposal_id: u32,
         in_favor: bool,
     ) -> Result<(), VoteError> {
+        require_non_zero_voter(&env, &voter)?;
         voter.require_auth();
         let mut proposal = storage::get_proposal(&env, proposal_id)
             .ok_or(VoteError::ProposalNotFound)?;

@@ -1298,6 +1298,137 @@ fn redelegation_uses_stored_amount() {
     assert_eq!(record.unwrap().delegated_amount, 400);
 }
 
+// ─── [ISSUE #2253] Zero-address and self-referential parameter validation ──
+
+#[test]
+fn initialize_rejects_zero_address_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, GovernanceContract);
+    let c = GovernanceContractClient::new(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_initialize(&zero, &1_000_000_i128);
+    assert!(result.is_err(), "initialize must reject zero-address admin");
+}
+
+#[test]
+fn set_balance_rejects_zero_address_holder() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_set_balance(&admin, &zero, &100_i128);
+    assert!(result.is_err(), "set_balance must reject zero-address holder");
+}
+
+#[test]
+fn delegate_rejects_zero_address_delegatee() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let alice = Address::generate(&env);
+    fund(&env, &contract_id, &admin, &alice, 100_i128);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_delegate(&alice, &zero);
+    assert!(result.is_err(), "delegate must reject zero-address delegatee");
+}
+
+#[test]
+fn delegate_rejects_zero_address_delegator() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+    let bob = Address::generate(&env);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_delegate(&zero, &bob);
+    assert!(result.is_err(), "delegate must reject zero-address delegator");
+}
+
+#[test]
+fn undelegate_rejects_zero_address() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_undelegate(&zero);
+    assert!(result.is_err(), "undelegate must reject zero-address delegator");
+}
+
+#[test]
+fn take_snapshot_rejects_zero_address() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_take_snapshot(&zero);
+    assert!(result.is_err(), "take_snapshot must reject zero-address account");
+}
+
+#[test]
+fn transfer_admin_rejects_zero_address_new_admin() {
+    let (env, contract_id, admin) = setup();
+    let c = client(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_transfer_admin(&admin, &zero);
+    assert!(result.is_err(), "transfer_admin must reject zero-address new admin");
+}
+
+#[test]
+fn create_proposal_rejects_zero_address_creator() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_create_proposal(
+        &zero,
+        &String::from_str(&env, "proposal"),
+        &soroban_sdk::Bytes::new(&env),
+        &1_u64,
+        &50_i128,
+        &50_u32,
+    );
+    assert!(result.is_err(), "create_proposal must reject zero-address creator");
+}
+
+#[test]
+fn cast_vote_rejects_zero_address_voter() {
+    let (env, contract_id, _admin) = setup();
+    let c = client(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let proposal_id = c.create_proposal(
+        &creator,
+        &String::from_str(&env, "proposal"),
+        &soroban_sdk::Bytes::new(&env),
+        &100_u64,
+        &50_i128,
+        &50_u32,
+    );
+    let zero = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let result = c.try_cast_vote(&zero, &proposal_id, &true);
+    assert!(result.is_err(), "cast_vote must reject zero-address voter");
+}
+
 // ─── [ISSUE #1908] GovernanceContract::initialize authorization regression tests ──
 
 #[test]

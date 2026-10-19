@@ -21,6 +21,7 @@
  */
 
 import { sleep } from "./rate-limiter";
+import { computeFeeBumpFee } from "./feeBumpMath";
 
 // ---------------------------------------------------------------------------
 // Minimal interface — only the Horizon methods we actually call
@@ -135,7 +136,7 @@ export async function submitFeeBump(
   }
 
   // Build the fee-bump transaction
-  const bumpFee = String(parseInt(originalFee, 10) * config.feeMultiplier);
+  const bumpFee = computeFeeBumpFee(originalFee, config.feeMultiplier);
   const feeBumpTx = buildFeeBumpTx(bumpFee);
 
   // Race-condition guard: check once more before submitting

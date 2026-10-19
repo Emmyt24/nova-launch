@@ -21,6 +21,16 @@
 
 ---
 
+## Webhook Retry & Dead-Letter Tests
+
+- **[WEBHOOK_RETRY_DLQ_TESTS.md](./WEBHOOK_RETRY_DLQ_TESTS.md)**
+  - Mock receiver returning scripted failures
+  - Backoff schedule and dead-letter entry verification
+  - Redelivery and requeue from the DLQ via the admin API
+  - `npm run test:webhook-dlq` (blocking CI step)
+
+---
+
 ## Database Backup & Point-in-Time Recovery
 
 - **[DATABASE_BACKUP_PITR.md](./DATABASE_BACKUP_PITR.md)**

@@ -68,6 +68,11 @@ jobs:
       - name: OpenAPI contract tests (fail on drift)
         run: npm run test:contract
 
+      # Blocking: retry exhaustion → dead-letter → redelivery flow (#2212).
+      # See docs/WEBHOOK_RETRY_DLQ_TESTS.md.
+      - name: Webhook retry and dead-letter integration tests
+        run: npm run test:webhook-dlq
+
       - name: Run tests
         run: npm test -- --run --coverage || true
 

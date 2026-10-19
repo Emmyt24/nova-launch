@@ -15,11 +15,18 @@ import {
   type TokenDeployInput,
 } from "../services/batchTokenDeployService";
 import { CursorPagination } from "../lib/pagination";
+import { createIdempotencyMiddleware } from "../middleware/idempotency";
 
 const router = Router();
 
 // Enforce tenant context on every token request — cross-tenant reads are rejected.
 router.use(tenantMiddleware({ required: true }));
+
+// Replays of an `Idempotency-Key` return the original deployment response instead
+// of creating duplicate records. Keys are namespaced per tenant.
+export const tokenCreationIdempotency = createIdempotencyMiddleware(undefined, {
+  keyScope: (req) => (req as TenantRequest).tenant?.id,
+});
 
 // Validation schema for search parameters
 // `creator` is intentionally omitted — the tenant scope always sets it.
@@ -391,6 +398,7 @@ const batchDeploySchema = z.object({
  */
 router.post(
   "/batch",
+  tokenCreationIdempotency,
   async (req: TenantRequest & Request, res: Response) => {
     // Validate body
     const parsed = batchDeploySchema.safeParse(req.body);

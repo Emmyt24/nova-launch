@@ -194,9 +194,12 @@ setInterval(() => idempotencyStore.purgeExpired(), 60 * 60 * 1000).unref();
  *  - Keys longer than MAX_KEY_LENGTH or containing non-printable characters are rejected 400.
  *
  * @param store   IIdempotencyStore instance (defaults to the module-level singleton)
+ * @param options.keyScope  Optional namespace for stored keys (e.g. the tenant), so two
+ *                          callers reusing the same header value never share a result.
  */
 export function createIdempotencyMiddleware(
   store: IIdempotencyStore = idempotencyStore,
+  options: { keyScope?: (req: Request) => string | undefined } = {},
 ) {
   return function idempotencyMiddleware(
     req: Request,
@@ -221,10 +224,13 @@ export function createIdempotencyMiddleware(
       return;
     }
 
+    const scope = options.keyScope?.(req);
+    const storeKey = scope ? `${scope}:${key}` : key;
+
     // Async handler to support both sync and async stores
     const handle = async (): Promise<void> => {
       // Check for completed result first
-      const stored = await store.get(key);
+      const stored = await store.get(storeKey);
       if (stored) {
         res.setHeader(IDEMPOTENCY_HEADER, key);
         res.setHeader("Idempotency-Status", "replayed");
@@ -233,7 +239,7 @@ export function createIdempotencyMiddleware(
       }
 
       // Atomically mark as in-flight; returns true if lock acquired, false if already in-flight
-      const acquired = await store.markInFlight(key);
+      const acquired = await store.markInFlight(storeKey);
       if (!acquired) {
         res.setHeader(IDEMPOTENCY_HEADER, key);
         res.setHeader("Idempotency-Status", "processing");
@@ -252,9 +258,9 @@ export function createIdempotencyMiddleware(
         settled = true;
         // Only cache successful (2xx) responses
         if (isSuccess()) {
-          void store.complete(key, res.statusCode, body);
+          void store.complete(storeKey, res.statusCode, body);
         } else {
-          void store.clearInFlight(key);
+          void store.clearInFlight(storeKey);
         }
         return originalJson(body);
       };
@@ -279,9 +285,9 @@ export function createIdempotencyMiddleware(
         if (settled) return;
         settled = true;
         if (res.writableFinished && isSuccess()) {
-          void store.complete(key, res.statusCode, sentBody);
+          void store.complete(storeKey, res.statusCode, sentBody);
         } else {
-          void store.clearInFlight(key);
+          void store.clearInFlight(storeKey);
         }
       };
       res.once("finish", settleOnEnd);

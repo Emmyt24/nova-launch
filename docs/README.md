@@ -31,6 +31,15 @@
 
 ---
 
+## Event Ingestion Throughput
+
+- **[EVENT_INGESTION_THROUGHPUT.md](./EVENT_INGESTION_THROUGHPUT.md)**
+  - k6 open-model scenario with a 200 events/s target
+  - p95 batch processing latency budget and pass criteria
+  - Finding the throughput ceiling, the rate-limit caveat, and the results log
+
+---
+
 ## Database Backup & Point-in-Time Recovery
 
 - **[DATABASE_BACKUP_PITR.md](./DATABASE_BACKUP_PITR.md)**

@@ -36,6 +36,7 @@ vi.mock("@pinata/sdk", () => ({
 vi.mock("../../../middleware/auth", () => ({
   authenticateAdmin: (_req: any, _res: any, next: any) => next(),
   requireSuperAdmin: (_req: any, _res: any, next: any) => next(),
+  requireRole: () => (_req: any, _res: any, next: any) => next(),
   AuthRequest: {},
 }));
 
@@ -124,6 +125,7 @@ vi.mock("../../../services/auditRetentionJob", () => ({
 vi.mock("../../../config/database", () => ({
   Database: {
     getAuditLogs: vi.fn().mockResolvedValue([]),
+    queryAuditLogs: vi.fn().mockResolvedValue({ logs: [], total: 0 }),
   },
 }));
 

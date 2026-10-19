@@ -38,6 +38,7 @@ const mockDividendService = vi.hoisted(() => ({
   listClaimsForDistribution: vi.fn(),
   listHolderSnapshotsForDistribution: vi.fn(),
   ingestDividendEvent: vi.fn(),
+  getDividendClaimStatus: vi.fn(),
 }));
 
 vi.mock("../../services/dividendService", () => mockDividendService);
@@ -359,5 +360,84 @@ describe("DELETE /api/dividends/pools/:poolId (#1698 regression guard)", () => {
 
     expect(res.status).toBe(401);
     expect(mockDividendService.buildReclaimUnclaimedTx).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/dividends/:distributionId/status/:holder (#2207)", () => {
+  it("returns the claim status from the projection", async () => {
+    const status = {
+      distributionId: 3,
+      holder: HOLDER_ADDR,
+      status: "CLAIMABLE",
+      known: true,
+      claimableAmount: "1500",
+      claimedAmount: "0",
+      claimedAt: null,
+      expiry: {
+        claimDeadlineLedger: 500000,
+        expiresAt: "2026-10-01T00:00:00.000Z",
+        expired: false,
+      },
+      poolStatus: "ACTIVE",
+    };
+    mockDividendService.getDividendClaimStatus.mockResolvedValue(status);
+
+    const res = await request(app).get(`/api/dividends/3/status/${HOLDER_ADDR}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(status);
+    expect(mockDividendService.getDividendClaimStatus).toHaveBeenCalledWith(
+      3,
+      HOLDER_ADDR
+    );
+  });
+
+  it("returns 200 with UNKNOWN for an address the projection has not seen", async () => {
+    mockDividendService.getDividendClaimStatus.mockResolvedValue({
+      distributionId: 3,
+      holder: HOLDER_ADDR,
+      status: "UNKNOWN",
+      known: false,
+      claimableAmount: null,
+      claimedAmount: "0",
+      claimedAt: null,
+      expiry: { claimDeadlineLedger: 500000, expiresAt: null, expired: false },
+      poolStatus: "ACTIVE",
+    });
+
+    const res = await request(app).get(`/api/dividends/3/status/${HOLDER_ADDR}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("UNKNOWN");
+    expect(res.body.data.claimableAmount).toBeNull();
+  });
+
+  it("returns 404 when the distribution is not in the projection", async () => {
+    mockDividendService.getDividendClaimStatus.mockResolvedValue(null);
+
+    const res = await request(app).get(`/api/dividends/99/status/${HOLDER_ADDR}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("DISTRIBUTION_NOT_FOUND");
+  });
+
+  it("rejects a malformed holder address", async () => {
+    const res = await request(app).get("/api/dividends/3/status/not-an-address");
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_INPUT");
+    expect(mockDividendService.getDividendClaimStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed distribution id", async () => {
+    const res = await request(app).get(`/api/dividends/-1/status/${HOLDER_ADDR}`);
+    expect(res.status).toBe(400);
+    expect(mockDividendService.getDividendClaimStatus).not.toHaveBeenCalled();
+  });
+
+  it("maps service failures to an error response", async () => {
+    mockDividendService.getDividendClaimStatus.mockRejectedValue(new Error("db down"));
+    const res = await request(app).get(`/api/dividends/3/status/${HOLDER_ADDR}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("DIVIDEND_ERROR");
   });
 });

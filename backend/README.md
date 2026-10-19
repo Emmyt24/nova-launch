@@ -371,6 +371,52 @@ Warning: 299 - "The `page` query parameter is deprecated; use `cursor` with `pag
 
 `page`, `totalPages`, `hasNext` and `hasPrev` are still returned but are deprecated in favor of `nextCursor` and `hasMore`.
 
+### Dividends API
+
+#### GET /api/dividends/:distributionId/status/:holder
+
+Lets a holder check whether a dividend distribution is claimable, how much, and
+when it expires, without building or sending a `claim_dividend` transaction.
+The data comes from the off-chain projection (`DividendPool`, `HolderSnapshot`,
+`DividendClaim`), not from a live contract call.
+
+```json
+{
+  "success": true,
+  "data": {
+    "distributionId": 3,
+    "holder": "GABC...",
+    "status": "CLAIMABLE",
+    "known": true,
+    "claimableAmount": "1500",
+    "claimedAmount": "0",
+    "claimedAt": null,
+    "expiry": {
+      "claimDeadlineLedger": 500000,
+      "expiresAt": "2026-10-01T00:00:00.000Z",
+      "expired": false
+    },
+    "poolStatus": "ACTIVE"
+  }
+}
+```
+
+| `status`           | Meaning                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `CLAIMABLE`        | Known unclaimed share and the claim window is open                         |
+| `CLAIMED`          | A claim by this holder has been recorded (`claimableAmount` is `"0"`)      |
+| `EXPIRED`          | Window closed (deadline passed or pool exhausted/expired/cancelled)        |
+| `NOTHING_TO_CLAIM` | Holder is known but their share is zero                                    |
+| `UNKNOWN`          | The projection has no record of this address (`claimableAmount` is `null`) |
+
+**Unknown addresses** return `200` with `status: "UNKNOWN"`, `known: false`,
+and `claimableAmount: null`, not an error. The projection only records holders
+once they claim, so `UNKNOWN` means eligibility can't be determined off-chain.
+It does **not** mean the holder is ineligible.
+
+Errors: `400 INVALID_INPUT` for a malformed distribution id or holder address,
+and `404 DISTRIBUTION_NOT_FOUND` when the distribution isn't in the projection.
+
 ### Token Leaderboard API
 
 Public endpoints for token rankings and leaderboards. No authentication required.

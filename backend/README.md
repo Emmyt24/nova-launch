@@ -748,6 +748,72 @@ Export audit logs as JSON file.
 
 **Response:** JSON file download
 
+### Reconciliation
+
+#### GET /api/admin/reconcile/vaults/report
+
+Admin only. Compares on-chain vault (stream escrow) state with the `Stream`
+projection and returns the mismatches as a structured report. It's read-only:
+unlike `POST /api/admin/reconcile/:tokenAddress`, it never writes to the
+projection.
+
+On-chain state comes from the factory contract's `vlt_cr_v1` / `vlt_cl_v1` /
+`vlt_cn_v1` events on Horizon, using the same `OnChainProjectionVerifier` that
+backs the token and burn consistency checks. Each vault's `status`, `amount`,
+`creator` and `recipient` are compared.
+
+```json
+{
+  "success": true,
+  "data": {
+    "consistent": false,
+    "generatedAt": "2026-10-19T00:00:00.000Z",
+    "durationMs": 412,
+    "summary": {
+      "projectedVaults": 120,
+      "onChainVaults": 121,
+      "mismatchedVaults": 2,
+      "totalMismatches": 2,
+      "missingOnChain": 0,
+      "missingInProjection": 1,
+      "fieldMismatches": 1,
+      "errors": 0
+    },
+    "mismatches": [
+      {
+        "streamId": 42,
+        "kind": "field_mismatch",
+        "field": "status",
+        "projectionValue": "CREATED",
+        "onChainValue": "CLAIMED",
+        "severity": "error"
+      },
+      {
+        "streamId": 121,
+        "kind": "missing_in_projection",
+        "field": "existence",
+        "projectionValue": null,
+        "onChainValue": "exists",
+        "severity": "warning"
+      }
+    ],
+    "errors": []
+  }
+}
+```
+
+| `kind`                  | Meaning                                                    |
+| ----------------------- | ---------------------------------------------------------- |
+| `field_mismatch`        | The vault exists in both places but `field` differs        |
+| `missing_on_chain`      | The projection has a vault with no on-chain create event   |
+| `missing_in_projection` | The chain has a vault the projection hasn't ingested       |
+
+A vault missing from the projection while still `CREATED` on-chain is reported
+as a `warning`, since it may just not be ingested yet. Every other mismatch is
+an `error`. If Horizon can't be reached or `FACTORY_CONTRACT_ID` isn't set, the
+report lists the failure under `errors` and returns no mismatches, rather than
+flagging every vault as missing.
+
 ## Role-Based Access Control
 
 ### Roles

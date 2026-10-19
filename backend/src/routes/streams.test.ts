@@ -180,4 +180,77 @@ describe("Streams routes - Security (#1901)", () => {
       expect(response.body.error?.code).toBe("VALIDATION_ERROR");
     });
   });
+
+  describe("PUT /:streamId/metadata - Validation limits (#2209)", () => {
+    const jwtToken = () => createJWT("GCREATOR1234567890ABCDEF");
+
+    it("returns descriptive per-field errors", async () => {
+      const response = await request(app)
+        .put("/streams/123/metadata")
+        .set("Authorization", `Bearer ${jwtToken()}`)
+        .send({ recipient: "GRECIPIENT", title: "x".repeat(201), tags: ["!bad"] });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+      expect(response.body.error.message).toContain(
+        "title must be at most 200 characters (got 201)"
+      );
+      expect(response.body.error.details).toEqual([
+        expect.objectContaining({ field: "title", code: "TOO_LONG", limit: 200, actual: 201 }),
+        expect.objectContaining({ field: "tags[0]", code: "INVALID_FORMAT" }),
+      ]);
+      expect(upsertStreamMetadata).not.toHaveBeenCalled();
+    });
+
+    it("rejects unknown fields", async () => {
+      const response = await request(app)
+        .put("/streams/123/metadata")
+        .set("Authorization", `Bearer ${jwtToken()}`)
+        .send({ recipient: "GRECIPIENT", notes: "hi" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.details[0]).toMatchObject({
+        field: "notes",
+        code: "UNKNOWN_FIELD",
+      });
+    });
+
+    it("rejects oversized payloads with 413", async () => {
+      const response = await request(app)
+        .put("/streams/123/metadata")
+        .set("Authorization", `Bearer ${jwtToken()}`)
+        .send({ recipient: "GRECIPIENT", description: "x".repeat(20_000) });
+
+      expect(response.status).toBe(413);
+      expect(response.body.error.code).toBe("PAYLOAD_TOO_LARGE");
+      expect(upsertStreamMetadata).not.toHaveBeenCalled();
+    });
+
+    it("passes sanitized values to the service", async () => {
+      (upsertStreamMetadata as any).mockResolvedValue({
+        streamId: 123n,
+        creator: "GCREATOR1234567890ABCDEF",
+        recipient: "GRECIPIENT",
+      });
+
+      const response = await request(app)
+        .put("/streams/123/metadata")
+        .set("Authorization", `Bearer ${jwtToken()}`)
+        .send({
+          recipient: " GRECIPIENT ",
+          title: "  Pay\u200Broll\u0000 ",
+          tags: ["DeFi", "defi"],
+        });
+
+      expect(response.status).toBe(200);
+      expect(upsertStreamMetadata).toHaveBeenCalledWith({
+        streamId: 123n,
+        creator: "GCREATOR1234567890ABCDEF",
+        recipient: "GRECIPIENT",
+        title: "Payroll",
+        description: undefined,
+        tags: ["DeFi"],
+      });
+    });
+  });
 });

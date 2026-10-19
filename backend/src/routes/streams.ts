@@ -15,7 +15,6 @@
  */
 
 import { Router, Request, Response } from "express";
-import { z } from "zod";
 import { successResponse, errorResponse } from "../utils/response";
 import {
   getStreamMetadata,
@@ -26,6 +25,7 @@ import {
   type PaymentStreamMetadataDto,
 } from "../services/streamMetadataService";
 import { tenantMiddleware, type TenantRequest } from "../middleware/tenancy";
+import { validateStreamMetadata } from "../services/streamMetadataValidation";
 
 const router = Router();
 
@@ -48,13 +48,6 @@ function serializeAll(
 ): Record<string, unknown>[] {
   return records.map(serialize);
 }
-
-const upsertMetadataSchema = z.object({
-  recipient: z.string().min(1),
-  title: z.string().max(200).optional(),
-  description: z.string().max(2000).optional(),
-  tags: z.array(z.string().max(50)).max(20).optional(),
-});
 
 /**
  * GET /api/streams/:streamId/metadata
@@ -94,6 +87,11 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
  *
  * Security (#1901): Caller identity is derived from JWT, not the request body.
  * This prevents unauthorized updates via plaintext address impersonation.
+ *
+ * Validation (#2209): the body is checked and sanitized by
+ * `validateStreamMetadata` (allowed fields, size and per-field limits).
+ * Failures return 400 `VALIDATION_ERROR` (413 `PAYLOAD_TOO_LARGE` for an
+ * oversized body) with a `details` array naming each offending field.
  */
 router.put(
   "/:streamId/metadata",
@@ -118,13 +116,16 @@ router.put(
       );
     }
 
-    const parsed = upsertMetadataSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json(
+    const validation = validateStreamMetadata(req.body);
+    if (!validation.ok) {
+      const tooLarge = validation.errors.some(
+        (e) => e.code === "PAYLOAD_TOO_LARGE"
+      );
+      return res.status(tooLarge ? 413 : 400).json(
         errorResponse({
-          code: "VALIDATION_ERROR",
-          message: "Invalid request body",
-          details: parsed.error.issues,
+          code: tooLarge ? "PAYLOAD_TOO_LARGE" : "VALIDATION_ERROR",
+          message: validation.errors.map((e) => e.message).join("; "),
+          details: validation.errors,
         })
       );
     }
@@ -133,7 +134,7 @@ router.put(
       const metadata = await upsertStreamMetadata({
         streamId,
         creator: req.tenant.id, // Use authenticated caller's address from JWT
-        ...parsed.data,
+        ...validation.value,
       });
       res.json(successResponse(serialize(metadata)));
     } catch (error) {

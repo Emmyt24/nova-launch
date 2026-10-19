@@ -417,6 +417,52 @@ It does **not** mean the holder is ineligible.
 Errors: `400 INVALID_INPUT` for a malformed distribution id or holder address,
 and `404 DISTRIBUTION_NOT_FOUND` when the distribution isn't in the projection.
 
+### Streams API
+
+#### PUT /api/streams/:streamId/metadata
+
+Creates or updates a stream's off-chain metadata. Requires a JWT, and the
+creator always comes from the token, never from the body. The body is
+validated and sanitized before it's stored:
+
+| Field         | Required | Rules                                                                                     |
+| ------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `recipient`   | yes      | Non-empty string, max 128 characters, no whitespace                                       |
+| `title`       | no       | Max 200 characters, single line                                                           |
+| `description` | no       | Max 2000 characters, line breaks kept                                                     |
+| `tags`        | no       | Up to 20 tags, each max 50 characters, starting with a letter or digit and containing only letters, digits, spaces, `_`, `-`, `.`; duplicates (case-insensitive) are collapsed |
+
+- **Allowed fields:** only the four above. Any other key is rejected with
+  `UNKNOWN_FIELD`, except a legacy `creator` key, which is ignored.
+- **Total size:** the JSON body may not exceed 16 KB (UTF-8).
+- **Sanitization:** control characters, zero-width characters and bidi
+  overrides are stripped, text is NFC-normalized and trimmed, and
+  whitespace-only optional fields are treated as absent. Lengths are counted in
+  code points after sanitization. HTML isn't encoded on input; escape it when
+  rendering.
+- Input over a limit is rejected, never truncated.
+
+Validation failures return `400 VALIDATION_ERROR` (or `413 PAYLOAD_TOO_LARGE`
+for an oversized body). Every problem is listed in `details`:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "title must be at most 200 characters (got 201); tags[0] must be non-empty, start with a letter or digit, ...",
+    "details": [
+      { "field": "title", "code": "TOO_LONG", "message": "title must be at most 200 characters (got 201)", "limit": 200, "actual": 201 },
+      { "field": "tags[0]", "code": "INVALID_FORMAT", "message": "tags[0] must be non-empty, ..." }
+    ]
+  }
+}
+```
+
+Error codes in `details`: `INVALID_BODY`, `PAYLOAD_TOO_LARGE`,
+`UNKNOWN_FIELD`, `REQUIRED`, `INVALID_TYPE`, `TOO_LONG`, `TOO_MANY`,
+`INVALID_FORMAT`.
+
 ### Token Leaderboard API
 
 Public endpoints for token rankings and leaderboards. No authentication required.

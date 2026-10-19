@@ -27,6 +27,9 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
+mod burn_rate_limit;
+#[cfg(test)]
+mod burn_rate_limit_test;
 mod buyback;
 mod campaign;
 mod campaign_breaker;
@@ -60,6 +63,9 @@ mod game_history_test;
 mod liquidity_mining_test;
 mod metadata_limits;
 mod mint;
+mod mint_allowance;
+#[cfg(test)]
+mod mint_allowance_test;
 mod pagination;
 mod payload_validation;
 #[cfg(test)]
@@ -1294,7 +1300,30 @@ impl TokenFactory {
     /// factory.burn(&env, caller, 0, 1_000_0000000)?;
     /// ```
     pub fn burn(env: Env, caller: Address, token_index: u32, amount: i128) -> Result<(), Error> {
+        burn_rate_limit::enforce(&env, token_index, amount)?;
         burn::burn(&env, caller, token_index, amount)
+    }
+
+    /// Configure the per-ledger-window burn cap for a token (admin only, #2229).
+    /// `max_burn == 0` clears the limit. Error 610 is returned by `burn` when over cap.
+    pub fn set_burn_rate_limit(
+        env: Env,
+        admin: Address,
+        token_index: u32,
+        window_ledgers: u32,
+        max_burn: i128,
+    ) -> Result<(), Error> {
+        burn_rate_limit::set_limit(&env, admin, token_index, window_ledgers, max_burn)
+    }
+
+    /// Get the burn rate limit as `(window_ledgers, max_burn)`, if configured (#2229).
+    pub fn get_burn_rate_limit(env: Env, token_index: u32) -> Option<(u32, i128)> {
+        burn_rate_limit::get_limit(&env, token_index)
+    }
+
+    /// Amount burned so far in the current ledger window (#2229).
+    pub fn get_burn_window_usage(env: Env, token_index: u32) -> i128 {
+        burn_rate_limit::get_window_usage(&env, token_index)
     }
 
     /// Batch burn tokens from multiple holders (admin only)
@@ -2987,6 +3016,44 @@ impl TokenFactory {
     /// ```
     pub fn get_remaining_mintable(env: Env, token_index: u32) -> Option<i128> {
         mint::get_remaining_mintable(&env, token_index)
+    }
+
+    /// Grant a spender a limited, expiring mint allowance (creator only, #2228).
+    pub fn set_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+        amount: i128,
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        mint_allowance::set_allowance(&env, creator, token_index, spender, amount, expires_at)
+    }
+
+    /// Revoke a spender's mint allowance (creator only, #2228).
+    pub fn revoke_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+    ) -> Result<(), Error> {
+        mint_allowance::revoke_allowance(&env, creator, token_index, spender)
+    }
+
+    /// Remaining unexpired mint allowance for a spender (#2228).
+    pub fn get_mint_allowance(env: Env, token_index: u32, spender: Address) -> i128 {
+        mint_allowance::get_allowance(&env, token_index, &spender)
+    }
+
+    /// Mint using a previously granted allowance (#2228).
+    pub fn mint_with_allowance(
+        env: Env,
+        spender: Address,
+        token_index: u32,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        mint_allowance::mint_with_allowance(&env, spender, token_index, to, amount)
     }
 
     /// Update the supply cap for a token (creator only)

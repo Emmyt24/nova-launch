@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import { corsOptions } from "./config/cors";
+import { corsOptions, validateCorsConfig } from "./config/cors";
 import { validateEnv } from "./config/env";
 import { runStartupValidation } from "./config/startupValidation";
 import adminRoutes from "./routes/admin";
@@ -82,6 +82,7 @@ app.use(createQueryTimeoutMiddleware());
 app.use(createMetricsMiddleware());
 
 // Security middleware
+validateCorsConfig();
 app.use(helmet());
 app.use(cors(corsOptions));
 

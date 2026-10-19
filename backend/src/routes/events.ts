@@ -11,6 +11,8 @@
 
 import { Router, Request, Response } from "express";
 import { eventBus } from "../services/eventBus";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 export const CATCHUP_LIMIT = 1000;
 
@@ -21,7 +23,7 @@ router.get("/catchup", (req: Request, res: Response) => {
   const since = sinceRaw !== undefined ? parseInt(String(sinceRaw), 10) : NaN;
 
   if (isNaN(since) || since < 0) {
-    res.status(400).json({ error: "Query parameter 'since' must be a non-negative integer" });
+    sendError(res, 400, ErrorCode.INVALID_PARAMETERS, "Query parameter 'since' must be a non-negative integer", { parameter: "since" });
     return;
   }
 

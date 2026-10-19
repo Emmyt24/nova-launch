@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { EventReplayService } from '../../services/eventReplayService';
 import { authenticateAdmin, requireSuperAdmin } from '../../middleware/auth';
+import { sendError } from '../../utils/response';
+import { ErrorCode } from '../../lib/errors';
 
 const router = Router();
 const replayService = new EventReplayService();
@@ -42,7 +44,7 @@ router.post('/event-replay', authenticateAdmin, requireSuperAdmin, async (req: R
     if (batchSize) {
       const parsed = Number(batchSize);
       if (Number.isNaN(parsed) || parsed < 1 || parsed > 200) {
-        return res.status(400).json({ error: 'batchSize must be between 1 and 200' });
+        return sendError(res, 400, ErrorCode.INVALID_PARAMETERS, 'batchSize must be between 1 and 200', { parameter: 'batchSize' });
       }
     }
 
@@ -58,7 +60,7 @@ router.post('/event-replay', authenticateAdmin, requireSuperAdmin, async (req: R
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error('[EventReplay] Route error:', error);
-    res.status(500).json({ error });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Event replay failed', { reason: error });
   }
 });
 
@@ -79,8 +81,7 @@ router.post('/event-replay/clear-and-rebuild', authenticateAdmin, requireSuperAd
     const { confirm, startLedger } = req.query;
 
     if (confirm !== 'yes') {
-      return res.status(400).json({
-        error: 'Confirmation required. Pass ?confirm=yes to proceed.',
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, 'Confirmation required. Pass ?confirm=yes to proceed.', {
         warning: 'This operation will delete all projections and rebuild from scratch.',
       });
     }
@@ -95,7 +96,7 @@ router.post('/event-replay/clear-and-rebuild', authenticateAdmin, requireSuperAd
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error('[EventReplay] Clear and rebuild error:', error);
-    res.status(500).json({ error });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Clear and rebuild failed', { reason: error });
   }
 });
 

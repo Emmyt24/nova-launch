@@ -119,7 +119,7 @@ describe('Governance Routes', () => {
         .expect(404);
 
       expect(response.body.success).toBe(false);
-      expect(response.body.error).toBe('Proposal not found');
+      expect(response.body.error.message).toBe('Proposal not found');
     });
 
     it('should include votes and executions', async () => {
@@ -205,7 +205,7 @@ describe('Governance Routes', () => {
         .expect(404);
 
       expect(response.body.success).toBe(false);
-      expect(response.body.error).toBe('Proposal not found');
+      expect(response.body.error.message).toBe('Proposal not found');
     });
 
     it('should validate proposalId parameter', async () => {
@@ -304,7 +304,7 @@ describe('Governance Routes', () => {
         .expect(400);
 
       expect(response.body.success).toBe(false);
-      expect(response.body.error).toBe('Events must be an array');
+      expect(response.body.error.message).toBe('Events must be an array');
     });
   });
 

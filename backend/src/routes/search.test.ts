@@ -233,7 +233,7 @@ describe("GET /api/search", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
-    expect(res.body.error).toBe("Invalid parameters");
+    expect(res.body.error.message).toBe("Invalid parameters");
   });
 
   it("returns 400 when q is empty string", async () => {
@@ -263,7 +263,7 @@ describe("GET /api/search", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
-    expect(res.body.error).toBe("Internal server error");
+    expect(res.body.error.message).toBe("Internal server error");
   });
 
   // ── empty results ───────────────────────────────────────────────────────────

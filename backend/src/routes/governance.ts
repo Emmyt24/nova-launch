@@ -3,6 +3,8 @@ import { PrismaClient } from '@prisma/client';
 import { GovernanceEventParser } from '../services/governanceEventParser';
 import { query, param } from 'express-validator';
 import { validate } from '../middleware/validation';
+import { sendError } from '../utils/response';
+import { ErrorCode } from '../lib/errors';
 import type { ProposalListResponse, ProposalDetailResponse, ProposalVotesResponse } from '../contracts/apiSchemas';
 
 const router = Router();
@@ -177,10 +179,7 @@ router.get(
     res.json(response);
   } catch (error) {
     console.error('Error fetching proposals:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch proposals',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch proposals');
   }
 });
 
@@ -227,10 +226,7 @@ router.get(
     });
 
     if (!proposal) {
-      return res.status(404).json({
-        success: false,
-        error: 'Proposal not found',
-      });
+      return sendError(res, 404, ErrorCode.NOT_FOUND, 'Proposal not found');
     }
 
     // Get analytics
@@ -262,10 +258,7 @@ router.get(
     res.json(response);
   } catch (error) {
     console.error('Error fetching proposal:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch proposal',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch proposal');
   }
 });
 
@@ -320,10 +313,7 @@ router.get(
     });
 
     if (!proposal) {
-      return res.status(404).json({
-        success: false,
-        error: 'Proposal not found',
-      });
+      return sendError(res, 404, ErrorCode.NOT_FOUND, 'Proposal not found');
     }
 
     const [votes, total] = await Promise.all([
@@ -352,10 +342,7 @@ router.get(
     });
   } catch (error) {
     console.error('Error fetching votes:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch votes',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch votes');
   }
 });
 
@@ -399,10 +386,7 @@ router.get(
       });
 
       if (!proposal) {
-        return res.status(404).json({
-          success: false,
-          error: 'Proposal not found',
-        });
+        return sendError(res, 404, ErrorCode.NOT_FOUND, 'Proposal not found');
       }
 
       const serializedExecutions = proposal.executions.map(e => ({
@@ -423,10 +407,7 @@ router.get(
       });
     } catch (error) {
       console.error('Error fetching execution status:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch execution status',
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch execution status');
     }
   }
 );
@@ -501,10 +482,7 @@ router.get(
       });
     } catch (error) {
       console.error('Error fetching governance queue:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch governance queue',
-      });
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance queue');
     }
   }
 );
@@ -531,10 +509,7 @@ router.get('/stats', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error fetching governance stats:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch governance stats',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance stats');
   }
 });
 
@@ -587,10 +562,7 @@ router.get('/voters/:address', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error fetching voter stats:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch voter stats',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch voter stats');
   }
 });
 
@@ -603,10 +575,7 @@ router.post('/events/ingest', async (req: Request, res: Response) => {
     const { events } = req.body;
 
     if (!Array.isArray(events)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Events must be an array',
-      });
+      return sendError(res, 400, ErrorCode.BAD_REQUEST, 'Events must be an array');
     }
 
     const results = [];
@@ -634,10 +603,7 @@ router.post('/events/ingest', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error ingesting events:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to ingest events',
-    });
+    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to ingest events');
   }
 });
 

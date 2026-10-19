@@ -22,6 +22,8 @@ import { Router, Request, Response } from "express";
 import { performance } from "perf_hooks";
 import { prisma } from "../lib/prisma";
 import { z } from "zod";
+import { sendError } from "../utils/response";
+import { ErrorCode } from "../lib/errors";
 
 const router = Router();
 
@@ -130,11 +132,7 @@ router.get("/", async (req: Request, res: Response) => {
   // Validate input.
   const parsed = searchSchema.safeParse(req.query);
   if (!parsed.success) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid parameters",
-      details: parsed.error.issues,
-    });
+    return sendError(res, 400, ErrorCode.VALIDATION_ERROR, "Invalid parameters", parsed.error.issues);
   }
 
   const { q, types, limit } = parsed.data;
@@ -175,11 +173,7 @@ router.get("/", async (req: Request, res: Response) => {
     return res.json(response);
   } catch (error) {
     console.error("[search] error:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Internal server error",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
   }
 });
 

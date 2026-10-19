@@ -79,7 +79,7 @@ describe('Error Reporting Routes', () => {
 
   it('rejects a missing message', async () => {
     const response = await request(app).post('/api/errors').send({}).expect(400);
-    expect(response.body.errors).toBeDefined();
+    expect(response.body.error.details).toBeDefined();
   });
 
   it('rejects a non-integer ledgerSequence', async () => {
@@ -87,7 +87,7 @@ describe('Error Reporting Routes', () => {
       .post('/api/errors')
       .send({ message: 'boom', ledgerSequence: 'not-a-number' })
       .expect(400);
-    expect(response.body.errors).toBeDefined();
+    expect(response.body.error.details).toBeDefined();
   });
 
   it('returns 500 when the database write fails', async () => {

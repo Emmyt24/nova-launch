@@ -28,7 +28,7 @@ import eventsRoutes from "./routes/events";
 import graphqlRouter, { attachGraphqlSubscriptions } from "./graphql";
 import openApiRouter from "./lib/openapi/router";
 import { Database } from "./config/database";
-import { successResponse, errorResponse } from "./utils/response";
+import { successResponse } from "./utils/response";
 import { requestLoggingMiddleware } from "./middleware/request-logging.middleware";
 import { initTracing, tracingMiddleware, shutdownTracing } from "./monitoring/tracing";
 import { createTimeoutMiddleware } from "./middleware/timeout";
@@ -147,8 +147,7 @@ app.use("/api/v1", v1Router);
 app.use("/api", v1Router);
 
 import { healthService } from "./lib/health/health.service";
-import { isAppError, toAppError } from "./lib/errors";
-import { getCorrelationId, getTransactionId } from "./lib/async-context";
+import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
 // Health check — liveness (is the process alive?)
 app.get("/health/live", (_req, res) => {
@@ -200,43 +199,12 @@ if (process.env.METRICS_ENABLED !== "false") {
   });
 }
 
-// Error handling middleware — uses AppError framework for typed, consistent responses
-app.use(
-  (
-    err: unknown,
-    req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction
-  ) => {
-    const appErr = toAppError(err);
-    const isDev = process.env.NODE_ENV === "development";
-    const correlationId = getCorrelationId() ?? (req as any).correlationId;
-    const transactionId = getTransactionId() ?? (req as any).transactionId;
-
-    if (appErr.httpStatus >= 500) {
-      console.error("Error:", err);
-    }
-
-    const body = appErr.toHttpResponse(isDev);
-    if (correlationId) {
-      (body as any).correlationId = correlationId;
-    }
-    if (transactionId) {
-      (body as any).transactionId = transactionId;
-    }
-    res.status(appErr.httpStatus).json(body);
-  }
-);
-
 // 404 handler
-app.use((req, res) => {
-  res.status(404).json(
-    errorResponse({
-      code: "NOT_FOUND",
-      message: "Route not found",
-    })
-  );
-});
+app.use(notFoundHandler);
+
+// Error handling — normalises every error into the shared error schema
+// ({ success, error: { code, message, details, requestId }, requestId, timestamp }) — see #2187
+app.use(errorHandler);
 
 const server = app.listen(PORT, async () => {
   console.log(`🚀 Admin API server running on port ${PORT}`);

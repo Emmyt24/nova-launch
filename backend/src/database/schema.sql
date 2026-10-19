@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_triggered TIMESTAMP,
     deleted_at TIMESTAMP,
+    custom_headers JSONB NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT valid_url CHECK (url ~ '^https?://'),
     CONSTRAINT valid_events CHECK (array_length(events, 1) > 0)
 );

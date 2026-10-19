@@ -726,6 +726,15 @@ export const ENV_SCHEMA: readonly EnvVarSpec[] = [
     example: "https://api.example.com/tokens/{tokenAddress}",
   },
   {
+    name: "WEBHOOK_HEADER_ENCRYPTION_KEY",
+    group: "Webhooks",
+    description:
+      "Key (64 hex chars, or any string hashed to 32 bytes) for encrypting sensitive webhook custom header values at rest.",
+    required: "optional",
+    default: "empty (sensitive custom headers rejected)",
+    secret: true,
+  },
+  {
     name: "WEBHOOK_RESTORE_RETENTION_DAYS",
     group: "Webhooks",
     description:

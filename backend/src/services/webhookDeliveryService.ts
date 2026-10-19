@@ -22,6 +22,7 @@ import {
   incrementSlidingWindow,
 } from "../middleware/rateLimiter";
 import { applyPayloadSizeLimit, getMaxPayloadBytes } from "./webhookPayloadLimit";
+import { resolveCustomHeaders } from "./webhookCustomHeaders";
 import tenantWebhookRateLimiter, {
   TenantWebhookRateLimiter,
 } from "./tenantWebhookRateLimiter";
@@ -321,6 +322,10 @@ export class WebhookDeliveryService {
     if (txHash) extraHeaders['X-Tx-Hash'] = txHash;
     if (limited.truncated) extraHeaders['X-Webhook-Truncated'] = 'true';
 
+    // Per-subscription custom headers (e.g. gateway auth). Spread first so
+    // pipeline headers always take precedence.
+    const customHeaders = resolveCustomHeaders(subscription.customHeaders);
+
     // Per-tenant token-bucket rate limiting gate — applied BEFORE any
     // outbound HTTP call. If the tenant is within budget this resolves
     // immediately; otherwise the delivery is queued (never dropped) and
@@ -360,6 +365,7 @@ export class WebhookDeliveryService {
           const response = await axios.post(subscription.url, requestBody, {
             timeout: TIMEOUT_MS,
             headers: {
+              ...customHeaders,
               ...contentHeaders,
               "X-Webhook-Signature": payload.signature,
               "X-Webhook-Event": event,
@@ -492,6 +498,7 @@ export class WebhookDeliveryService {
       const response = await axios.post(subscription.url, testPayload, {
         timeout: TIMEOUT_MS,
         headers: {
+          ...resolveCustomHeaders(subscription.customHeaders),
           "Content-Type": "application/json",
           "X-Webhook-Signature": testPayload.signature,
           "X-Webhook-Event": "test",

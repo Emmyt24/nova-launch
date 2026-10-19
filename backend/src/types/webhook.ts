@@ -23,6 +23,37 @@ export interface WebhookSubscription {
   lastTriggered: Date | null;
   /** Set when the subscription has been soft-deleted; null otherwise. */
   deletedAt?: Date | null;
+  /** Custom headers sent with every delivery (sensitive values encrypted). */
+  customHeaders?: StoredCustomHeader[];
+}
+
+/**
+ * Custom header as supplied by the API caller.
+ */
+export interface CustomHeaderInput {
+  name: string;
+  value: string;
+  /** Force encryption/masking even if the name is not recognised as sensitive. */
+  sensitive?: boolean;
+}
+
+/**
+ * Custom header as stored. When `sensitive` is true, `value` is an
+ * AES-256-GCM ciphertext (see utils/headerEncryption).
+ */
+export interface StoredCustomHeader {
+  name: string;
+  value: string;
+  sensitive: boolean;
+}
+
+/**
+ * Custom header as returned by the API; sensitive values are masked.
+ */
+export interface PublicCustomHeader {
+  name: string;
+  value: string;
+  sensitive: boolean;
 }
 
 /**
@@ -33,6 +64,7 @@ export interface CreateWebhookInput {
   tokenAddress?: string | null;
   events: WebhookEventType[];
   createdBy: string;
+  customHeaders?: CustomHeaderInput[];
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 } from "../types/webhook";
 import { generateWebhookSecret, generateWebhookSignature } from "../utils/crypto";
 import { globMatch, isValidGlobPattern } from "../utils/globMatch";
+import { prepareCustomHeaders } from "./webhookCustomHeaders";
 
 /**
  * How long a soft-deleted subscription can still be restored. After this
@@ -42,13 +43,16 @@ export class WebhookService {
       }
     }
 
+    // Validates and encrypts sensitive values; throws CustomHeaderValidationError.
+    const customHeaders = prepareCustomHeaders(input.customHeaders);
+
     const id = uuidv4();
     const secret = generateWebhookSecret();
 
     const query = `
       INSERT INTO webhook_subscriptions
-        (id, url, token_address, events, secret, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6)
+        (id, url, token_address, events, secret, created_by, custom_headers)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
 
@@ -59,6 +63,7 @@ export class WebhookService {
       input.events,
       secret,
       input.createdBy,
+      JSON.stringify(customHeaders),
     ]);
 
     return this.mapRowToSubscription(result.rows[0]);
@@ -170,6 +175,37 @@ export class WebhookService {
 
     const result = await db.query(query, [retentionDays]);
     return result.rowCount ?? 0;
+  }
+
+  /**
+   * Replace the custom headers of a subscription owned by `createdBy`.
+   * Throws CustomHeaderValidationError on invalid input.
+   */
+  async updateCustomHeaders(
+    id: string,
+    createdBy: string,
+    headers: unknown
+  ): Promise<WebhookSubscription | null> {
+    const customHeaders = prepareCustomHeaders(headers);
+
+    const query = `
+      UPDATE webhook_subscriptions
+      SET custom_headers = $1
+      WHERE id = $2 AND created_by = $3 AND deleted_at IS NULL
+      RETURNING *
+    `;
+
+    const result = await db.query(query, [
+      JSON.stringify(customHeaders),
+      id,
+      createdBy,
+    ]);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapRowToSubscription(result.rows[0]);
   }
 
   /**
@@ -342,6 +378,7 @@ export class WebhookService {
       createdAt: row.created_at,
       lastTriggered: row.last_triggered,
       deletedAt: row.deleted_at ?? null,
+      customHeaders: row.custom_headers ?? [],
     };
   }
 

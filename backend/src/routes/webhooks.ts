@@ -10,6 +10,10 @@ import {
 } from "../middleware/validation";
 import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLimiter";
 import { verifyStoredWebhookSignature } from "../utils/crypto";
+import {
+  CustomHeaderValidationError,
+  maskCustomHeaders,
+} from "../services/webhookCustomHeaders";
 
 const router = Router();
 
@@ -30,10 +34,16 @@ router.post(
       // Users must store this secret securely as it won't be shown again
       res.status(201).json({
         success: true,
-        data: subscription,
+        data: {
+          ...subscription,
+          customHeaders: maskCustomHeaders(subscription.customHeaders),
+        },
         message: "Webhook subscription created successfully. Please store your secret securely; it will not be shown again.",
       });
     } catch (error) {
+      if (error instanceof CustomHeaderValidationError) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
       console.error("Error creating subscription:", error);
       res.status(500).json({
         success: false,
@@ -160,6 +170,7 @@ router.post(
         return {
           ...publicData,
           secret: `${secret.substring(0, 8)}...`,
+          customHeaders: maskCustomHeaders(sub.customHeaders),
         };
       });
 
@@ -205,6 +216,7 @@ router.get(
         data: {
           ...publicData,
           secret: `${secret.substring(0, 8)}...`,
+          customHeaders: maskCustomHeaders(subscription.customHeaders),
         },
       });
     } catch (error) {
@@ -212,6 +224,65 @@ router.get(
       res.status(500).json({
         success: false,
         error: "Failed to fetch webhook subscription",
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/webhooks/:id/headers
+ * Replace the custom headers sent with each delivery for a subscription
+ */
+router.put(
+  "/:id/headers",
+  webhookUserRateLimiter,
+  webhookRateLimiter,
+  validateSubscriptionId,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { createdBy, customHeaders } = req.body;
+
+      if (!createdBy) {
+        return res.status(400).json({
+          success: false,
+          error: "createdBy address is required",
+        });
+      }
+
+      if (!Array.isArray(customHeaders)) {
+        return res.status(400).json({
+          success: false,
+          error: "customHeaders must be an array",
+        });
+      }
+
+      const updated = await webhookService.updateCustomHeaders(
+        id,
+        createdBy,
+        customHeaders
+      );
+
+      if (!updated) {
+        return res.status(404).json({
+          success: false,
+          error: "Subscription not found or unauthorized",
+        });
+      }
+
+      res.json({
+        success: true,
+        data: { customHeaders: maskCustomHeaders(updated.customHeaders) },
+        message: "Custom headers updated successfully",
+      });
+    } catch (error) {
+      if (error instanceof CustomHeaderValidationError) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
+      console.error("Error updating custom headers:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to update custom headers",
       });
     }
   }

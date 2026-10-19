@@ -219,6 +219,55 @@ else
     exit 1
 fi
 
+# Supply invariant property tests (total supply == sum of balances across mutations)
+print_stage "Running supply invariant property tests..."
+if cargo test --all-features supply_invariant; then
+    print_success "Supply invariant property tests passed"
+else
+    print_error "Supply invariant property tests failed"
+    exit 1
+fi
+
+# Vesting and vault claim math fuzz tests
+print_stage "Running vesting and vault claim fuzz tests..."
+if cargo test --all-features claim_math; then
+    print_success "Vesting and vault claim fuzz tests passed"
+else
+    print_error "Vesting and vault claim fuzz tests failed"
+    exit 1
+fi
+
+# Admin authorization negative tests
+print_stage "Running admin authorization negative tests..."
+if cargo test --all-features admin_authorization; then
+    print_success "Admin authorization negative tests passed"
+else
+    print_error "Admin authorization negative tests failed"
+    exit 1
+fi
+
+# Admin authorization coverage check: every admin-only function must have a rejection test
+print_stage "Checking admin authorization test coverage..."
+if command -v node &> /dev/null; then
+    if node scripts/check-admin-auth-coverage.js; then
+        print_success "Admin authorization coverage check passed"
+    else
+        print_error "Admin authorization coverage check failed - add a rejection test for each admin function"
+        exit 1
+    fi
+else
+    print_warning "Node.js not found, skipping admin authorization coverage check"
+fi
+
+# Event payload snapshot tests
+print_stage "Running event payload snapshot tests..."
+if cargo test --all-features event_snapshot; then
+    print_success "Event payload snapshot tests passed"
+else
+    print_error "Event payload snapshot tests failed - review event payload changes (see docs/EVENT_VERSIONING.md)"
+    exit 1
+fi
+
 # Check if tarpaulin is installed
 if ! command -v cargo-tarpaulin &> /dev/null; then
     print_warning "Installing cargo-tarpaulin..."

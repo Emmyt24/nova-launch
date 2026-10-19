@@ -193,4 +193,181 @@ mod tests {
             Err(Error::InvalidStreamSchedule)
         );
     }
+
+    // ---------------------------------------------------------------------
+    // Fuzz-style coverage (Issue #2247)
+    //
+    // Deterministic pseudo-random sweeps over extreme timestamps and amounts.
+    // These are not `cargo-fuzz` targets: they run as ordinary unit tests so
+    // they are exercised by `cargo test` and by `run-property-tests.sh` in CI.
+    // ---------------------------------------------------------------------
+
+    /// Small deterministic xorshift PRNG so the sweeps are reproducible.
+    struct XorShift64(u64);
+
+    impl XorShift64 {
+        fn new(seed: u64) -> Self {
+            Self(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn next_i128(&mut self) -> i128 {
+            ((self.next_u64() as i128) << 64) | (self.next_u64() as i128)
+        }
+    }
+
+    /// Timestamps worth probing: the schedule boundaries, their neighbours,
+    /// zero and the u64 extremes.
+    fn extreme_timestamps(start: u64, end: u64, cliff: u64) -> Vec<u64> {
+        let mut ts = vec![
+            0,
+            start,
+            cliff,
+            end,
+            end.saturating_add(1),
+            u64::MAX,
+            start.saturating_sub(1),
+            cliff.saturating_sub(1),
+            cliff.saturating_add(1),
+            end.saturating_sub(1),
+        ];
+        ts.sort_unstable();
+        ts.dedup();
+        ts
+    }
+
+    /// Amounts worth probing: zero, one, and the i128 extremes.
+    fn extreme_amounts() -> Vec<i128> {
+        vec![0, 1, 2, i128::MAX - 1, i128::MAX]
+    }
+
+    #[test]
+    fn fuzz_vested_amount_never_overflows_or_exceeds_total() {
+        let mut rng = XorShift64::new(0x2247);
+        let mut schedules: Vec<(u64, u64, u64)> = Vec::new();
+
+        // Hand-picked boundary schedules.
+        schedules.push((0, 1, 0));
+        schedules.push((0, 1, 1));
+        schedules.push((0, u64::MAX, 0));
+        schedules.push((0, u64::MAX, u64::MAX));
+        schedules.push((u64::MAX - 1, u64::MAX, u64::MAX - 1));
+        schedules.push((1, 2, 1));
+
+        // Randomised schedules with start < end and cliff in [start, end].
+        for _ in 0..64 {
+            let start = rng.next_u64();
+            let span = rng.next_u64() % 1_000_000 + 1;
+            let end = start.saturating_add(span);
+            if end <= start {
+                continue;
+            }
+            let cliff = start + (rng.next_u64() % (end - start + 1));
+            schedules.push((start, end, cliff));
+        }
+
+        for (start, end, cliff) in schedules {
+            for total in extreme_amounts() {
+                for now in extreme_timestamps(start, end, cliff) {
+                    let vested = linear_vested_amount(total, start, end, cliff, now)
+                        .expect("valid schedule must not error");
+
+                    // No overflow: result is a valid non-negative i128.
+                    assert!(vested >= 0, "vested must be non-negative");
+                    // Claimed never exceeds total.
+                    assert!(
+                        vested <= total,
+                        "vested {vested} exceeded total {total} (start={start}, end={end}, cliff={cliff}, now={now})"
+                    );
+                    // Boundary semantics hold for every amount.
+                    if now < cliff {
+                        assert_eq!(vested, 0);
+                    }
+                    if now >= end {
+                        assert_eq!(vested, total);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_vested_amount_is_monotonic_in_time() {
+        let mut rng = XorShift64::new(0x2247_0001);
+
+        let mut schedules: Vec<(u64, u64, u64)> = vec![
+            (0, 1, 0),
+            (0, 1_000, 0),
+            (0, 1_000, 500),
+            (0, 1_000, 1_000),
+            (0, u64::MAX, 0),
+            (0, u64::MAX, u64::MAX),
+        ];
+        for _ in 0..32 {
+            let start = rng.next_u64();
+            let span = rng.next_u64() % 1_000_000 + 1;
+            let end = start.saturating_add(span);
+            if end <= start {
+                continue;
+            }
+            let cliff = start + (rng.next_u64() % (end - start + 1));
+            schedules.push((start, end, cliff));
+        }
+
+        for (start, end, cliff) in schedules {
+            for total in extreme_amounts() {
+                let mut timestamps = extreme_timestamps(start, end, cliff);
+                // Sprinkle additional interior samples.
+                for _ in 0..16 {
+                    let t = start.saturating_add(rng.next_u64() % (end - start + 1));
+                    timestamps.push(t);
+                }
+                timestamps.sort_unstable();
+                timestamps.dedup();
+
+                let mut previous: i128 = 0;
+                for now in timestamps {
+                    let vested = linear_vested_amount(total, start, end, cliff, now)
+                        .expect("valid schedule must not error");
+                    assert!(
+                        vested >= previous,
+                        "vested amount decreased: {previous} -> {vested} (start={start}, end={end}, cliff={cliff}, now={now})"
+                    );
+                    assert!(vested <= total);
+                    previous = vested;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_overflowing_amounts_return_error_not_panic() {
+        // Extreme totals combined with a long duration must surface
+        // `ArithmeticError` rather than panicking or wrapping.
+        let totals = [i128::MAX, i128::MAX - 1, i128::MAX / 2];
+        let schedules = [
+            (0u64, 1_000_000u64, 0u64),
+            (0, u64::MAX, 0),
+            (0, u64::MAX, u64::MAX),
+        ];
+        for total in totals {
+            for (start, end, cliff) in schedules {
+                for now in extreme_timestamps(start, end, cliff) {
+                    // Must not panic; either Ok (bounded) or ArithmeticError.
+                    match linear_vested_amount(total, start, end, cliff, now) {
+                        Ok(v) => assert!(v >= 0 && v <= total),
+                        Err(e) => assert_eq!(e, Error::ArithmeticError),
+                    }
+                }
+            }
+        }
+    }
 }

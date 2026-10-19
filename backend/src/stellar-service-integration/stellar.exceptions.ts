@@ -41,6 +41,17 @@ export class StellarNetworkException extends StellarException {
   }
 }
 
+export class StellarEndpointUnavailableException extends StellarException {
+  constructor(network: string, details?: unknown) {
+    super(
+      StellarErrorCode.ENDPOINT_UNAVAILABLE,
+      `No healthy RPC endpoint available for network: ${network}`,
+      { network, ...(typeof details === "object" && details !== null ? details : {}) },
+      HttpStatus.BAD_GATEWAY
+    );
+  }
+}
+
 export class StellarInvalidAddressException extends StellarException {
   constructor(address: string) {
     super(

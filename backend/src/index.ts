@@ -152,6 +152,8 @@ app.use("/api/v1", v1Router);
 app.use("/api", v1Router);
 
 import { healthService } from "./lib/health/health.service";
+import { createGracefulShutdown } from "./lib/gracefulShutdown";
+import { closeRedis } from "./lib/redis";
 import { isAppError, toAppError } from "./lib/errors";
 import { getCorrelationId, getTransactionId } from "./lib/async-context";
 
@@ -304,12 +306,36 @@ const server = app.listen(PORT, async () => {
   }
 });
 
-// Graceful shutdown — flush any pending trace spans before exiting.
-const gracefulShutdown = async (signal: string) => {
-  console.log(`${signal} received, shutting down gracefully`);
-  await shutdownTracing();
-  process.exit(0);
-};
+// Graceful shutdown: stop new work, drain jobs, persist the listener cursor,
+// then close HTTP, WebSocket, DB, Redis and tracing (see lib/gracefulShutdown).
+const gracefulShutdown = createGracefulShutdown({
+  steps: [
+    { name: "websocket", run: () => websocketService.close() },
+    {
+      name: "http-server",
+      run: () =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          (server as any).closeIdleConnections?.();
+        }),
+    },
+    { name: "event-listener", run: () => stellarEventListener.stop() },
+    {
+      name: "job-queue",
+      run: async () => {
+        const { drained, inFlight } = await jobQueue.drain(
+          Number(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) || 10_000
+        );
+        if (!drained) console.warn(`[shutdown] ${inFlight} job(s) still running at drain timeout`);
+      },
+    },
+    { name: "database", run: () => baseClient.$disconnect() },
+    { name: "redis", run: () => closeRedis() },
+    { name: "tracing", run: () => shutdownTracing() },
+  ],
+  timeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS) || 30_000,
+  exit: (code) => process.exit(code),
+});
 
 process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 process.once("SIGINT", () => void gracefulShutdown("SIGINT"));

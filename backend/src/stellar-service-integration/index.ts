@@ -5,3 +5,4 @@ export * from "./stellar.types";
 export * from "./stellar.exceptions";
 export * from "./stellar.utils";
 export * from "./rate-limiter";
+export * from "./retry-budget";

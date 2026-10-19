@@ -17,6 +17,12 @@ CONTRACT_DIR="$PROJECT_ROOT/contracts/token-factory"
 TARGET_DIR="$CONTRACT_DIR/target/wasm32-unknown-unknown/release"
 WASM_FILE="$TARGET_DIR/token_factory.wasm"
 BUILD_LOG="$PROJECT_ROOT/build-report.txt"
+# Maximum allowed optimized WASM size in bytes (default 100KB).
+# Override with the WASM_SIZE_THRESHOLD env var or a .wasm-size-threshold file
+# in the project root.
+DEFAULT_SIZE_THRESHOLD=102400
+SIZE_THRESHOLD_FILE="$PROJECT_ROOT/.wasm-size-threshold"
+SIZE_HISTORY_FILE="$PROJECT_ROOT/wasm-size-history.csv"
 
 # Parse command line arguments
 SKIP_TESTS=false
@@ -127,6 +133,73 @@ get_file_size() {
     fi
 }
 
+# Resolve the maximum allowed WASM size in bytes.
+# Priority: WASM_SIZE_THRESHOLD env var > .wasm-size-threshold file > default.
+get_size_threshold() {
+    local threshold="$DEFAULT_SIZE_THRESHOLD"
+
+    if [ -f "$SIZE_THRESHOLD_FILE" ]; then
+        local file_value
+        file_value=$(tr -d '[:space:]' < "$SIZE_THRESHOLD_FILE")
+        if [[ "$file_value" =~ ^[0-9]+$ ]]; then
+            threshold="$file_value"
+        else
+            log_warning "Ignoring invalid threshold in $SIZE_THRESHOLD_FILE: '$file_value'"
+        fi
+    fi
+
+    if [ -n "${WASM_SIZE_THRESHOLD:-}" ]; then
+        if [[ "$WASM_SIZE_THRESHOLD" =~ ^[0-9]+$ ]]; then
+            threshold="$WASM_SIZE_THRESHOLD"
+        else
+            log_warning "Ignoring invalid WASM_SIZE_THRESHOLD: '$WASM_SIZE_THRESHOLD'"
+        fi
+    fi
+
+    echo "$threshold"
+}
+
+# Fail the build when the optimized WASM exceeds the configured threshold.
+check_size_threshold() {
+    local size=$1
+    local threshold
+    threshold=$(get_size_threshold)
+
+    log_info "WASM size threshold: $threshold bytes"
+
+    if [ "$size" -gt "$threshold" ]; then
+        log_error "WASM size $size bytes exceeds threshold of $threshold bytes"
+        return 1
+    fi
+
+    log_success "WASM size $size bytes is within threshold of $threshold bytes"
+    return 0
+}
+
+# Append a timestamped entry to the size history CSV.
+record_size_history() {
+    local before_size=$1
+    local after_size=$2
+    local threshold
+    threshold=$(get_size_threshold)
+
+    if [ ! -f "$SIZE_HISTORY_FILE" ]; then
+        echo "timestamp,commit,before_bytes,after_bytes,threshold_bytes,status" > "$SIZE_HISTORY_FILE"
+    fi
+
+    local timestamp
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local commit
+    commit=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    local status="pass"
+    if [ "$after_size" -gt "$threshold" ]; then
+        status="fail"
+    fi
+
+    echo "$timestamp,$commit,$before_size,$after_size,$threshold,$status" >> "$SIZE_HISTORY_FILE"
+    log_success "Size history updated: $SIZE_HISTORY_FILE"
+}
+
 # Run tests
 run_tests() {
     log_info "Running contract tests..."
@@ -142,10 +215,23 @@ run_tests() {
 }
 
 # Optimize WASM
+#
+# Optimization flags used:
+#   --opt-level z  Optimize aggressively for size (equivalent to Cargo's opt-level = "z")
+#   --lto          Enable link-time optimization across the whole binary
+#   --strip        Strip debug symbols and unused metadata from the WASM
+#
+# These mirror the [profile.release] settings in the contract's Cargo.toml
+# (opt-level = "z", lto = true, strip = "symbols", codegen-units = 1,
+# panic = "abort", debug = 0, overflow-checks = true).
 optimize_wasm() {
     log_info "Optimizing WASM binary..."
-    
-    if soroban contract optimize --wasm "$WASM_FILE" 2>&1; then
+
+    if soroban contract optimize \
+        --wasm "$WASM_FILE" \
+        --opt-level z \
+        --lto \
+        --strip 2>&1; then
         log_success "WASM optimization completed"
     else
         log_error "WASM optimization failed"
@@ -219,7 +305,7 @@ Generated: $timestamp
 - Build log: $BUILD_LOG
 
 ## Deployment Readiness
-- Binary size < 100KB: $([ $after_size -lt 102400 ] && echo "✓ YES" || echo "✗ NO")
+- Binary size within threshold ($(get_size_threshold) bytes): $([ $after_size -le $(get_size_threshold) ] && echo "✓ YES" || echo "✗ NO")
 - Tests passed: ✓ YES
 - Optimization applied: ✓ YES
 
@@ -228,11 +314,21 @@ Generated: $timestamp
 2. Initialize contract: soroban contract invoke --id <CONTRACT_ID> -- initialize ...
 3. Monitor deployment: Check Stellar Expert or Soroban RPC
 
+## Size Threshold
+- Threshold: $(get_size_threshold) bytes
+- Override via env var: WASM_SIZE_THRESHOLD=<bytes> ./scripts/build-contract.sh
+- Override via config file: echo <bytes> > .wasm-size-threshold
+- Size history: $SIZE_HISTORY_FILE
+
 ## Troubleshooting
 If optimization fails:
 - Ensure soroban-cli is up to date: cargo install --locked soroban-cli --force
 - Check WASM file integrity: file $WASM_FILE
 - Review Soroban documentation: https://developers.stellar.org/docs/build/smart-contracts
+If the size threshold is exceeded:
+- Review recent changes for unnecessary code or dependencies
+- Confirm release profile settings in Cargo.toml (opt-level = "z", lto = true, strip = "symbols")
+- Raise the threshold only with justification (update .wasm-size-threshold)
 
 Generated by build-contract.sh
 EOF
@@ -262,6 +358,13 @@ main() {
 
     emit_interface_snapshot
     generate_report "$BEFORE_SIZE" "$AFTER_SIZE"
+
+    record_size_history "$BEFORE_SIZE" "$AFTER_SIZE"
+
+    if ! check_size_threshold "$AFTER_SIZE"; then
+        log_error "Build failed: optimized WASM exceeds the configured size threshold"
+        exit 1
+    fi
     
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"

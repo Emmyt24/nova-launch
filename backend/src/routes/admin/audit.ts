@@ -1,10 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Database } from "../../config/database";
-import { authenticateAdmin } from "../../middleware/auth";
+import { authenticateAdmin, requireRole } from "../../middleware/auth";
 import { successResponse, errorResponse } from "../../utils/response";
 
 const router = Router();
+
+export const DEFAULT_AUDIT_PAGE_SIZE = 50;
+export const MAX_AUDIT_PAGE_SIZE = 200;
+
+const requireAuditAccess = requireRole("admin", "super_admin");
 
 // Validation schema
 const auditFilterSchema = z.object({
@@ -17,25 +22,56 @@ const auditFilterSchema = z.object({
   offset: z.string().regex(/^\d+$/).optional(),
 });
 
-// GET /api/admin/audit - Get audit logs with filters
-router.get("/", authenticateAdmin, async (req, res) => {
+// Query schema: adds `actor` (alias for adminId), page-based pagination and
+// bounds on page size / date range.
+const auditQuerySchema = auditFilterSchema
+  .extend({
+    actor: z.string().min(1).optional(),
+    page: z.string().regex(/^[1-9]\d*$/).optional(),
+  })
+  .refine((q) => !q.limit || Number(q.limit) >= 1, {
+    message: "limit must be at least 1",
+    path: ["limit"],
+  })
+  .refine((q) => !q.limit || Number(q.limit) <= MAX_AUDIT_PAGE_SIZE, {
+    message: `limit must not exceed ${MAX_AUDIT_PAGE_SIZE}`,
+    path: ["limit"],
+  })
+  .refine((q) => !(q.page && q.offset), {
+    message: "Use either page or offset, not both",
+    path: ["page"],
+  })
+  .refine(
+    (q) =>
+      !q.startDate ||
+      !q.endDate ||
+      new Date(q.startDate).getTime() <= new Date(q.endDate).getTime(),
+    { message: "startDate must be before endDate", path: ["startDate"] }
+  );
+
+// GET /api/admin/audit - Query audit logs with filters (actor, action,
+// resource, date range) and database-side pagination. Admin role required.
+router.get("/", authenticateAdmin, requireAuditAccess, async (req, res) => {
   try {
-    const filters = auditFilterSchema.parse(req.query);
+    const filters = auditQuerySchema.parse(req.query);
 
-    const auditFilters: any = {};
-    if (filters.adminId) auditFilters.adminId = filters.adminId;
-    if (filters.action) auditFilters.action = filters.action;
-    if (filters.resource) auditFilters.resource = filters.resource;
-    if (filters.startDate) auditFilters.startDate = new Date(filters.startDate);
-    if (filters.endDate) auditFilters.endDate = new Date(filters.endDate);
+    const limit = filters.limit ? parseInt(filters.limit) : DEFAULT_AUDIT_PAGE_SIZE;
+    const page = filters.page ? parseInt(filters.page) : undefined;
+    const offset = page
+      ? (page - 1) * limit
+      : filters.offset
+        ? parseInt(filters.offset)
+        : 0;
 
-    let logs = await Database.getAuditLogs(auditFilters);
-
-    // Pagination
-    const limit = filters.limit ? parseInt(filters.limit) : 50;
-    const offset = filters.offset ? parseInt(filters.offset) : 0;
-    const total = logs.length;
-    logs = logs.slice(offset, offset + limit);
+    const { logs, total } = await Database.queryAuditLogs({
+      adminId: filters.actor ?? filters.adminId,
+      action: filters.action,
+      resource: filters.resource,
+      startDate: filters.startDate ? new Date(filters.startDate) : undefined,
+      endDate: filters.endDate ? new Date(filters.endDate) : undefined,
+      skip: offset,
+      take: limit,
+    });
 
     res.json(
       successResponse({
@@ -44,6 +80,8 @@ router.get("/", authenticateAdmin, async (req, res) => {
           total,
           limit,
           offset,
+          page: Math.floor(offset / limit) + 1,
+          totalPages: Math.ceil(total / limit),
           hasMore: offset + limit < total,
         },
       })
@@ -69,7 +107,7 @@ router.get("/", authenticateAdmin, async (req, res) => {
 });
 
 // GET /api/admin/audit/export - Export audit logs
-router.get("/export", authenticateAdmin, async (req, res) => {
+router.get("/export", authenticateAdmin, requireAuditAccess, async (req, res) => {
   try {
     const filters = auditFilterSchema.parse(req.query);
 

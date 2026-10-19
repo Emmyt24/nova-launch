@@ -32,12 +32,27 @@ echo "🔍 Running supply conservation tests..."
 cargo test --lib --profile ci supply_conservation_test -- --nocapture
 
 echo ""
+echo "🔍 Running total supply invariant tests (all mutations)..."
+cargo test --lib --profile ci total_supply_invariant -- --nocapture
+
+echo ""
+echo "🔍 Running vesting claim fuzz tests..."
+cargo test --lib --profile ci vesting_fuzz_test -- --nocapture
+
+echo ""
+echo "🔍 Running vault claim fuzz tests..."
+cargo test --lib --profile ci vault_fuzz_test -- --nocapture
+
+echo ""
 echo "✅ All property tests passed!"
 echo ""
 echo "📈 Test Coverage:"
 echo "   - Supply conservation invariants"
+echo "   - Total supply equals sum of balances across mint/burn/clawback/batch mutations"
 echo "   - Burn monotonicity (total_burned, burn_count)"
 echo "   - Balance consistency"
 echo "   - Max supply enforcement"
 echo "   - Amount validity"
 echo "   - Accumulation correctness"
+echo "   - Vesting claim math (no overflow, monotonic, claimed <= total)"
+echo "   - Vault claim math (no overflow, monotonic, claimed <= total)"

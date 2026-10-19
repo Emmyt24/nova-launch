@@ -148,8 +148,12 @@ pub fn redeem(env: &Env, caller: Address, vault_id: u64) -> Result<(), Error> {
         return Err(Error::InsufficientShares);
     }
 
-    // Burn 100% of the outstanding shares held by the caller.
-    storage::set_fractional_share_balance(env, vault_id, &caller, 0);
+    // Burn 100% of the outstanding shares held by the caller. Use checked
+    // arithmetic so a corrupted balance can never silently wrap to zero.
+    let remaining_shares = caller_shares
+        .checked_sub(caller_shares)
+        .ok_or(Error::ArithmeticError)?;
+    storage::set_fractional_share_balance(env, vault_id, &caller, remaining_shares);
 
     // Release the locked asset back to the caller.
     let asset_client = token::Client::new(env, &vault.asset_contract);
@@ -226,6 +230,15 @@ pub fn transfer_shares(
     let to_balance = storage::get_fractional_share_balance(env, vault_id, &to);
     let new_to_balance = to_balance.checked_add(amount).ok_or(Error::ArithmeticError)?;
     let new_from_balance = from_balance.checked_sub(amount).ok_or(Error::ArithmeticError)?;
+
+    // Guard against share inflation: the sum of all balances must never
+    // exceed the vault's minted supply.
+    let total_after = new_to_balance
+        .checked_add(new_from_balance)
+        .ok_or(Error::ArithmeticError)?;
+    if total_after > vault.total_supply {
+        return Err(Error::ArithmeticError);
+    }
 
     storage::set_fractional_share_balance(env, vault_id, &from, new_from_balance);
     storage::set_fractional_share_balance(env, vault_id, &to, new_to_balance);

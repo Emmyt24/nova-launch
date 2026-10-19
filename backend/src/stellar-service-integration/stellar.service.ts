@@ -58,17 +58,27 @@ import {
   RateLimiter, 
   BACKGROUND_RETRY_CONFIG,
   calculateBackoffDelay,
-  isRetryableError,
   sleep
 } from "./rate-limiter";
 import { CircuitBreaker } from "../lib/circuitBreaker";
 import { withRequestIdPropagation } from "../lib/stellar/requestIdPropagation";
+import {
+  RetryBudget,
+  classifyRpcError,
+  recordNonRetryable,
+  recordRetry,
+} from "./retry-budget";
 import {
   assertValidAddress,
   isValidAddress,
 } from "./stellar.utils";
 import { SequenceNumberCache } from "./sequence-number-cache";
 import { CacheStellarRead } from "./stellar-cache.decorator";
+import {
+  EndpointPool,
+  EndpointPoolHealth,
+  EndpointType,
+} from "./endpoint-pool";
 
 @Injectable()
 export class StellarService implements OnModuleInit, OnModuleDestroy {
@@ -78,7 +88,9 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
   private soroban: StellarSdk.rpc.Server;
   private readonly rateLimiter: RateLimiter;
   private readonly circuitBreaker: CircuitBreaker;
+  private readonly retryBudget: RetryBudget;
   private readonly sequenceCache: SequenceNumberCache;
+  private readonly endpointPool: EndpointPool;
 
   constructor(private readonly configService: ConfigService) {
     this.config = {
@@ -119,6 +131,17 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           this.configService.get<number>("STELLAR_RATE_LIMIT_WINDOW_MS") ??
           DEFAULT_STELLAR_CONFIG.rateLimit.windowMs,
       },
+      retryBudget: {
+        capacity:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_CAPACITY") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.capacity,
+        refillPerSecond:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_REFILL_PER_SECOND") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.refillPerSecond,
+        depositPerSuccess:
+          this.configService.get<number>("STELLAR_RETRY_BUDGET_DEPOSIT_PER_SUCCESS") ??
+          DEFAULT_STELLAR_CONFIG.retryBudget.depositPerSuccess,
+      },
       circuitBreaker: {
         failureThreshold:
           this.configService.get<number>("STELLAR_CIRCUIT_BREAKER_FAILURE_THRESHOLD") ??
@@ -138,9 +161,21 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.circuitBreaker = new CircuitBreaker(this.config.circuitBreaker);
+    this.retryBudget = new RetryBudget(this.config.retryBudget, "stellar_service");
     
     // Initialize sequence number cache (5 min TTL)
     this.sequenceCache = new SequenceNumberCache(300000);
+
+    // Build the endpoint pool from configured (or default) endpoints so that
+    // a single RPC outage does not halt the app.
+    this.endpointPool = new EndpointPool({
+      horizonUrls: this.config.horizonUrls,
+      sorobanRpcUrls: this.config.sorobanRpcUrls,
+      healthCheckIntervalMs: this.config.endpointHealthCheckIntervalMs,
+      failureThreshold: this.config.endpointFailureThreshold,
+      allowHttp: this.config.network === "testnet",
+      logger: this.logger,
+    });
   }
 
   onModuleInit(): void {
@@ -156,9 +191,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       })
     );
 
+    this.endpointPool.start();
+
     this.logger.log(
       `StellarService initialized on ${this.config.network}. ` +
-        `Horizon: ${this.config.horizonUrl}, Soroban: ${this.config.sorobanRpcUrl}`
+        `Horizon: ${this.config.horizonUrls.join(", ")}, ` +
+        `Soroban: ${this.config.sorobanRpcUrls.join(", ")}`
     );
 
     // Invalidate cached sequence numbers as soon as a ledger closes rather
@@ -175,6 +213,41 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     this.sequenceCache.stopLedgerSubscription();
+    this.endpointPool.stop();
+  }
+
+  /**
+   * Returns the current health status of all configured Horizon and Soroban
+   * RPC endpoints. Intended to be surfaced by the health endpoint.
+   */
+  getEndpointHealth(): EndpointPoolHealth {
+    return this.endpointPool.getHealth();
+  }
+
+  /**
+   * Runs an operation against the currently healthy endpoint of the given
+   * type, rotating to the next endpoint and retrying when the active endpoint
+   * fails. Preserves the caller's retry/rate-limit/circuit-breaker semantics
+   * by only handling endpoint-level failover here.
+   */
+  private async withEndpoint<T>(
+    type: EndpointType,
+    operation: (server: StellarSdk.Horizon.Server | StellarSdk.rpc.Server) => Promise<T>
+  ): Promise<T> {
+    const endpoint = this.endpointPool.acquire(type);
+    const server =
+      type === "horizon"
+        ? (this.endpointPool.getHorizonServer(endpoint.url) as StellarSdk.Horizon.Server)
+        : (this.endpointPool.getSorobanServer(endpoint.url) as StellarSdk.rpc.Server);
+
+    try {
+      const result = await operation(server);
+      this.endpointPool.reportSuccess(endpoint);
+      return result;
+    } catch (error) {
+      this.endpointPool.reportFailure(endpoint, error);
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -195,7 +268,9 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       accountId,
       async () => {
         this.rateLimiter.checkLimit();
-        return await this.horizon.loadAccount(accountId);
+        return await this.withEndpoint("horizon", (server) =>
+          (server as StellarSdk.Horizon.Server).loadAccount(accountId)
+        );
       },
       async (account) => account
     );
@@ -219,11 +294,15 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       accountId,
       async () => {
         this.rateLimiter.checkLimit();
-        return await this.horizon.loadAccount(accountId);
+        return await this.withEndpoint("horizon", (server) =>
+          (server as StellarSdk.Horizon.Server).loadAccount(accountId)
+        );
       },
       async (account) => {
         const transaction = await buildTransaction(account);
-        const response = await this.horizon.submitTransaction(transaction);
+        const response = await this.withEndpoint("horizon", (server) =>
+          (server as StellarSdk.Horizon.Server).submitTransaction(transaction)
+        );
         
         return {
           hash: response.hash,
@@ -293,16 +372,18 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     return this.withRetry(async () => {
       this.rateLimiter.checkLimit();
       try {
-        const response = await this.soroban.getEvents({
-          startLedger: 1,
-          filters: [
-            {
-              type: "contract",
-              contractIds: [tokenAddress],
-              topics: [["burn"]],
-            },
-          ],
-        });
+        const response = await this.withEndpoint("soroban", (server) =>
+          (server as StellarSdk.rpc.Server).getEvents({
+            startLedger: 1,
+            filters: [
+              {
+                type: "contract",
+                contractIds: [tokenAddress],
+                topics: [["burn"]],
+              },
+            ],
+          })
+        );
 
         return response.events.map((event) =>
           this.parseBurnEvent(event, tokenAddress)
@@ -418,7 +499,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     return this.withRetry(async () => {
       this.rateLimiter.checkLimit();
       try {
-        const tx = await this.horizon.transactions().transaction(txHash).call();
+        const tx = await this.withEndpoint("horizon", (server) =>
+          (server as StellarSdk.Horizon.Server)
+            .transactions()
+            .transaction(txHash)
+            .call()
+        );
 
         return {
           hash: tx.hash,
@@ -463,7 +549,12 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       this.rateLimiter.checkLimit();
 
       try {
-        const tx = await this.horizon.transactions().transaction(txHash).call();
+        const tx = await this.withEndpoint("horizon", (server) =>
+          (server as StellarSdk.Horizon.Server)
+            .transactions()
+            .transaction(txHash)
+            .call()
+        );
         const status: TransactionStatus = tx.successful ? "success" : "failed";
 
         this.logger.log(
@@ -528,16 +619,18 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     method: string,
     args: StellarSdk.xdr.ScVal[]
   ): Promise<T> {
-    const account = await this.soroban
-      .getAccount(StellarSdk.Keypair.random().publicKey())
-      .catch(() => {
-        // Use a dummy account for read-only simulations
-        return {
-          accountId: () => StellarSdk.Keypair.random().publicKey(),
-          sequenceNumber: () => "0",
-          incrementSequenceNumber: () => {},
-        } as any;
-      });
+    const account = await this.withEndpoint("soroban", (server) =>
+      (server as StellarSdk.rpc.Server)
+        .getAccount(StellarSdk.Keypair.random().publicKey())
+        .catch(() => {
+          // Use a dummy account for read-only simulations
+          return {
+            accountId: () => StellarSdk.Keypair.random().publicKey(),
+            sequenceNumber: () => "0",
+            incrementSequenceNumber: () => {},
+          } as any;
+        })
+    );
 
     const contract = new StellarSdk.Contract(contractId);
     const tx = new StellarSdk.TransactionBuilder(account as any, {
@@ -551,7 +644,9 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
       .setTimeout(Math.floor(this.config.requestTimeout / 1000))
       .build();
 
-    const simulation = await this.soroban.simulateTransaction(tx);
+    const simulation = await this.withEndpoint("soroban", (server) =>
+      (server as StellarSdk.rpc.Server).simulateTransaction(tx)
+    );
 
     if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       throw new StellarContractException(
@@ -571,6 +666,13 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     }
 
     return StellarSdk.scValToNative(result.retval) as T;
+  }
+
+  /**
+   * Tokens currently available in the shared retry budget (for health/debug).
+   */
+  getRetryBudgetAvailable(): number {
+    return this.retryBudget.available();
   }
 
   /**
@@ -602,18 +704,20 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
               `${operationName} succeeded on attempt ${attempt}/${config.maxAttempts}`
             );
           }
-          
+
+          this.retryBudget.recordSuccess();
           return result;
         } catch (error) {
           lastError = error;
 
-          // Check if error is retryable
-          const retryable = isRetryableError(error);
-          
+          // Differentiate transient failures from terminal ones
+          const { retryable, reason } = classifyRpcError(error);
+
           if (!retryable || attempt === config.maxAttempts) {
             if (!retryable) {
+              recordNonRetryable("stellar_service", operationName, reason);
               this.logger.error(
-                `${operationName} failed with terminal error (not retryable)`,
+                `${operationName} failed with terminal error (not retryable, reason=${reason})`,
                 error
               );
             } else {
@@ -624,6 +728,16 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
             }
             throw error;
           }
+
+          // Shared retry budget: fail fast rather than amplify load during outages
+          if (!this.retryBudget.tryAcquire(operationName)) {
+            this.logger.warn(
+              `${operationName} failed (attempt ${attempt}/${config.maxAttempts}, reason=${reason}); ` +
+              `retry budget exhausted — not retrying`
+            );
+            throw error;
+          }
+          recordRetry("stellar_service", operationName, reason);
 
           const delay = calculateBackoffDelay(attempt, config);
           this.logger.warn(

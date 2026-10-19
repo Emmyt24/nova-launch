@@ -269,3 +269,41 @@ To replay, create a test in the `replay_tests` module using the template provide
 - Manual test cases provide targeted coverage of important scenarios
 - Seed-based replay enables efficient debugging of failures
 - The approach is simpler to understand and maintain than the originally planned modular architecture
+
+## Negative Authorization Test Pattern
+
+Every admin-only function must have a companion test proving that a non-admin caller is rejected. The stateful fuzzing suite follows this pattern for authorization-sensitive operations:
+
+1. **Enumerate admin functions** — list every function gated by admin authorization (e.g., `UpdateFees`, `Initialize`).
+2. **Add a rejection test per function** — for each admin function, add a test that invokes it with a non-admin address and asserts the call fails with `Unauthorized` (or the appropriate error).
+3. **Add a coverage check** — a test that fails when a new admin function is added without a corresponding rejection test, keeping the suite in sync as the contract evolves.
+
+### Example
+
+```rust
+#[test]
+fn test_update_fees_rejects_non_admin() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    client.initialize(&admin, &treasury, &base_fee, &metadata_fee);
+
+    // Non-admin caller must be rejected.
+    let result = client.try_update_fees(&non_admin, &Some(1), &Some(1));
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+```
+
+### Coverage Check
+
+The coverage check enumerates admin functions and asserts each has a registered rejection test. When a new admin function is introduced, the check fails until a matching rejection test is added, preventing authorization gaps from slipping through.
+
+### Guidelines
+
+- Use a distinct non-admin `Address` for each rejection test; never reuse the admin address.
+- Assert on the specific error variant (`Unauthorized`) rather than a generic failure.
+- Keep the rejection test adjacent to the positive-path test for the same function.
+- Update the admin function enumeration whenever a new admin-gated function is added.

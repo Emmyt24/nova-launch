@@ -986,6 +986,51 @@ fn test_burn_batch_single_address() {
     assert_eq!(info.total_burned, 1_000_000);
 }
 
+// ============================================================================
+// Storage Key Layout Tests - Issue #2256
+// ============================================================================
+
+/// Collects every `DataKey` variant used by the token-factory storage layer and
+/// asserts that no two variants serialize to the same storage key. This guards
+/// against storage key collisions when new variants are added.
+#[test]
+fn test_storage_keys_are_unique() {
+    let env = Env::default();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let keys: std::vec::Vec<DataKey> = std::vec![
+        DataKey::Admin,
+        DataKey::Treasury,
+        DataKey::BaseFee,
+        DataKey::MetadataFee,
+        DataKey::TokenCount,
+        DataKey::TokenInfo(0),
+        DataKey::TokenInfo(1),
+        DataKey::TokenInfo(u32::MAX),
+        DataKey::TokenInfoByAddress(token.clone()),
+        DataKey::Balance(token.clone(), admin.clone()),
+        DataKey::Allowance(token.clone(), admin.clone(), token.clone()),
+        DataKey::StorageVersion,
+    ];
+
+    let mut serialized: std::vec::Vec<std::vec::Vec<u8>> = std::vec::Vec::new();
+    for key in keys.iter() {
+        let bytes = env.to_storage_val(key);
+        let raw: std::vec::Vec<u8> = bytes.into();
+        assert!(
+            !serialized.contains(&raw),
+            "duplicate storage key detected: {:?}",
+            key
+        );
+        serialized.push(raw);
+    }
+
+    // Sanity check: distinct variants must produce distinct encodings.
+    assert_eq!(serialized.len(), keys.len());
+}
+
 // Governance type serialization tests
 #[test]
 fn test_proposal_action_type_serialization() {

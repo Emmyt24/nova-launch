@@ -36,6 +36,14 @@ Configuration is optional for email and SMS. When a channel is not configured, d
 
 ### Environment variables
 
+The complete reference for every backend environment variable — defaults,
+required flags and examples — is generated in
+[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) from `src/config/envSchema.ts`.
+After adding or changing a variable, update the schema and run
+`npm run docs:env`; CI fails when the reference is stale.
+
+Notification channel variables:
+
 | Environment variable | Description |
 |---|---|
 | `NOTIFICATION_EMAIL_API_URL` | HTTP endpoint used to send email notifications |

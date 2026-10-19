@@ -20,6 +20,10 @@ vi.mock('../../../services/eventReplayService', () => ({
   })),
 }));
 
+vi.mock('../../../config/database', () => ({
+  Database: { createAuditLog: vi.fn().mockResolvedValue({}) },
+}));
+
 // ─── Helpers to build apps with different auth configurations ─────────────────
 
 /**

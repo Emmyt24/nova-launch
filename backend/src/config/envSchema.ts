@@ -708,6 +708,15 @@ export const ENV_SCHEMA: readonly EnvVarSpec[] = [
     example: "1024",
   },
   {
+    name: "WEBHOOK_RESTORE_RETENTION_DAYS",
+    group: "Webhooks",
+    description:
+      "Days a soft-deleted webhook subscription can still be restored.",
+    required: "optional",
+    default: "30",
+    example: "30",
+  },
+  {
     name: "WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
     group: "Webhooks",
     description: "Consecutive failures that open the delivery circuit breaker.",

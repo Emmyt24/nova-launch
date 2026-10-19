@@ -9,6 +9,10 @@ vi.mock("../../prisma", () => ({
   },
 }));
 
+vi.mock("../../redis", () => ({
+  getRedis: () => ({ status: "ready", ping: vi.fn().mockResolvedValue("PONG") }),
+}));
+
 let mockCacheStore = new Map();
 
 vi.mock("node-cache", () => {

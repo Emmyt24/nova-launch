@@ -12,8 +12,34 @@ import { validateEnv } from "../../config/env";
 import { getCircuitBreakerRegistrySnapshot } from "../circuitBreaker";
 import { dispatchAlert } from "../pagerduty";
 import { checkDatabaseHealth } from "../db";
+import { getRedis } from "../redis";
 
 const _env = validateEnv();
+
+const DEFAULT_CHECK_TIMEOUT_MS = 5000;
+
+/** Env var consulted for each dependency's own timeout budget. */
+const CHECK_TIMEOUT_ENV = {
+  database: "HEALTH_TIMEOUT_DATABASE_MS",
+  redis: "HEALTH_TIMEOUT_REDIS_MS",
+  stellar: "HEALTH_TIMEOUT_STELLAR_MS",
+  ipfs: "HEALTH_TIMEOUT_IPFS_MS",
+} as const;
+
+/**
+ * Resolve the timeout for one dependency. An explicit `options.timeout`
+ * wins; otherwise the per-dependency env var, then the 5s default.
+ */
+function resolveTimeout(
+  dep: keyof typeof CHECK_TIMEOUT_ENV,
+  override?: number
+): number {
+  if (override) return override;
+  const fromEnv = Number(process.env[CHECK_TIMEOUT_ENV[dep]]);
+  return Number.isFinite(fromEnv) && fromEnv > 0
+    ? fromEnv
+    : DEFAULT_CHECK_TIMEOUT_MS;
+}
 
 /**
  * Health check service for monitoring application and dependency status
@@ -79,8 +105,7 @@ export class HealthService {
       return cached;
     }
 
-    const timeout = options.timeout || 5000;
-    const services = await this.checkAllServices(timeout);
+    const services = await this.checkAllServices(options.timeout);
     const overallStatus = this.determineOverallStatus(services);
 
     const result: HealthCheckResult = {
@@ -191,15 +216,16 @@ export class HealthService {
    * Check all service dependencies
    */
   private async checkAllServices(
-    timeout: number
+    override?: number
   ): Promise<HealthCheckResult["services"]> {
-    const [database, stellarHorizon, stellarSoroban, ipfs, cache] =
+    const [database, stellarHorizon, stellarSoroban, ipfs, cache, redis] =
       await Promise.all([
-        this.checkDatabase(timeout),
-        this.checkStellarHorizon(timeout),
-        this.checkStellarSoroban(timeout),
-        this.checkIpfs(timeout),
-        this.checkCache(timeout),
+        this.checkDatabase(resolveTimeout("database", override)),
+        this.checkStellarHorizon(resolveTimeout("stellar", override)),
+        this.checkStellarSoroban(resolveTimeout("stellar", override)),
+        this.checkIpfs(resolveTimeout("ipfs", override)),
+        this.checkCache(resolveTimeout("redis", override)),
+        this.checkRedis(resolveTimeout("redis", override)),
       ]);
 
     return {
@@ -208,6 +234,7 @@ export class HealthService {
       stellarSoroban,
       ipfs,
       cache,
+      redis,
     };
   }
 
@@ -303,6 +330,245 @@ export class HealthService {
       if (response.ok) {
         return {
           status: "up",
-          responseTime: Date
+          responseTime: Date.now() - start,
+        };
+      }
 
-/* … truncated 5407 chars — edit only what you need near the top … */
+      return {
+        status: "degraded",
+        responseTime: Date.now() - start,
+        message: `HTTP ${response.status}`,
+      };
+    } catch (error) {
+      return {
+        status: "down",
+        responseTime: Date.now() - start,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Check IPFS gateway availability
+   */
+  private async checkIpfs(timeout: number): Promise<ServiceHealth> {
+    const start = Date.now();
+    const ipfsGateway = process.env.IPFS_GATEWAY_URL || "https://ipfs.io";
+
+    try {
+      const response = await Promise.race([
+        fetch(ipfsGateway),
+        this.timeoutPromise(timeout, "IPFS check timeout"),
+      ]);
+
+      if (response.ok || response.status === 404) {
+        // 404 is acceptable for gateway root
+        return {
+          status: "up",
+          responseTime: Date.now() - start,
+        };
+      }
+
+      return {
+        status: "degraded",
+        responseTime: Date.now() - start,
+        message: `HTTP ${response.status}`,
+      };
+    } catch (error) {
+      return {
+        status: "down",
+        responseTime: Date.now() - start,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Check cache functionality
+   */
+  private async checkCache(timeout: number): Promise<ServiceHealth> {
+    const start = Date.now();
+    const testKey = "__health_check__";
+    const testValue = Date.now().toString();
+
+    try {
+      await Promise.race([
+        (async () => {
+          this.cache.set<string>(testKey, testValue);
+          const retrieved = this.cache.get<string>(testKey);
+          if (retrieved !== testValue) {
+            throw new Error("Cache value mismatch");
+          }
+          this.cache.delete(testKey);
+        })(),
+        this.timeoutPromise(timeout, "Cache check timeout"),
+      ]);
+
+      return {
+        status: "up",
+        responseTime: Date.now() - start,
+      };
+    } catch (error) {
+      return {
+        status: "down",
+        responseTime: Date.now() - start,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Check Redis connectivity with a PING.
+   *
+   * Redis backs rate limiting and caches, both of which fall back when it is
+   * unavailable, so an outage is reported as "degraded", not "down".
+   */
+  private async checkRedis(timeout: number): Promise<ServiceHealth> {
+    const start = Date.now();
+    try {
+      const redis = getRedis();
+      if (redis.status === "wait") await redis.connect();
+      const pong = await Promise.race([
+        redis.ping(),
+        this.timeoutPromise(timeout, "Redis check timeout"),
+      ]);
+      if (pong !== "PONG") throw new Error(`Unexpected PING reply: ${pong}`);
+      return { status: "up", responseTime: Date.now() - start };
+    } catch (error) {
+      return {
+        status: "degraded",
+        responseTime: Date.now() - start,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  /**
+   * Collect system and application metrics
+   */
+  private async collectMetrics(): Promise<
+    DetailedHealthCheckResult["metrics"]
+  > {
+    const memUsage = process.memoryUsage();
+    const totalMemory = memUsage.heapTotal;
+    const usedMemory = memUsage.heapUsed;
+
+    // Get database pool stats if available
+    let dbPoolStats = {};
+    try {
+      // Prisma doesn't expose pool stats directly, but we can check connection
+      const result = await prisma.$queryRaw<Array<{ count: bigint }>>`
+        SELECT COUNT(*)::bigint AS count
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+      `;
+      dbPoolStats = {
+        poolSize: 1,
+        activeConnections: result ? 1 : 0,
+        idleConnections: 0,
+      };
+    } catch {
+      // Silently fail if we can't get pool stats
+    }
+
+    return {
+      memory: {
+        used: usedMemory,
+        total: totalMemory,
+        percentage: Math.round((usedMemory / totalMemory) * 100),
+      },
+      cpu: {
+        usage: this.getCpuUsage(),
+      },
+      database: dbPoolStats,
+      requests: {
+        total: this.requestCount,
+        errorRate:
+          this.requestCount > 0
+            ? Math.round((this.errorCount / this.requestCount) * 100)
+            : 0,
+      },
+    };
+  }
+
+  /**
+   * Get CPU usage percentage
+   */
+  private getCpuUsage(): number {
+    const cpuUsage = process.cpuUsage();
+    const totalUsage = cpuUsage.user + cpuUsage.system;
+    const uptime = this.getUptime() * 1000000; // Convert to microseconds
+
+    if (uptime === 0) return 0;
+
+    return Math.round((totalUsage / uptime) * 100);
+  }
+
+  /**
+   * Determine overall health status based on service statuses
+   */
+  private determineOverallStatus(
+    services: HealthCheckResult["services"]
+  ): HealthStatus {
+    const statuses = Object.values(services).map((s) => s.status);
+
+    // If any critical service is down, overall is unhealthy
+    if (services.database.status === "down") {
+      return "unhealthy";
+    }
+
+    // If any service is down, overall is unhealthy
+    if (statuses.includes("down")) {
+      return "unhealthy";
+    }
+
+    // If any service is degraded, overall is degraded
+    if (statuses.includes("degraded")) {
+      return "degraded";
+    }
+
+    return "healthy";
+  }
+
+  /**
+   * Create a timeout promise
+   */
+  private timeoutPromise(ms: number, message: string): Promise<never> {
+    return new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    });
+  }
+}
+
+class TTLCache {
+  private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
+
+  constructor(private readonly ttlMs: number) {}
+
+  get<T = unknown>(key: string): T | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) {
+      return undefined;
+    }
+
+    if (Date.now() >= entry.expiresAt) {
+      this.entries.delete(key);
+      return undefined;
+    }
+
+    return entry.value as T;
+  }
+
+  set<T = unknown>(key: string, value: T): void {
+    this.entries.set(key, {
+      value,
+      expiresAt: Date.now() + this.ttlMs,
+    });
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
+  }
+}
+
+export const healthService = HealthService.getInstance();

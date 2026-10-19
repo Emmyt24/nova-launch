@@ -21,6 +21,8 @@ export interface WebhookSubscription {
   createdBy: string;
   createdAt: Date;
   lastTriggered: Date | null;
+  /** Set when the subscription has been soft-deleted; null otherwise. */
+  deletedAt?: Date | null;
 }
 
 /**

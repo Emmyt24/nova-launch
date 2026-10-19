@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
     created_by VARCHAR(56) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_triggered TIMESTAMP,
+    deleted_at TIMESTAMP,
     CONSTRAINT valid_url CHECK (url ~ '^https?://'),
     CONSTRAINT valid_events CHECK (array_length(events, 1) > 0)
 );
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS webhook_delivery_logs (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_active ON webhook_subscriptions(active);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_token ON webhook_subscriptions(token_address);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_created_by ON webhook_subscriptions(created_by);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_deleted_at ON webhook_subscriptions(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_logs_subscription ON webhook_delivery_logs(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_logs_created_at ON webhook_delivery_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_logs_success ON webhook_delivery_logs(success);

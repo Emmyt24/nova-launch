@@ -11,6 +11,7 @@ vi.mock("../../services/webhookService", () => ({
   default: {
     createSubscription: vi.fn(),
     deleteSubscription: vi.fn(),
+    restoreSubscription: vi.fn(),
     listSubscriptions: vi.fn(),
     getSubscription: vi.fn(),
     updateSubscriptionStatus: vi.fn(),

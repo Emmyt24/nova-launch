@@ -75,13 +75,64 @@ router.delete(
 
       res.json({
         success: true,
-        message: "Webhook subscription deleted successfully",
+        message: "Webhook subscription deleted successfully. It can be restored within the retention window.",
       });
     } catch (error) {
       console.error("Error deleting subscription:", error);
       res.status(500).json({
         success: false,
         error: "Failed to delete webhook subscription",
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/webhooks/:id/restore
+ * Restore a soft-deleted webhook subscription within the retention window
+ */
+router.post(
+  "/:id/restore",
+  webhookUserRateLimiter,
+  webhookRateLimiter,
+  validateSubscriptionId,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { createdBy } = req.body;
+
+      if (!createdBy) {
+        return res.status(400).json({
+          success: false,
+          error: "createdBy address is required",
+        });
+      }
+
+      const result = await webhookService.restoreSubscription(id, createdBy);
+
+      if (result === "not_found") {
+        return res.status(404).json({
+          success: false,
+          error: "Deleted subscription not found or unauthorized",
+        });
+      }
+
+      if (result === "retention_expired") {
+        return res.status(410).json({
+          success: false,
+          error: "Restore window has expired for this subscription",
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Webhook subscription restored successfully",
+      });
+    } catch (error) {
+      console.error("Error restoring subscription:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to restore webhook subscription",
       });
     }
   }
@@ -263,8 +314,10 @@ router.get(
         });
       }
 
+      // Include soft-deleted subscriptions so historical deliveries stay verifiable.
       const subscription = await webhookService.getSubscription(
-        log.subscriptionId
+        log.subscriptionId,
+        { includeDeleted: true }
       );
       if (!subscription) {
         return res.status(404).json({

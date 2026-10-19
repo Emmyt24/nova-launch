@@ -194,6 +194,9 @@ mod vault_deposit_withdraw_test;
 #[cfg(test)]
 mod vault_balance_invariant_proptest;
 
+#[cfg(test)]
+mod supply_invariant_property_test;
+
 use crate::milestone_verification::MilestoneVerifier;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec,

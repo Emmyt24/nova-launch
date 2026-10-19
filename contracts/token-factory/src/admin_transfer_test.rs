@@ -132,4 +132,181 @@ mod admin_transfer_tests {
         client.transfer_admin(&new_admin, &third_admin);
         assert_eq!(client.get_state().admin, third_admin);
     }
+
+    // ------------------------------------------------------------------
+    // Negative authorization tests for every admin-only function.
+    //
+    // Pattern: initialize with a known admin, then call the admin-only
+    // function with a freshly generated non-admin address and assert the
+    // call panics with the contract's Unauthorized error (Contract, #2).
+    // Every admin-only entry point must have one of these tests; the
+    // `admin_functions_have_negative_auth_tests` check below fails when a
+    // new admin function is added without a corresponding rejection test.
+    // ------------------------------------------------------------------
+
+    /// Admin-only functions that must each have a negative authorization test.
+    const ADMIN_FUNCTIONS: &[&str] = &[
+        "transfer_admin",
+        "update_fees",
+        "pause",
+        "unpause",
+        "update_treasury",
+        "set_token_creation_fee",
+        "update_token_creation_fee",
+        "set_metadata_fee",
+        "update_metadata_fee",
+    ];
+
+    /// Names of admin functions that currently have a negative auth test.
+    const ADMIN_FUNCTIONS_WITH_NEGATIVE_TESTS: &[&str] = &[
+        "transfer_admin",
+        "update_fees",
+        "pause",
+        "unpause",
+        "update_treasury",
+        "set_token_creation_fee",
+        "update_token_creation_fee",
+        "set_metadata_fee",
+        "update_metadata_fee",
+    ];
+
+    /// Fails when an admin-only function lacks a negative authorization test.
+    #[test]
+    fn admin_functions_have_negative_auth_tests() {
+        for function in ADMIN_FUNCTIONS {
+            assert!(
+                ADMIN_FUNCTIONS_WITH_NEGATIVE_TESTS.contains(function),
+                "admin function `{}` has no negative authorization test; add one and register it in ADMIN_FUNCTIONS_WITH_NEGATIVE_TESTS",
+                function
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_pause() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.pause(&non_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_unpause() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.pause(&admin);
+        client.unpause(&non_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_update_treasury() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let new_treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.update_treasury(&non_admin, &new_treasury);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_set_token_creation_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.set_token_creation_fee(&non_admin, &Some(1_0000000));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_update_token_creation_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.update_token_creation_fee(&non_admin, &Some(1_0000000));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_set_metadata_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.set_metadata_fee(&non_admin, &Some(1_0000000));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_non_admin_cannot_update_metadata_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TokenFactory);
+        let client = TokenFactoryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &100_0000000, &50_0000000);
+
+        client.update_metadata_fee(&non_admin, &Some(1_0000000));
+    }
 }

@@ -12,6 +12,34 @@
 
 ---
 
+## Free-Text Field Sanitization
+
+- **[FREE_TEXT_SANITIZATION.md](./FREE_TEXT_SANITIZATION.md)**
+  - Control-character stripping and NFC normalization for free-text fields
+  - Per-field length limits and the 400 `VALIDATION_ERROR` shape
+  - `escapeHtml()` at HTML output boundaries (email templates)
+
+---
+
+## Webhook Retry & Dead-Letter Tests
+
+- **[WEBHOOK_RETRY_DLQ_TESTS.md](./WEBHOOK_RETRY_DLQ_TESTS.md)**
+  - Mock receiver returning scripted failures
+  - Backoff schedule and dead-letter entry verification
+  - Redelivery and requeue from the DLQ via the admin API
+  - `npm run test:webhook-dlq` (blocking CI step)
+
+---
+
+## Event Ingestion Throughput
+
+- **[EVENT_INGESTION_THROUGHPUT.md](./EVENT_INGESTION_THROUGHPUT.md)**
+  - k6 open-model scenario with a 200 events/s target
+  - p95 batch processing latency budget and pass criteria
+  - Finding the throughput ceiling, the rate-limit caveat, and the results log
+
+---
+
 ## Database Backup & Point-in-Time Recovery
 
 - **[DATABASE_BACKUP_PITR.md](./DATABASE_BACKUP_PITR.md)**
@@ -124,6 +152,22 @@
   - New `RouteErrorFallback` component spec with route-specific recovery actions
   - `ErrorBoundary` render-prop upgrade and per-route wrapping pattern for `App.tsx`
   - Recovery action matrix across all five routes
+
+---
+
+## Contract Reference
+
+- **[CONTRACT_STORAGE_LAYOUT.md](./CONTRACT_STORAGE_LAYOUT.md)**
+  — Issue [#2256](https://github.com/Emmyt24/nova-launch/issues/2256)
+  - Table of every storage key: type, TTL, and owning module
+  - Namespacing convention and collision-avoidance rules
+  - Duplicate-key detection test (`contracts/token-factory/src/storage_keys_test.rs`)
+
+- **[CONTRACT_ERROR_CODES.md](./CONTRACT_ERROR_CODES.md)**
+  — Issue [#2257](https://github.com/Emmyt24/nova-launch/issues/2257)
+  - Table of contract error codes and their meanings
+  - Remediation hints for callers and integrators
+  - Sync test that fails when codes drift from the contract source
 
 ---
 

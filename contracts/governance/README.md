@@ -49,6 +49,14 @@ cargo test -- --nocapture
    - Tests with random vote sequences
    - Ensures accounting consistency
 
+## Storage Layout
+
+Storage keys and their namespacing convention are documented in
+[`STORAGE_LAYOUT.md`](./STORAGE_LAYOUT.md). All governance keys are prefixed with
+`gov:` (e.g. `gov:proposal:<id>`, `gov:vote:<id>:<voter>`) to avoid collisions
+with other contracts sharing the same ledger space. A test
+(`test_no_duplicate_storage_keys`) asserts that no two keys collide.
+
 ## CI Integration
 
 Property tests are integrated into the CI pipeline via GitHub Actions (`.github/workflows/ci.yml`):

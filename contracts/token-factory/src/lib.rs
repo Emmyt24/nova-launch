@@ -7,7 +7,9 @@
 #[cfg(test)]
 extern crate std;
 
+mod admin_transfer_timeout;
 mod compliance_reporting;
+mod function_pause;
 mod fractionalization;
 #[cfg(test)]
 mod fractionalization_test;
@@ -25,6 +27,9 @@ mod bridge;
 #[cfg(test)]
 mod bridge_test;
 mod burn;
+mod burn_rate_limit;
+#[cfg(test)]
+mod burn_rate_limit_test;
 mod buyback;
 mod campaign;
 mod campaign_breaker;
@@ -56,7 +61,11 @@ mod freeze_functions_test;
 mod game_history_test;
 #[cfg(test)]
 mod liquidity_mining_test;
+mod metadata_limits;
 mod mint;
+mod mint_allowance;
+#[cfg(test)]
+mod mint_allowance_test;
 mod pagination;
 mod payload_validation;
 #[cfg(test)]
@@ -83,9 +92,22 @@ mod token_creation_snapshot_test;
 mod token_recovery;
 mod treasury;
 mod types;
+mod upgrade_migration;
 mod validation;
 mod vault;
 mod vesting;
+mod batch_transfer;
+mod vesting_schedule;
+mod treasury_timelock;
+mod fee_tiering;
+#[cfg(test)]
+mod fee_tiering_test;
+#[cfg(test)]
+mod treasury_timelock_test;
+#[cfg(test)]
+mod vesting_schedule_test;
+#[cfg(test)]
+mod batch_transfer_test;
 
 #[cfg(test)]
 const _ISOLATED_DISABLED_arithmetic_boundary_tests: () = ();
@@ -193,6 +215,9 @@ mod vault_deposit_withdraw_test;
 
 #[cfg(test)]
 mod vault_balance_invariant_proptest;
+
+#[cfg(test)]
+mod supply_invariant_property_test;
 
 use crate::milestone_verification::MilestoneVerifier;
 use soroban_sdk::{
@@ -409,6 +434,7 @@ impl TokenFactory {
         new_metadata_uri: String,
     ) -> Result<u32, Error> {
         // Only the configured governance contract may approve metadata changes.
+        metadata_limits::validate_metadata_uri(&new_metadata_uri)?;
         let governance = storage::get_governance(&env).ok_or(Error::Unauthorized)?;
         governance.require_auth();
 
@@ -627,6 +653,7 @@ impl TokenFactory {
 
         // Overwrite any existing pending admin (prevents stale proposals)
         storage::set_pending_admin(&env, &new_admin);
+        admin_transfer_timeout::record_proposal(&env);
 
         // Emit both the legacy and new explicit AdminTransferProposed events
         events::emit_admin_proposed(&env, &current_admin, &new_admin);
@@ -653,6 +680,7 @@ impl TokenFactory {
         new_admin.require_auth();
 
         let pending = storage::get_pending_admin(&env).ok_or(Error::Unauthorized)?;
+        admin_transfer_timeout::require_not_expired(&env)?;
 
         if new_admin != pending {
             return Err(Error::Unauthorized);
@@ -691,6 +719,11 @@ impl TokenFactory {
         events::emit_admin_cancelled(&env, &admin, &pending);
 
         Ok(())
+    }
+
+    /// Expiry timestamp of the pending admin proposal (None if none recorded)
+    pub fn pending_admin_expiry(env: Env) -> Option<u64> {
+        admin_transfer_timeout::get_expiry(&env)
     }
 
     /// Register a trusted cross-contract caller (admin only)
@@ -847,6 +880,31 @@ impl TokenFactory {
     /// ```
     pub fn is_paused(env: Env) -> bool {
         storage::is_paused(&env)
+    }
+
+    /// Pause a single function by symbol (admin only). Global pause keeps precedence.
+    pub fn pause_function(env: Env, admin: Address, func: Symbol) -> Result<(), Error> {
+        function_pause::set_function_paused(&env, &admin, func, true)
+    }
+
+    /// Clear a single function's pause flag (admin only)
+    pub fn unpause_function(env: Env, admin: Address, func: Symbol) -> Result<(), Error> {
+        function_pause::set_function_paused(&env, &admin, func, false)
+    }
+
+    /// Whether a function is effectively paused (globally or individually)
+    pub fn is_function_paused(env: Env, func: Symbol) -> bool {
+        function_pause::is_function_paused(&env, &func)
+    }
+
+    /// Current contract version number used by the upgrade migration hook
+    pub fn contract_version_number(env: Env) -> u32 {
+        upgrade_migration::get_version(&env)
+    }
+
+    /// Run the migration to `target_version` (admin only, once per version, in order)
+    pub fn run_migration(env: Env, admin: Address, target_version: u32) -> Result<u32, Error> {
+        upgrade_migration::run_migration(&env, &admin, target_version)
     }
 
     /// Propose a fee update through the governance flow (#1385)
@@ -1245,7 +1303,30 @@ impl TokenFactory {
     /// factory.burn(&env, caller, 0, 1_000_0000000)?;
     /// ```
     pub fn burn(env: Env, caller: Address, token_index: u32, amount: i128) -> Result<(), Error> {
+        burn_rate_limit::enforce(&env, token_index, amount)?;
         burn::burn(&env, caller, token_index, amount)
+    }
+
+    /// Configure the per-ledger-window burn cap for a token (admin only, #2229).
+    /// `max_burn == 0` clears the limit. Error 610 is returned by `burn` when over cap.
+    pub fn set_burn_rate_limit(
+        env: Env,
+        admin: Address,
+        token_index: u32,
+        window_ledgers: u32,
+        max_burn: i128,
+    ) -> Result<(), Error> {
+        burn_rate_limit::set_limit(&env, admin, token_index, window_ledgers, max_burn)
+    }
+
+    /// Get the burn rate limit as `(window_ledgers, max_burn)`, if configured (#2229).
+    pub fn get_burn_rate_limit(env: Env, token_index: u32) -> Option<(u32, i128)> {
+        burn_rate_limit::get_limit(&env, token_index)
+    }
+
+    /// Amount burned so far in the current ledger window (#2229).
+    pub fn get_burn_window_usage(env: Env, token_index: u32) -> i128 {
+        burn_rate_limit::get_window_usage(&env, token_index)
     }
 
     /// Batch burn tokens from multiple holders (admin only)
@@ -1786,6 +1867,7 @@ impl TokenFactory {
     /// * `Error::TokenPaused` - Token is currently paused
     /// * `Error::MetadataAlreadySet` - Metadata already set for this token
     pub fn set_metadata(env: Env, token_index: u32, metadata_uri: String) -> Result<(), Error> {
+        metadata_limits::validate_metadata_uri(&metadata_uri)?;
         let token_info = storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
         let creator = token_info.creator.clone();
         creator.require_auth();
@@ -1835,6 +1917,7 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
+        metadata_limits::validate_metadata_uri(&metadata_uri)?;
         let mut token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 
@@ -1938,6 +2021,7 @@ impl TokenFactory {
 
         admin.require_auth();
 
+        metadata_limits::validate_metadata_uri(&new_metadata_uri)?;
         let mut token_info =
             storage::get_token_info(&env, token_index).ok_or(Error::TokenNotFound)?;
 
@@ -2044,6 +2128,7 @@ impl TokenFactory {
         metadata_uri: Option<String>,
         fee_payment: i128,
     ) -> Result<Address, Error> {
+        function_pause::require_not_paused(&env, &symbol_short!("create"))?;
         token_creation::create_token(
             &env,
             creator,
@@ -2886,6 +2971,7 @@ impl TokenFactory {
         to: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        function_pause::require_not_paused(&env, &symbol_short!("mint"))?;
         // Check if contract is paused
         if storage::is_paused(&env) {
             return Err(Error::ContractPaused);
@@ -2933,6 +3019,44 @@ impl TokenFactory {
     /// ```
     pub fn get_remaining_mintable(env: Env, token_index: u32) -> Option<i128> {
         mint::get_remaining_mintable(&env, token_index)
+    }
+
+    /// Grant a spender a limited, expiring mint allowance (creator only, #2228).
+    pub fn set_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+        amount: i128,
+        expires_at: u64,
+    ) -> Result<(), Error> {
+        mint_allowance::set_allowance(&env, creator, token_index, spender, amount, expires_at)
+    }
+
+    /// Revoke a spender's mint allowance (creator only, #2228).
+    pub fn revoke_mint_allowance(
+        env: Env,
+        creator: Address,
+        token_index: u32,
+        spender: Address,
+    ) -> Result<(), Error> {
+        mint_allowance::revoke_allowance(&env, creator, token_index, spender)
+    }
+
+    /// Remaining unexpired mint allowance for a spender (#2228).
+    pub fn get_mint_allowance(env: Env, token_index: u32, spender: Address) -> i128 {
+        mint_allowance::get_allowance(&env, token_index, &spender)
+    }
+
+    /// Mint using a previously granted allowance (#2228).
+    pub fn mint_with_allowance(
+        env: Env,
+        spender: Address,
+        token_index: u32,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        mint_allowance::mint_with_allowance(&env, spender, token_index, to, amount)
     }
 
     /// Update the supply cap for a token (creator only)
@@ -3198,6 +3322,121 @@ impl TokenFactory {
     // ═══════════════════════════════════════════════════════════════════════
     // Stream Functions
     // ═══════════════════════════════════════════════════════════════════════
+
+    /// Batch transfer `token` from `from` to many recipients (max 50), atomically,
+    /// emitting a `bt_item` event per transfer and a `bt_done` summary (#2237).
+    pub fn batch_transfer(
+        env: Env,
+        from: Address,
+        token: Address,
+        transfers: Vec<(Address, i128)>,
+    ) -> Result<u32, Error> {
+        batch_transfer::batch_transfer(&env, &from, &token, &transfers)
+    }
+
+    /// Create a cliff + linear vesting schedule, escrowing `amount` of `token` (#2236).
+    pub fn create_vesting_schedule(
+        env: Env,
+        creator: Address,
+        token: Address,
+        beneficiary: Address,
+        amount: i128,
+        start_time: u64,
+        cliff_duration: u64,
+        duration: u64,
+    ) -> Result<u64, Error> {
+        vesting_schedule::create_vesting_schedule(
+            &env,
+            &creator,
+            &token,
+            &beneficiary,
+            amount,
+            start_time,
+            cliff_duration,
+            duration,
+        )
+    }
+
+    /// Claim all vested, unclaimed tokens from a vesting schedule (#2236).
+    pub fn claim_vesting_schedule(env: Env, beneficiary: Address, id: u64) -> Result<i128, Error> {
+        vesting_schedule::claim_vesting_schedule(&env, &beneficiary, id)
+    }
+
+    /// Get a vesting schedule by id (#2236).
+    pub fn get_vesting_schedule(
+        env: Env,
+        id: u64,
+    ) -> Result<vesting_schedule::VestingSchedule, Error> {
+        vesting_schedule::get_vesting_schedule(&env, id)
+    }
+
+    /// Amount currently claimable from a vesting schedule (#2236).
+    pub fn get_vesting_claimable(env: Env, id: u64) -> Result<i128, Error> {
+        vesting_schedule::get_claimable_amount(&env, id)
+    }
+
+    /// Queue a timelocked treasury withdrawal; returns its id (#2235).
+    pub fn queue_treasury_withdrawal(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<u64, Error> {
+        treasury_timelock::queue_withdrawal(&env, &admin, &recipient, amount)
+    }
+
+    /// Cancel a queued treasury withdrawal (#2235).
+    pub fn cancel_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::cancel_withdrawal(&env, &admin, id)
+    }
+
+    /// Execute a queued treasury withdrawal after its delay (#2235).
+    pub fn execute_treasury_withdrawal(env: Env, admin: Address, id: u64) -> Result<(), Error> {
+        treasury_timelock::execute_withdrawal(&env, &admin, id)
+    }
+
+    /// Set the treasury withdrawal delay in seconds (#2235).
+    pub fn set_treasury_withdrawal_delay(env: Env, admin: Address, delay: u64) -> Result<(), Error> {
+        treasury_timelock::set_withdrawal_delay(&env, &admin, delay)
+    }
+
+    /// Get the treasury withdrawal delay in seconds (#2235).
+    pub fn get_treasury_withdrawal_delay(env: Env) -> u64 {
+        treasury_timelock::get_withdrawal_delay(&env)
+    }
+
+    /// Get a queued treasury withdrawal (#2235).
+    pub fn get_queued_treasury_withdrawal(
+        env: Env,
+        id: u64,
+    ) -> Result<treasury_timelock::QueuedWithdrawal, Error> {
+        treasury_timelock::get_queued_withdrawal(&env, id)
+    }
+
+    /// Set the creation-fee surcharge for a token feature (admin only) (#2234).
+    pub fn set_feature_fee(
+        env: Env,
+        admin: Address,
+        feature: Symbol,
+        fee: i128,
+    ) -> Result<(), Error> {
+        fee_tiering::set_feature_fee(&env, &admin, &feature, fee)
+    }
+
+    /// Get the surcharge configured for a feature (#2234).
+    pub fn get_feature_fee(env: Env, feature: Symbol) -> i128 {
+        fee_tiering::get_feature_fee(&env, &feature)
+    }
+
+    /// List features with a configured surcharge (#2234).
+    pub fn get_fee_tier_features(env: Env) -> Vec<Symbol> {
+        fee_tiering::get_fee_tier_features(&env)
+    }
+
+    /// Quote the creation fee (base fee plus feature surcharges) (#2234).
+    pub fn quote_creation_fee(env: Env, features: Vec<Symbol>) -> Result<i128, Error> {
+        fee_tiering::quote_creation_fee(&env, &features)
+    }
 
     /// Create a vault with either time-based unlock, milestone-based unlock, or both.
     pub fn create_vault(

@@ -315,6 +315,58 @@ fn test_set_clawback_unauthorized() {
     client.set_clawback(&token_address, &non_creator, &false).unwrap();
 }
 
+/// Negative authorization test for `set_clawback` when called by a
+/// non-admin, non-creator address. Proves the admin/creator gate rejects
+/// arbitrary callers.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_set_clawback_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Attacker is neither admin nor creator: must be rejected.
+    client.set_clawback(&token_address, &attacker, &true).unwrap();
+}
+
+/// Negative authorization test for `admin_burn` when called by a
+/// non-admin, non-creator address.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_admin_burn_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let from = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    // Attacker is neither admin nor creator: must be rejected.
+    client
+        .admin_burn(&token_address, &attacker, &from, &100_000_0000000)
+        .unwrap();
+}
+
 #[test]
 fn test_admin_burn_event_emitted() {
     let env = Env::default();
@@ -369,5 +421,173 @@ fn test_admin_burn_from_different_addresses() {
     let token_info = client.get_token_info_by_address(&token_address).unwrap();
     assert_eq!(token_info.total_burned, 80_000_0000000);
     assert_eq!(token_info.burn_count, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Negative authorization coverage for the remaining admin-gated entrypoints.
+//
+// Every admin-only function in `lib.rs` must have at least one test in this
+// module (or another admin test module) whose name matches
+// `test_<fn>_rejects_non_admin` (or `test_<fn>_unauthorized`). The
+// `scripts/check_admin_auth_tests.sh` script enforces this automatically.
+//
+// Pattern:
+//   1. Initialize the contract with a known admin.
+//   2. Generate a distinct `attacker` address that is neither admin nor
+//      creator.
+//   3. Call the admin function as `attacker` and assert it panics with the
+//      Unauthorized error (`Error(Contract, #2)`).
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_pause_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.pause(&attacker).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_unpause_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.unpause(&attacker).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_update_fees_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.update_fees(&attacker, &Some(1_000), &Some(1_000)).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_update_treasury_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.update_treasury(&attacker, &attacker).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_transfer_admin_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.transfer_admin(&attacker, &new_admin).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_set_token_paused_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    client.set_token_paused(&token_address, &attacker, &true).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_set_freeze_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    let token_address = setup_mock_token(&env, &client, &creator);
+
+    client.set_freeze(&token_address, &attacker, &true).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_upgrade_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+    client.initialize(&admin, &treasury, &70_000_000, &30_000_000);
+
+    client.upgrade(&attacker, &new_wasm_hash).unwrap();
 }
 

@@ -96,6 +96,57 @@ here.
 
 ---
 
+## Stellar RPC retry budget (`src/stellar-service-integration/retry-budget.ts`)
+
+`StellarService.withRetry` limits retries per call (`BACKGROUND_RETRY_CONFIG.maxAttempts`).
+During an RPC outage that limit is not enough: every in-flight operation retries
+independently, so total load can grow to *calls × attempts*. A shared
+**retry budget** puts a ceiling on retries across all calls made by the client.
+
+- The budget is a **token bucket**. It holds up to `capacity` tokens, refills at
+  `refillPerSecond`, and each successful call deposits `depositPerSuccess` tokens.
+- Each **retry** spends one token. The first attempt of a call never needs a token.
+- When the bucket is empty, a retryable failure is thrown right away with no
+  retry, and `stellar_rpc_retry_budget_exhausted_total` is incremented.
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `STELLAR_RETRY_BUDGET_CAPACITY` | `20` | Maximum retry burst |
+| `STELLAR_RETRY_BUDGET_REFILL_PER_SECOND` | `1` | Steady-state retries per second |
+| `STELLAR_RETRY_BUDGET_DEPOSIT_PER_SUCCESS` | `0.1` | Tokens returned per successful call |
+
+### Retryable vs terminal errors
+
+`classifyRpcError(error)` returns `{ retryable, reason }`:
+
+| Reason | Retryable | Matches |
+|--------|-----------|---------|
+| `network` | yes | `ECONNRESET`, `ECONNREFUSED`, `ECONNABORTED`, `ENOTFOUND`, `EAI_AGAIN`, `EPIPE`, `ENETUNREACH`, `EHOSTUNREACH`, "network", "socket hang up" |
+| `timeout` | yes | `ETIMEDOUT`, HTTP 408, `StellarTimeoutException`, "timeout" / "timed out" |
+| `rate_limited` | yes | HTTP 429 from upstream |
+| `server_error` | yes | HTTP 500, 502, 503, 504 |
+| `bad_sequence` | yes | `tx_bad_seq`, sequence mismatch |
+| `http_error` | no | Any other 4xx/5xx (e.g. 400, 404, 501) |
+| `local_rate_limit` | no | `StellarRateLimitException` from our own client-side limiter |
+| `application` | no | Other `StellarException`s (not found, invalid address, contract error, …) |
+| `unknown` | no | Anything else |
+
+Before this change, `StellarTimeoutException` ("Operation timed out") was not
+retried. It now is.
+
+### Metrics
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `stellar_rpc_retry_budget_tokens` | Gauge | `client` |
+| `stellar_rpc_retry_budget_exhausted_total` | Counter | `client`, `operation` |
+| `stellar_rpc_retries_total` | Counter | `client`, `operation`, `reason` |
+| `stellar_rpc_non_retryable_errors_total` | Counter | `client`, `operation`, `reason` |
+
+Suggested alert: `sum(rate(stellar_rpc_retry_budget_exhausted_total[5m])) > 0`
+for 5 minutes. It means the upstream RPC has been failing long enough to use up
+the whole budget.
+
 ## Cross-references
 
 Each of the three source files contains a cross-reference comment pointing to

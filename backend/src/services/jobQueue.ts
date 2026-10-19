@@ -267,6 +267,21 @@ export class JobQueue {
   }
 
   /**
+   * Stop accepting new work, then wait up to `timeoutMs` for in-flight jobs to
+   * finish. Resolves with how many jobs were still running when it gave up.
+   */
+  async drain(timeoutMs = 10_000): Promise<{ drained: boolean; inFlight: number }> {
+    this.stop();
+    for (const type of [...this.recurringTimers.keys()]) this.stopRecurring(type);
+
+    const deadline = Date.now() + timeoutMs;
+    while (this.activeWorkers > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return { drained: this.activeWorkers === 0, inFlight: this.activeWorkers };
+  }
+
+  /**
    * Enqueue a job of `type` on a recurring `intervalMs` cadence.
    * Calling this again for a `type` that's already scheduled is a no-op —
    * use `stopRecurring` first to change the interval.

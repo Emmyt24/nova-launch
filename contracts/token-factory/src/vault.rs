@@ -933,6 +933,183 @@ mod tests {
         assert_eq!(claimed, total_amount);
     }
 
+    // ============================================================================
+    // Fuzz-style claim math tests (#2247)
+    // ============================================================================
+
+    /// Deterministic pseudo-random generator so the fuzz sweep is reproducible
+    /// in CI without pulling in an external RNG.
+    fn xorshift64(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    /// Extreme timestamps: 0, 1, u64::MAX and values straddling the unlock
+    /// boundary. Claim must never overflow and must respect the cliff.
+    #[test]
+    fn fuzz_claim_vault_extreme_timestamps() {
+        let timestamps: [u64; 8] = [0, 1, 2, 999, 1000, 1001, u64::MAX - 1, u64::MAX];
+        let unlock_times: [u64; 8] = [0, 1, 2, 999, 1000, 1001, u64::MAX - 1, u64::MAX];
+
+        for &unlock_time in unlock_times.iter() {
+            for &now in timestamps.iter() {
+                let env = Env::default();
+                env.mock_all_auths();
+                env.ledger().with_mut(|li| li.timestamp = now);
+
+                let vault_id = 1;
+                let owner = Address::generate(&env);
+                let total_amount = 1_000_0000000;
+                let vault = Vault {
+                    id: vault_id,
+                    token: Address::generate(&env),
+                    owner: owner.clone(),
+                    creator: Address::generate(&env),
+                    total_amount,
+                    claimed_amount: 0,
+                    unlock_time,
+                    milestone_hash: BytesN::from_array(&env, &[0u8; 32]),
+                    status: VaultStatus::Active,
+                    created_at: 0,
+                    verifier: None,
+                    milestone_verified: false,
+                };
+                storage::set_vault(&env, &vault).unwrap();
+
+                let result = claim_vault(&env, vault_id, &owner);
+                if now < unlock_time {
+                    assert_eq!(result, Err(Error::CliffNotReached));
+                    let stored = storage::get_vault(&env, vault_id).unwrap();
+                    assert_eq!(stored.claimed_amount, 0);
+                } else {
+                    assert_eq!(result, Ok(total_amount));
+                    let stored = storage::get_vault(&env, vault_id).unwrap();
+                    assert!(stored.claimed_amount <= stored.total_amount);
+                    assert_eq!(stored.claimed_amount, total_amount);
+                }
+            }
+        }
+    }
+
+    /// Extreme amounts including i128::MAX and near-overflow boundaries.
+    /// Claimed must never exceed total and no arithmetic overflow may occur.
+    #[test]
+    fn fuzz_claim_vault_extreme_amounts() {
+        let totals: [i128; 7] = [
+            1,
+            2,
+            i128::MAX / 2,
+            i128::MAX - 1,
+            i128::MAX,
+            1_000_0000000,
+            42,
+        ];
+        let claimed_fractions: [i128; 6] = [0, 1, 2, 3, 100, 1_000];
+
+        for &total in totals.iter() {
+            for &fraction in claimed_fractions.iter() {
+                let pre_claimed = if total <= fraction { total } else { fraction };
+                let env = Env::default();
+                env.mock_all_auths();
+                env.ledger().with_mut(|li| li.timestamp = 1000);
+
+                let vault_id = 1;
+                let owner = Address::generate(&env);
+                let vault = Vault {
+                    id: vault_id,
+                    token: Address::generate(&env),
+                    owner: owner.clone(),
+                    creator: Address::generate(&env),
+                    total_amount: total,
+                    claimed_amount: pre_claimed,
+                    unlock_time: 500,
+                    milestone_hash: BytesN::from_array(&env, &[0u8; 32]),
+                    status: VaultStatus::Active,
+                    created_at: 0,
+                    verifier: None,
+                    milestone_verified: false,
+                };
+                storage::set_vault(&env, &vault).unwrap();
+
+                let result = claim_vault(&env, vault_id, &owner);
+                let stored = storage::get_vault(&env, vault_id).unwrap();
+                assert!(
+                    stored.claimed_amount <= stored.total_amount,
+                    "claimed {} exceeded total {}",
+                    stored.claimed_amount,
+                    stored.total_amount
+                );
+
+                if pre_claimed >= total {
+                    assert_eq!(result, Err(Error::NothingToClaim));
+                } else {
+                    let claimed = result.expect("claim should succeed");
+                    assert_eq!(claimed, total - pre_claimed);
+                    assert_eq!(stored.claimed_amount, total);
+                    assert_eq!(stored.status, VaultStatus::Claimed);
+                }
+            }
+        }
+    }
+
+    /// Randomized sweep over timestamps and amounts: claimable amounts are
+    /// monotonic in `total_amount` and `claimed_amount` never exceeds total.
+    #[test]
+    fn fuzz_claim_vault_monotonic_and_bounded() {
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut previous_claimable: i128 = -1;
+
+        for _ in 0..256 {
+            let total = (xorshift64(&mut seed) % (i128::MAX as u64)) as i128 + 1;
+            let claimed = (xorshift64(&mut seed) % (total as u64)) as i128;
+            let unlock_time = xorshift64(&mut seed) % 10_000;
+            let now = xorshift64(&mut seed) % 10_000;
+
+            let env = Env::default();
+            env.mock_all_auths();
+            env.ledger().with_mut(|li| li.timestamp = now);
+
+            let vault_id = 1;
+            let owner = Address::generate(&env);
+            let vault = Vault {
+                id: vault_id,
+                token: Address::generate(&env),
+                owner: owner.clone(),
+                creator: Address::generate(&env),
+                total_amount: total,
+                claimed_amount: claimed,
+                unlock_time,
+                milestone_hash: BytesN::from_array(&env, &[0u8; 32]),
+                status: VaultStatus::Active,
+                created_at: 0,
+                verifier: None,
+                milestone_verified: false,
+            };
+            storage::set_vault(&env, &vault).unwrap();
+
+            let result = claim_vault(&env, vault_id, &owner);
+            let stored = storage::get_vault(&env, vault_id).unwrap();
+            assert!(stored.claimed_amount <= stored.total_amount);
+
+            if now < unlock_time {
+                assert_eq!(result, Err(Error::CliffNotReached));
+                assert_eq!(stored.claimed_amount, claimed);
+            } else if claimed >= total {
+                assert_eq!(result, Err(Error::NothingToClaim));
+            } else {
+                let claimable = total - claimed;
+                assert_eq!(result, Ok(claimable));
+                // Monotonicity: claimable grows with the remaining balance.
+                assert!(claimable >= previous_claimable || previous_claimable < 0);
+                previous_claimable = claimable;
+            }
+        }
+    }
+
     #[test]
     fn test_claim_vault_with_funded_amount() {
         let env = Env::default();

@@ -47,6 +47,61 @@ export const STELLAR_CONFIG = {
   ...NETWORK_CONFIGS[ENV.NETWORK],
 } as const;
 
+/** Identifier for a supported Stellar wallet adapter. */
+export type WalletId = 'freighter' | 'albedo' | 'xbull' | 'lobstr';
+
+export interface WalletAdapterConfig {
+  /** Stable identifier used by the wallet kit / adapter layer. */
+  id: WalletId;
+  /** Human-readable name shown in the UI. */
+  name: string;
+  /** Icon asset path (relative to the public directory) for the UI entry. */
+  icon: string;
+  /** Short description shown alongside the wallet entry. */
+  description: string;
+  /** Whether the wallet is available as a browser extension. */
+  isExtension: boolean;
+}
+
+/**
+ * Single source of truth for the wallets surfaced in the UI.
+ * The wallet adapter layer resolves these ids via the Stellar wallet kit.
+ */
+export const WALLET_ADAPTERS: readonly WalletAdapterConfig[] = [
+  {
+    id: 'freighter',
+    name: 'Freighter',
+    icon: '/wallets/freighter.svg',
+    description: 'Browser extension wallet by Stellar Development Foundation.',
+    isExtension: true,
+  },
+  {
+    id: 'albedo',
+    name: 'Albedo',
+    icon: '/wallets/albedo.svg',
+    description: 'Web-based wallet that requires no installation.',
+    isExtension: false,
+  },
+  {
+    id: 'xbull',
+    name: 'xBull',
+    icon: '/wallets/xbull.svg',
+    description: 'Browser extension and mobile wallet with multi-account support.',
+    isExtension: true,
+  },
+  {
+    id: 'lobstr',
+    name: 'Lobstr',
+    icon: '/wallets/lobstr.svg',
+    description: 'Popular Stellar wallet available as extension and mobile app.',
+    isExtension: true,
+  },
+] as const;
+
+/** Returns the wallet adapter config for the given id, if supported. */
+export const getWalletAdapter = (id: WalletId): WalletAdapterConfig | undefined =>
+  WALLET_ADAPTERS.find((wallet) => wallet.id === id);
+
 /** The active network as a plain string — useful for runtime mismatch checks. */
 export const ACTIVE_NETWORK: 'testnet' | 'mainnet' = ENV.NETWORK;
 

@@ -1218,6 +1218,14 @@ VITE_IPFS_API_SECRET=<your_pinata_api_secret>
 
 ## ⚙️ Configuration
 
+### Backend Environment Variables
+
+Every environment variable the backend reads — with defaults, required flags
+and examples — is documented in the generated
+**[Backend Environment Reference](backend/docs/ENVIRONMENT.md)**. It is built
+from `backend/src/config/envSchema.ts` (`cd backend && npm run docs:env`), and
+CI fails when it is out of date.
+
 ### Stellar Network Configuration
 
 Edit `frontend/src/config/stellar.ts`:

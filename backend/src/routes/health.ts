@@ -22,6 +22,7 @@
 
 import { Router, Request, Response } from "express";
 import { healthService } from "../lib/health/health.service";
+import { rpcEndpointPool } from "../lib/rpc/endpoint-pool";
 import { successResponse } from "../utils/response";
 
 const router = Router();
@@ -73,7 +74,13 @@ router.get("/detail", async (_req: Request, res: Response) => {
     );
   }
   const result = await healthService.checkDetailedHealth();
-  res.status(statusCode(result.status)).json(successResponse(result));
+  const endpoints = rpcEndpointPool.getSnapshot();
+  res.status(statusCode(result.status)).json(
+    successResponse({
+      ...result,
+      endpoints,
+    })
+  );
 });
 
 /**

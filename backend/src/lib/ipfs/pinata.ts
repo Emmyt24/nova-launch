@@ -6,6 +6,14 @@ import { register } from "../metrics/index.js";
 import { CIDMismatchError, verifyCIDContent, verifyMetadataCID } from "./cidVerification.js";
 import { pinataQueue, type PinataQueueMetrics } from "./pinataQueue.js";
 import { gatewayRouter } from "./gatewayRouter.js";
+import {
+  PinningProvider,
+  PinningProviderError,
+  isTransientError,
+  createProviderFromEnv,
+  PinningOrchestrator,
+  pinningOrchestrator,
+} from "./pinningProvider.js";
 
 const cache = new NodeCache({ stdTTL: 3600 }); // 1 hour cache
 
@@ -151,10 +159,7 @@ const CID_VERIFY_GATEWAY =
  * Called automatically when a CID mismatch is detected on retrieval.
  */
 export async function rePinFromGateway(cid: string): Promise<void> {
-  const pinata = await getPinataClient();
-  await pinata.pinByHash(cid, {
-    pinataMetadata: { name: `repin-${cid}` },
-  });
+  await pinningOrchestrator.pinByHash(cid, { name: `repin-${cid}` });
   console.info(`[pinata] Successfully re-pinned CID ${cid} from gateway`);
 }
 
@@ -166,43 +171,26 @@ export async function uploadImageToIPFS(
   buffer: Buffer,
   filename: string
 ): Promise<string> {
-  return ipfsCircuitBreaker.execute(() =>
-    pinataQueue.enqueue(async () => {
-      const pinata = await getPinataClient();
+  const cid = await pinningOrchestrator.pinFile(buffer, filename);
 
-      const result = await pinata.pinFileToIPFS(buffer, {
-        pinataMetadata: { name: filename },
-      });
+  if (CID_VERIFY_ENABLED) {
+    await verifyCIDContent(buffer, cid, CID_VERIFY_GATEWAY);
+  }
 
-      const cid = result.IpfsHash;
-
-      if (CID_VERIFY_ENABLED) {
-        await verifyCIDContent(buffer, cid, CID_VERIFY_GATEWAY);
-      }
-
-      return cid;
-    })
-  );
+  return cid;
 }
 
 export async function uploadMetadataToIPFS(metadata: any): Promise<string> {
-  return ipfsCircuitBreaker.execute(() =>
-    pinataQueue.enqueue(async () => {
-      const pinata = await getPinataClient();
+  const cid = await pinningOrchestrator.pinJSON(metadata);
 
-      const result = await pinata.pinJSONToIPFS(metadata);
-      const cid = result.IpfsHash;
+  if (CID_VERIFY_ENABLED) {
+    await verifyMetadataCID(metadata, cid, CID_VERIFY_GATEWAY);
+  }
 
-      if (CID_VERIFY_ENABLED) {
-        await verifyMetadataCID(metadata, cid, CID_VERIFY_GATEWAY);
-      }
+  // Cache the metadata
+  cache.set(cid, metadata);
 
-      // Cache the metadata
-      cache.set(cid, metadata);
-
-      return cid;
-    })
-  );
+  return cid;
 }
 
 export async function getMetadataFromIPFS(cid: string): Promise<any> {
@@ -247,3 +235,11 @@ export function getPinataQueueMetrics(): PinataQueueMetrics {
 }
 
 export { CIDMismatchError };
+export {
+  PinningProvider,
+  PinningProviderError,
+  isTransientError,
+  createProviderFromEnv,
+  PinningOrchestrator,
+  pinningOrchestrator,
+};

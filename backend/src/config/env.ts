@@ -28,6 +28,9 @@ export const SUPPORTED_EXPLORER_PROVIDERS: readonly ExplorerProvider[] = [
   'stellar.expert',
   'stellarchain',
 ];
+export type PinningProviderName = 'pinata' | 'web3storage' | 'none';
+
+const PINNING_PROVIDER_NAMES: readonly PinningProviderName[] = ['pinata', 'web3storage', 'none'];
 
 export interface BackendEnv {
   NODE_ENV: string;
@@ -42,6 +45,55 @@ export interface BackendEnv {
   DATABASE_URL: string;
   JWT_SECRET: string;
   ADMIN_JWT_SECRET: string;
+  /** Primary IPFS pinning provider. Defaults to `pinata`. */
+  PINNING_PRIMARY_PROVIDER: PinningProviderName;
+  /** Optional failover provider used when the primary keeps failing. */
+  PINNING_SECONDARY_PROVIDER: PinningProviderName;
+  /** Number of consecutive primary failures before failing over. */
+  PINNING_FAILOVER_THRESHOLD: number;
+  /** Pinata credentials (primary or secondary depending on selection). */
+  PINATA_API_KEY: string;
+  PINATA_API_SECRET: string;
+  PINATA_GATEWAY_URL: string;
+  /** web3.storage credentials (primary or secondary depending on selection). */
+  WEB3STORAGE_API_TOKEN: string;
+  WEB3STORAGE_GATEWAY_URL: string;
+}
+
+function parsePinningProvider(name: string, raw: string | undefined, fallback: PinningProviderName): PinningProviderName {
+  const value = (raw || fallback).trim().toLowerCase();
+  if (!PINNING_PROVIDER_NAMES.includes(value as PinningProviderName)) {
+    throw new Error(
+      `${name} must be one of ${PINNING_PROVIDER_NAMES.map((p) => `"${p}"`).join(', ')}, got "${raw}".`
+    );
+  }
+  return value as PinningProviderName;
+}
+
+function assertProviderCredentials(
+  provider: PinningProviderName,
+  role: 'PINNING_PRIMARY_PROVIDER' | 'PINNING_SECONDARY_PROVIDER',
+  isProduction: boolean,
+  credentials: { pinataKey: string; pinataSecret: string; web3Token: string }
+): void {
+  if (provider === 'none') {
+    if (role === 'PINNING_PRIMARY_PROVIDER' && isProduction) {
+      throw new Error(
+        'PINNING_PRIMARY_PROVIDER cannot be "none" in production — configure a pinning provider.'
+      );
+    }
+    return;
+  }
+  if (provider === 'pinata' && (!credentials.pinataKey || !credentials.pinataSecret)) {
+    throw new Error(
+      `PINATA_API_KEY and PINATA_API_SECRET are required when ${role} is "pinata".`
+    );
+  }
+  if (provider === 'web3storage' && !credentials.web3Token) {
+    throw new Error(
+      `WEB3STORAGE_API_TOKEN is required when ${role} is "web3storage".`
+    );
+  }
 }
 
 /**
@@ -153,6 +205,48 @@ export function validateEnv(): BackendEnv {
     throw new Error('ADMIN_JWT_SECRET must be set to a secure value in production.');
   }
 
+  const pinningPrimaryProvider = parsePinningProvider(
+    'PINNING_PRIMARY_PROVIDER',
+    process.env.PINNING_PRIMARY_PROVIDER,
+    'pinata'
+  );
+  const pinningSecondaryProvider = parsePinningProvider(
+    'PINNING_SECONDARY_PROVIDER',
+    process.env.PINNING_SECONDARY_PROVIDER,
+    'none'
+  );
+  if (
+    pinningSecondaryProvider !== 'none' &&
+    pinningSecondaryProvider === pinningPrimaryProvider
+  ) {
+    throw new Error(
+      `PINNING_SECONDARY_PROVIDER must differ from PINNING_PRIMARY_PROVIDER (both are "${pinningPrimaryProvider}").`
+    );
+  }
+
+  const pinataApiKey = process.env.PINATA_API_KEY || '';
+  const pinataApiSecret = process.env.PINATA_API_SECRET || '';
+  const web3StorageApiToken = process.env.WEB3STORAGE_API_TOKEN || '';
+  const pinningCredentials = {
+    pinataKey: pinataApiKey,
+    pinataSecret: pinataApiSecret,
+    web3Token: web3StorageApiToken,
+  };
+  assertProviderCredentials(pinningPrimaryProvider, 'PINNING_PRIMARY_PROVIDER', isProduction, pinningCredentials);
+  assertProviderCredentials(pinningSecondaryProvider, 'PINNING_SECONDARY_PROVIDER', isProduction, pinningCredentials);
+
+  const rawFailoverThreshold = process.env.PINNING_FAILOVER_THRESHOLD || '3';
+  const parsedFailoverThreshold = parseInt(rawFailoverThreshold, 10);
+  if (
+    !Number.isFinite(parsedFailoverThreshold) ||
+    !Number.isInteger(parsedFailoverThreshold) ||
+    parsedFailoverThreshold < 1
+  ) {
+    throw new Error(
+      `PINNING_FAILOVER_THRESHOLD must be a positive integer, got "${rawFailoverThreshold}".`
+    );
+  }
+
   const rawPort = process.env.PORT || '3001';
   const parsedPort = parseInt(rawPort, 10);
   if (
@@ -180,5 +274,13 @@ export function validateEnv(): BackendEnv {
     DATABASE_URL: databaseUrl,
     JWT_SECRET: jwtSecret,
     ADMIN_JWT_SECRET: adminJwtSecret,
+    PINNING_PRIMARY_PROVIDER: pinningPrimaryProvider,
+    PINNING_SECONDARY_PROVIDER: pinningSecondaryProvider,
+    PINNING_FAILOVER_THRESHOLD: parsedFailoverThreshold,
+    PINATA_API_KEY: pinataApiKey,
+    PINATA_API_SECRET: pinataApiSecret,
+    PINATA_GATEWAY_URL: process.env.PINATA_GATEWAY_URL || 'https://gateway.pinata.cloud',
+    WEB3STORAGE_API_TOKEN: web3StorageApiToken,
+    WEB3STORAGE_GATEWAY_URL: process.env.WEB3STORAGE_GATEWAY_URL || 'https://w3s.link',
   };
 }

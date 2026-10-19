@@ -64,7 +64,6 @@ function withExplorerUrl<T extends Record<string, unknown>>(
 }
 
 const router = Router();
-=======
 
 router.get("/catchup", (req: Request, res: Response) => {
   const sinceRaw = req.query.since;

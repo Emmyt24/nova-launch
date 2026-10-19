@@ -44,6 +44,18 @@ export function getRedis(): Redis {
   return _redis;
 }
 
+/** Gracefully closes the shared Redis client, if one was created. */
+export async function closeRedis(): Promise<void> {
+  const client = _redis;
+  _redis = null;
+  if (!client) return;
+  try {
+    await client.quit();
+  } catch {
+    client.disconnect();
+  }
+}
+
 /**
  * Test-only helper to reset the shared client singleton so tests can swap
  * in a mock or re-create the client with different env vars.

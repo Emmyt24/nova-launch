@@ -1,0 +1,67 @@
+{
+  "version": "v1",
+  "algorithm": "HMAC-SHA256",
+  "vectors": [
+    {
+      "name": "token.created basic",
+      "secret": "whsec_test_0123456789abcdef0123456789abcdef",
+      "timestamp": 1760000000,
+      "payload": {
+        "event": "token.created",
+        "timestamp": "2025-10-09T08:53:20.000Z",
+        "data": {
+          "tokenAddress": "GTOKEN",
+          "creator": "GCREATOR",
+          "name": "Nova",
+          "symbol": "NOVA",
+          "decimals": 7,
+          "initialSupply": "1000000",
+          "transactionHash": "abc123",
+          "ledger": 12345
+        }
+      },
+      "signedPayload": "{\"event\":\"token.created\",\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"data\":{\"tokenAddress\":\"GTOKEN\",\"creator\":\"GCREATOR\",\"name\":\"Nova\",\"symbol\":\"NOVA\",\"decimals\":7,\"initialSupply\":\"1000000\",\"transactionHash\":\"abc123\",\"ledger\":12345}}",
+      "expectedSignature": "2cc81aa67635cc2d7fb051ae2e9f542c3b966627409ae2bd461f851b64ae673e",
+      "expectedHeader": "v1.1760000000.2cc81aa67635cc2d7fb051ae2e9f542c3b966627409ae2bd461f851b64ae673e"
+    },
+    {
+      "name": "token.burn.self",
+      "secret": "a3f1c2e4b5d6978812345678909abcdeffedcba0987654321a3f1c2e4b5d69788",
+      "timestamp": 1760003600,
+      "payload": {
+        "event": "token.burn.self",
+        "timestamp": "2025-10-09T09:53:20.000Z",
+        "data": {
+          "tokenAddress": "GTOKEN",
+          "from": "GHOLDER",
+          "amount": "500",
+          "burner": "GHOLDER",
+          "transactionHash": "def456",
+          "ledger": 12400
+        }
+      },
+      "signedPayload": "{\"event\":\"token.burn.self\",\"timestamp\":\"2025-10-09T09:53:20.000Z\",\"data\":{\"tokenAddress\":\"GTOKEN\",\"from\":\"GHOLDER\",\"amount\":\"500\",\"burner\":\"GHOLDER\",\"transactionHash\":\"def456\",\"ledger\":12400}}",
+      "expectedSignature": "0d521a69ae2b8699e5e7ff66240bb273345865e41b15f9850f0ff1474ff53ca7",
+      "expectedHeader": "v1.1760003600.0d521a69ae2b8699e5e7ff66240bb273345865e41b15f9850f0ff1474ff53ca7"
+    },
+    {
+      "name": "unicode metadata",
+      "secret": "s3cr3t",
+      "timestamp": 1760007200,
+      "payload": {
+        "event": "token.metadata.updated",
+        "timestamp": "2025-10-09T10:53:20.000Z",
+        "data": {
+          "tokenAddress": "GTOKEN",
+          "metadataUri": "ipfs://bafy/ñová-✓",
+          "updatedBy": "GADMIN",
+          "transactionHash": "789fed",
+          "ledger": 12500
+        }
+      },
+      "signedPayload": "{\"event\":\"token.metadata.updated\",\"timestamp\":\"2025-10-09T10:53:20.000Z\",\"data\":{\"tokenAddress\":\"GTOKEN\",\"metadataUri\":\"ipfs://bafy/ñová-✓\",\"updatedBy\":\"GADMIN\",\"transactionHash\":\"789fed\",\"ledger\":12500}}",
+      "expectedSignature": "719506a116ff813fb2dcc47087baf2bb23c1bdb9f232bbbf1cba779005e0456e",
+      "expectedHeader": "v1.1760007200.719506a116ff813fb2dcc47087baf2bb23c1bdb9f232bbbf1cba779005e0456e"
+    }
+  ]
+}

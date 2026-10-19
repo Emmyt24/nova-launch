@@ -10,6 +10,20 @@ import {
 } from "../types/webhook";
 import { generateWebhookSecret, generateWebhookSignature } from "../utils/crypto";
 import { globMatch, isValidGlobPattern } from "../utils/globMatch";
+import { prepareCustomHeaders } from "./webhookCustomHeaders";
+
+/**
+ * How long a soft-deleted subscription can still be restored. After this
+ * window `purgeExpiredDeleted` may hard-delete it (and its delivery history).
+ */
+export const WEBHOOK_RESTORE_RETENTION_DAYS = parseInt(
+  process.env.WEBHOOK_RESTORE_RETENTION_DAYS || "30"
+);
+
+export type RestoreSubscriptionResult =
+  | "restored"
+  | "not_found"
+  | "retention_expired";
 
 export class WebhookService {
   /**
@@ -29,13 +43,16 @@ export class WebhookService {
       }
     }
 
+    // Validates and encrypts sensitive values; throws CustomHeaderValidationError.
+    const customHeaders = prepareCustomHeaders(input.customHeaders);
+
     const id = uuidv4();
     const secret = generateWebhookSecret();
 
     const query = `
       INSERT INTO webhook_subscriptions
-        (id, url, token_address, events, secret, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6)
+        (id, url, token_address, events, secret, created_by, custom_headers)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
 
@@ -46,16 +63,23 @@ export class WebhookService {
       input.events,
       secret,
       input.createdBy,
+      JSON.stringify(customHeaders),
     ]);
 
     return this.mapRowToSubscription(result.rows[0]);
   }
 
   /**
-   * Get subscription by ID
+   * Get subscription by ID. Soft-deleted subscriptions are hidden unless
+   * `includeDeleted` is set (e.g. to verify signatures of historical deliveries).
    */
-  async getSubscription(id: string): Promise<WebhookSubscription | null> {
-    const query = "SELECT * FROM webhook_subscriptions WHERE id = $1";
+  async getSubscription(
+    id: string,
+    options: { includeDeleted?: boolean } = {}
+  ): Promise<WebhookSubscription | null> {
+    const query = options.includeDeleted
+      ? "SELECT * FROM webhook_subscriptions WHERE id = $1"
+      : "SELECT * FROM webhook_subscriptions WHERE id = $1 AND deleted_at IS NULL";
     const result = await db.query(query, [id]);
 
     if (result.rows.length === 0) {
@@ -72,7 +96,8 @@ export class WebhookService {
     createdBy: string,
     active?: boolean
   ): Promise<WebhookSubscription[]> {
-    let query = "SELECT * FROM webhook_subscriptions WHERE created_by = $1";
+    let query =
+      "SELECT * FROM webhook_subscriptions WHERE created_by = $1 AND deleted_at IS NULL";
     const params: any[] = [createdBy];
 
     if (active !== undefined) {
@@ -87,17 +112,100 @@ export class WebhookService {
   }
 
   /**
-   * Delete a subscription
+   * Soft-delete a subscription. The row and its delivery history are kept
+   * so the subscription can be restored within the retention window.
    */
   async deleteSubscription(id: string, createdBy: string): Promise<boolean> {
     const query = `
-      DELETE FROM webhook_subscriptions 
-      WHERE id = $1 AND created_by = $2
+      UPDATE webhook_subscriptions
+      SET deleted_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL
       RETURNING id
     `;
 
     const result = await db.query(query, [id, createdBy]);
     return result.rowCount !== null && result.rowCount > 0;
+  }
+
+  /**
+   * Restore a soft-deleted subscription if it is still within the
+   * retention window.
+   */
+  async restoreSubscription(
+    id: string,
+    createdBy: string,
+    retentionDays: number = WEBHOOK_RESTORE_RETENTION_DAYS
+  ): Promise<RestoreSubscriptionResult> {
+    const query = `
+      UPDATE webhook_subscriptions
+      SET deleted_at = NULL
+      WHERE id = $1
+        AND created_by = $2
+        AND deleted_at IS NOT NULL
+        AND deleted_at > CURRENT_TIMESTAMP - ($3 * INTERVAL '1 day')
+      RETURNING id
+    `;
+
+    const result = await db.query(query, [id, createdBy, retentionDays]);
+    if (result.rowCount !== null && result.rowCount > 0) {
+      return "restored";
+    }
+
+    // Distinguish "never existed / not deleted / not owner" from "too late".
+    const existing = await db.query(
+      `SELECT deleted_at FROM webhook_subscriptions
+       WHERE id = $1 AND created_by = $2 AND deleted_at IS NOT NULL`,
+      [id, createdBy]
+    );
+    return existing.rows.length > 0 ? "retention_expired" : "not_found";
+  }
+
+  /**
+   * Hard-delete subscriptions whose soft-delete is older than the retention
+   * window. Delivery logs are removed via ON DELETE CASCADE.
+   */
+  async purgeExpiredDeleted(
+    retentionDays: number = WEBHOOK_RESTORE_RETENTION_DAYS
+  ): Promise<number> {
+    const query = `
+      DELETE FROM webhook_subscriptions
+      WHERE deleted_at IS NOT NULL
+        AND deleted_at <= CURRENT_TIMESTAMP - ($1 * INTERVAL '1 day')
+    `;
+
+    const result = await db.query(query, [retentionDays]);
+    return result.rowCount ?? 0;
+  }
+
+  /**
+   * Replace the custom headers of a subscription owned by `createdBy`.
+   * Throws CustomHeaderValidationError on invalid input.
+   */
+  async updateCustomHeaders(
+    id: string,
+    createdBy: string,
+    headers: unknown
+  ): Promise<WebhookSubscription | null> {
+    const customHeaders = prepareCustomHeaders(headers);
+
+    const query = `
+      UPDATE webhook_subscriptions
+      SET custom_headers = $1
+      WHERE id = $2 AND created_by = $3 AND deleted_at IS NULL
+      RETURNING *
+    `;
+
+    const result = await db.query(query, [
+      JSON.stringify(customHeaders),
+      id,
+      createdBy,
+    ]);
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapRowToSubscription(result.rows[0]);
   }
 
   /**
@@ -110,7 +218,7 @@ export class WebhookService {
     const query = `
       UPDATE webhook_subscriptions 
       SET active = $1 
-      WHERE id = $2
+      WHERE id = $2 AND deleted_at IS NULL
       RETURNING id
     `;
 
@@ -138,6 +246,7 @@ export class WebhookService {
     const query = `
       SELECT * FROM webhook_subscriptions
       WHERE active = true
+        AND deleted_at IS NULL
         AND (token_address IS NULL OR token_address = $1)
     `;
 
@@ -268,6 +377,8 @@ export class WebhookService {
       createdBy: row.created_by,
       createdAt: row.created_at,
       lastTriggered: row.last_triggered,
+      deletedAt: row.deleted_at ?? null,
+      customHeaders: row.custom_headers ?? [],
     };
   }
 

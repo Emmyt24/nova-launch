@@ -51,7 +51,25 @@ export interface WebhookPayload {
 export type WebhookEventData =
   | BurnEventData
   | TokenCreatedEventData
-  | MetadataUpdatedEventData;
+  | MetadataUpdatedEventData
+  | TruncatedEventData;
+
+/**
+ * Replacement event data sent when the original payload exceeds
+ * WEBHOOK_MAX_PAYLOAD_BYTES. Small scalar fields from the original data are
+ * kept alongside these markers.
+ */
+export interface TruncatedEventData {
+  truncated: true;
+  originalSizeBytes: number;
+  maxSizeBytes: number;
+  droppedFields: string[];
+  fullDataUrl?: string;
+  tokenAddress?: string;
+  transactionHash?: string;
+  ledger?: number;
+  [field: string]: unknown;
+}
 
 export interface BurnEventData {
   tokenAddress: string;

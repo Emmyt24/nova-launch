@@ -183,6 +183,8 @@ from `backend/src/config/envSchema.ts`, and CI fails when this file is out of da
 | `WEBHOOK_RETRY_DELAY_MS` | No | 1000 | `1000` | Base delay of the delivery backoff (doubles each attempt). |
 | `WEBHOOK_WORKER_CONCURRENCY` | No | 10 | `10` | Concurrent deliveries in the webhook worker pool (integer ≥ 1). |
 | `WEBHOOK_COMPRESSION_THRESHOLD_BYTES` | No | 1024 | `1024` | Payloads at least this large are gzip-compressed. |
+| `WEBHOOK_MAX_PAYLOAD_BYTES` | No | 262144 | `262144` | Maximum webhook body size; larger payloads are truncated before delivery. |
+| `WEBHOOK_FULL_DATA_URL_TEMPLATE` | No | empty (no link) | `https://api.example.com/tokens/{tokenAddress}` | URL template (with {field} placeholders) linked from truncated payloads as fullDataUrl. |
 | `WEBHOOK_RESTORE_RETENTION_DAYS` | No | 30 | `30` | Days a soft-deleted webhook subscription can still be restored. |
 | `WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | No | 5 | `5` | Consecutive failures that open the delivery circuit breaker. |
 | `WEBHOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | No | 2 | `2` | Successes in half-open state that close the circuit breaker. |

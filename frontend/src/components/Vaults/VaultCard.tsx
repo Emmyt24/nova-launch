@@ -5,6 +5,7 @@ import { useToast } from '../../hooks/useToast';
 import { useConfetti } from '../../hooks/useConfetti';
 import { WithdrawalHistory } from './WithdrawalHistory';
 import type { PaginatedWithdrawals } from '../../services/vaultsApi';
+import { computeVestingProgress } from '../../utils/vestingProgress';
 
 interface VaultCardProps {
   vault: VaultProjection;
@@ -13,17 +14,6 @@ interface VaultCardProps {
   network?: 'testnet' | 'mainnet';
   onClaimed?: (streamId: number) => void;
   onFetchWithdrawals?: (vaultId: number, cursor?: string) => Promise<PaginatedWithdrawals>;
-}
-
-/** Ledger-progress percentage, [0..100]. */
-function ledgerProgress(
-  currentLedger: number,
-  startLedger?: number,
-  endLedger?: number,
-): number {
-  if (startLedger == null || endLedger == null || endLedger <= startLedger) return 100;
-  const pct = ((currentLedger - startLedger) / (endLedger - startLedger)) * 100;
-  return Math.min(100, Math.max(0, pct));
 }
 
 function truncate(addr: string, chars = 6): string {
@@ -49,7 +39,11 @@ export const VaultCard: React.FC<VaultCardProps> = ({
   const toast = useToast();
   const { fire: fireConfetti } = useConfetti();
 
-  const progress = ledgerProgress(currentLedger, vault.startLedger, vault.endLedger);
+  const progress = computeVestingProgress(
+    currentLedger,
+    vault.startLedger,
+    vault.endLedger,
+  );
   const isMatured = progress >= 100;
   const isBeneficiary =
     connectedAddress != null &&

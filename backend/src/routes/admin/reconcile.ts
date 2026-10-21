@@ -5,6 +5,11 @@
  * against current on-chain state fetched via Horizon API.
  *
  * Idempotent — calling this endpoint multiple times is safe.
+ *
+ * GET /api/admin/reconcile/vaults/report
+ *
+ * Read-only report comparing on-chain vault state with the `Stream`
+ * projection (#2208). Admin only.
  */
 import { Router } from "express";
 import { authenticateAdmin } from "../../middleware/auth";
@@ -13,6 +18,22 @@ import { OnChainProjectionVerifier } from "../../services/consistency/onchainPro
 import { prisma } from "../../lib/prisma";
 
 const router = Router();
+
+router.get("/vaults/report", authenticateAdmin, async (_req, res) => {
+  try {
+    const verifier = new OnChainProjectionVerifier(prisma);
+    const report = await verifier.buildVaultReconciliationReport();
+    return res.json(successResponse(report));
+  } catch (error) {
+    console.error("Vault reconciliation report error:", error);
+    return res.status(500).json(
+      errorResponse({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to build vault reconciliation report",
+      })
+    );
+  }
+});
 
 router.post("/:tokenAddress", authenticateAdmin, async (req, res) => {
   const { tokenAddress } = req.params;

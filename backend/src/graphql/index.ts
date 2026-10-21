@@ -139,6 +139,8 @@ const LIST_FIELDS = new Set([
   "streams",
   "proposals",
   "votes",
+  "tokensConnection",
+  "streamsConnection",
 ]);
 
 /**

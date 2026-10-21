@@ -371,6 +371,98 @@ Warning: 299 - "The `page` query parameter is deprecated; use `cursor` with `pag
 
 `page`, `totalPages`, `hasNext` and `hasPrev` are still returned but are deprecated in favor of `nextCursor` and `hasMore`.
 
+### Dividends API
+
+#### GET /api/dividends/:distributionId/status/:holder
+
+Lets a holder check whether a dividend distribution is claimable, how much, and
+when it expires, without building or sending a `claim_dividend` transaction.
+The data comes from the off-chain projection (`DividendPool`, `HolderSnapshot`,
+`DividendClaim`), not from a live contract call.
+
+```json
+{
+  "success": true,
+  "data": {
+    "distributionId": 3,
+    "holder": "GABC...",
+    "status": "CLAIMABLE",
+    "known": true,
+    "claimableAmount": "1500",
+    "claimedAmount": "0",
+    "claimedAt": null,
+    "expiry": {
+      "claimDeadlineLedger": 500000,
+      "expiresAt": "2026-10-01T00:00:00.000Z",
+      "expired": false
+    },
+    "poolStatus": "ACTIVE"
+  }
+}
+```
+
+| `status`           | Meaning                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `CLAIMABLE`        | Known unclaimed share and the claim window is open                         |
+| `CLAIMED`          | A claim by this holder has been recorded (`claimableAmount` is `"0"`)      |
+| `EXPIRED`          | Window closed (deadline passed or pool exhausted/expired/cancelled)        |
+| `NOTHING_TO_CLAIM` | Holder is known but their share is zero                                    |
+| `UNKNOWN`          | The projection has no record of this address (`claimableAmount` is `null`) |
+
+**Unknown addresses** return `200` with `status: "UNKNOWN"`, `known: false`,
+and `claimableAmount: null`, not an error. The projection only records holders
+once they claim, so `UNKNOWN` means eligibility can't be determined off-chain.
+It does **not** mean the holder is ineligible.
+
+Errors: `400 INVALID_INPUT` for a malformed distribution id or holder address,
+and `404 DISTRIBUTION_NOT_FOUND` when the distribution isn't in the projection.
+
+### Streams API
+
+#### PUT /api/streams/:streamId/metadata
+
+Creates or updates a stream's off-chain metadata. Requires a JWT, and the
+creator always comes from the token, never from the body. The body is
+validated and sanitized before it's stored:
+
+| Field         | Required | Rules                                                                                     |
+| ------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `recipient`   | yes      | Non-empty string, max 128 characters, no whitespace                                       |
+| `title`       | no       | Max 200 characters, single line                                                           |
+| `description` | no       | Max 2000 characters, line breaks kept                                                     |
+| `tags`        | no       | Up to 20 tags, each max 50 characters, starting with a letter or digit and containing only letters, digits, spaces, `_`, `-`, `.`; duplicates (case-insensitive) are collapsed |
+
+- **Allowed fields:** only the four above. Any other key is rejected with
+  `UNKNOWN_FIELD`, except a legacy `creator` key, which is ignored.
+- **Total size:** the JSON body may not exceed 16 KB (UTF-8).
+- **Sanitization:** control characters, zero-width characters and bidi
+  overrides are stripped, text is NFC-normalized and trimmed, and
+  whitespace-only optional fields are treated as absent. Lengths are counted in
+  code points after sanitization. HTML isn't encoded on input; escape it when
+  rendering.
+- Input over a limit is rejected, never truncated.
+
+Validation failures return `400 VALIDATION_ERROR` (or `413 PAYLOAD_TOO_LARGE`
+for an oversized body). Every problem is listed in `details`:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "title must be at most 200 characters (got 201); tags[0] must be non-empty, start with a letter or digit, ...",
+    "details": [
+      { "field": "title", "code": "TOO_LONG", "message": "title must be at most 200 characters (got 201)", "limit": 200, "actual": 201 },
+      { "field": "tags[0]", "code": "INVALID_FORMAT", "message": "tags[0] must be non-empty, ..." }
+    ]
+  }
+}
+```
+
+Error codes in `details`: `INVALID_BODY`, `PAYLOAD_TOO_LARGE`,
+`UNKNOWN_FIELD`, `REQUIRED`, `INVALID_TYPE`, `TOO_LONG`, `TOO_MANY`,
+`INVALID_FORMAT`.
+
 ### Token Leaderboard API
 
 Public endpoints for token rankings and leaderboards. No authentication required.
@@ -701,6 +793,72 @@ Export audit logs as JSON file.
 **Query Parameters:** Same as GET /api/admin/audit
 
 **Response:** JSON file download
+
+### Reconciliation
+
+#### GET /api/admin/reconcile/vaults/report
+
+Admin only. Compares on-chain vault (stream escrow) state with the `Stream`
+projection and returns the mismatches as a structured report. It's read-only:
+unlike `POST /api/admin/reconcile/:tokenAddress`, it never writes to the
+projection.
+
+On-chain state comes from the factory contract's `vlt_cr_v1` / `vlt_cl_v1` /
+`vlt_cn_v1` events on Horizon, using the same `OnChainProjectionVerifier` that
+backs the token and burn consistency checks. Each vault's `status`, `amount`,
+`creator` and `recipient` are compared.
+
+```json
+{
+  "success": true,
+  "data": {
+    "consistent": false,
+    "generatedAt": "2026-10-19T00:00:00.000Z",
+    "durationMs": 412,
+    "summary": {
+      "projectedVaults": 120,
+      "onChainVaults": 121,
+      "mismatchedVaults": 2,
+      "totalMismatches": 2,
+      "missingOnChain": 0,
+      "missingInProjection": 1,
+      "fieldMismatches": 1,
+      "errors": 0
+    },
+    "mismatches": [
+      {
+        "streamId": 42,
+        "kind": "field_mismatch",
+        "field": "status",
+        "projectionValue": "CREATED",
+        "onChainValue": "CLAIMED",
+        "severity": "error"
+      },
+      {
+        "streamId": 121,
+        "kind": "missing_in_projection",
+        "field": "existence",
+        "projectionValue": null,
+        "onChainValue": "exists",
+        "severity": "warning"
+      }
+    ],
+    "errors": []
+  }
+}
+```
+
+| `kind`                  | Meaning                                                    |
+| ----------------------- | ---------------------------------------------------------- |
+| `field_mismatch`        | The vault exists in both places but `field` differs        |
+| `missing_on_chain`      | The projection has a vault with no on-chain create event   |
+| `missing_in_projection` | The chain has a vault the projection hasn't ingested       |
+
+A vault missing from the projection while still `CREATED` on-chain is reported
+as a `warning`, since it may just not be ingested yet. Every other mismatch is
+an `error`. If Horizon can't be reached or `FACTORY_CONTRACT_ID` isn't set, the
+report lists the failure under `errors` and returns no mismatches, rather than
+flagging every vault as missing.
 
 ## Role-Based Access Control
 

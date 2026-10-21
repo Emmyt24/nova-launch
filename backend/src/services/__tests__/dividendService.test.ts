@@ -61,6 +61,7 @@ const mockPrisma = vi.hoisted(() => ({
   holderSnapshot: {
     upsert: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
   $transaction: vi.fn(async (ops: any[]) => Promise.all(ops)),
 }));
@@ -388,5 +389,125 @@ describe("listClaimsForDistribution", () => {
     });
     expect(page.claims).toHaveLength(2);
     expect(page.nextCursor).toBe("claim-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claim status (#2207)
+// ---------------------------------------------------------------------------
+
+describe("getDividendClaimStatus", () => {
+  const NOW = new Date("2026-09-01T00:00:00.000Z");
+  const makePool = (o: Record<string, unknown> = {}) => ({
+    id: "pool-1",
+    distributionId: 7,
+    status: "ACTIVE",
+    claimDeadlineLedger: 500_000,
+    expiresAt: new Date("2026-10-01T00:00:00.000Z"),
+    ...o,
+  });
+
+  beforeEach(() => {
+    mockPrisma.holderSnapshot.findUnique.mockResolvedValue(null);
+    mockPrisma.dividendClaim.findMany.mockResolvedValue([]);
+  });
+
+  it("returns null when the projection has no pool for the distribution", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(null);
+    expect(await dividendService.getDividendClaimStatus(999, HOLDER, NOW)).toBeNull();
+    expect(mockPrisma.holderSnapshot.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("reports the claimable amount and expiry for a known unclaimed holder", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(makePool());
+    mockPrisma.holderSnapshot.findUnique.mockResolvedValue({ claimable: 1500n });
+
+    const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+
+    expect(status).toEqual({
+      distributionId: 7,
+      holder: HOLDER,
+      status: "CLAIMABLE",
+      known: true,
+      claimableAmount: "1500",
+      claimedAmount: "0",
+      claimedAt: null,
+      expiry: {
+        claimDeadlineLedger: 500_000,
+        expiresAt: "2026-10-01T00:00:00.000Z",
+        expired: false,
+      },
+      poolStatus: "ACTIVE",
+    });
+    expect(mockPrisma.holderSnapshot.findUnique).toHaveBeenCalledWith({
+      where: { poolId_holder: { poolId: "pool-1", holder: HOLDER } },
+    });
+  });
+
+  it("reports CLAIMED with zero remaining once a claim is recorded", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(makePool());
+    mockPrisma.holderSnapshot.findUnique.mockResolvedValue({ claimable: 1500n });
+    mockPrisma.dividendClaim.findMany.mockResolvedValue([
+      { amount: 1500n, claimedAt: new Date("2026-08-15T00:00:00.000Z") },
+    ]);
+
+    const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+
+    expect(status).toMatchObject({
+      status: "CLAIMED",
+      known: true,
+      claimableAmount: "0",
+      claimedAmount: "1500",
+      claimedAt: "2026-08-15T00:00:00.000Z",
+    });
+  });
+
+  it("reports EXPIRED once the wall-clock deadline has passed", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(
+      makePool({ expiresAt: new Date("2026-08-01T00:00:00.000Z") })
+    );
+    mockPrisma.holderSnapshot.findUnique.mockResolvedValue({ claimable: 1500n });
+
+    const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+
+    expect(status).toMatchObject({
+      status: "EXPIRED",
+      claimableAmount: "0",
+      expiry: { expired: true },
+    });
+  });
+
+  it.each(["EXHAUSTED", "EXPIRED", "CANCELLED"])(
+    "reports EXPIRED when the pool is %s",
+    async (poolStatus) => {
+      mockPrisma.dividendPool.findUnique.mockResolvedValue(
+        makePool({ status: poolStatus, expiresAt: null })
+      );
+      const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+      expect(status).toMatchObject({ status: "EXPIRED", poolStatus });
+    }
+  );
+
+  it("reports NOTHING_TO_CLAIM for a known holder with a zero share", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(makePool());
+    mockPrisma.holderSnapshot.findUnique.mockResolvedValue({ claimable: 0n });
+
+    const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+    expect(status).toMatchObject({ status: "NOTHING_TO_CLAIM", claimableAmount: "0" });
+  });
+
+  it("reports UNKNOWN with a null amount for an address the projection has never seen", async () => {
+    mockPrisma.dividendPool.findUnique.mockResolvedValue(makePool());
+
+    const status = await dividendService.getDividendClaimStatus(7, HOLDER, NOW);
+
+    expect(status).toMatchObject({
+      status: "UNKNOWN",
+      known: false,
+      claimableAmount: null,
+      claimedAmount: "0",
+      claimedAt: null,
+      expiry: { expired: false },
+    });
   });
 });

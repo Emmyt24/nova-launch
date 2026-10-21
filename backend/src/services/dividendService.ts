@@ -536,3 +536,118 @@ export async function listHolderSnapshotsForDistribution(
     nextCursor: hasMore ? page[page.length - 1].id : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Claim status (projection-backed, no transaction required) (#2207)
+// ---------------------------------------------------------------------------
+
+/**
+ * - `CLAIMABLE`: the holder has a known unclaimed share and the window is open.
+ * - `CLAIMED`: the projection has recorded a claim by the holder.
+ * - `EXPIRED`: the claim window has closed (deadline passed or pool settled)
+ *   and the holder never claimed.
+ * - `NOTHING_TO_CLAIM`: the holder is known but their share is zero (the
+ *   contract would reject the claim with `NothingToClaim`).
+ * - `UNKNOWN`: the projection has no record of this holder. Because
+ *   `HolderSnapshot` is only populated reactively from claims (see the KNOWN
+ *   GAP note at the top of this file), this does NOT mean the holder is
+ *   ineligible. It means eligibility can't be determined off-chain.
+ */
+export type DividendClaimState =
+  | "CLAIMABLE"
+  | "CLAIMED"
+  | "EXPIRED"
+  | "NOTHING_TO_CLAIM"
+  | "UNKNOWN";
+
+export interface DividendClaimStatus {
+  distributionId: number;
+  holder: string;
+  status: DividendClaimState;
+  /** Whether the projection has any record of this holder for the pool. */
+  known: boolean;
+  /** Remaining claimable amount, or null when it can't be determined. */
+  claimableAmount: string | null;
+  /** Amount already claimed by the holder (0 if none recorded). */
+  claimedAmount: string;
+  claimedAt: string | null;
+  expiry: {
+    /** Ledger after which the claim window closes (authoritative on-chain deadline). */
+    claimDeadlineLedger: number | null;
+    /** Wall-clock deadline, when the projection has one. */
+    expiresAt: string | null;
+    expired: boolean;
+  };
+  poolStatus: string;
+}
+
+/** Pool statuses after which no further claims can succeed. */
+const CLOSED_POOL_STATUSES = new Set(["EXHAUSTED", "EXPIRED", "CANCELLED"]);
+
+/**
+ * Report whether `holder` can claim `distributionId`, and how much, from the
+ * Prisma projection alone, so a wallet can check before building and signing
+ * a `claim_dividend` transaction.
+ *
+ * Returns null when the projection has no pool for `distributionId`.
+ */
+export async function getDividendClaimStatus(
+  distributionId: number,
+  holder: string,
+  now: Date = new Date()
+): Promise<DividendClaimStatus | null> {
+  const pool = await prisma.dividendPool.findUnique({
+    where: { distributionId },
+  });
+  if (!pool) return null;
+
+  const [snapshot, claims] = await Promise.all([
+    prisma.holderSnapshot.findUnique({
+      where: { poolId_holder: { poolId: pool.id, holder } },
+    }),
+    prisma.dividendClaim.findMany({
+      where: { poolId: pool.id, claimant: holder },
+      orderBy: { claimedAt: "desc" },
+    }),
+  ]);
+
+  const expired =
+    CLOSED_POOL_STATUSES.has(pool.status) ||
+    (pool.expiresAt != null && pool.expiresAt.getTime() <= now.getTime());
+
+  const claimedAmount = claims.reduce((sum, c) => sum + c.amount, 0n);
+  const hasClaimed = claims.length > 0;
+  const known = hasClaimed || snapshot != null;
+
+  let status: DividendClaimState;
+  let claimableAmount: bigint | null;
+  if (hasClaimed) {
+    status = "CLAIMED";
+    claimableAmount = 0n;
+  } else if (expired) {
+    status = "EXPIRED";
+    claimableAmount = 0n;
+  } else if (snapshot) {
+    status = snapshot.claimable > 0n ? "CLAIMABLE" : "NOTHING_TO_CLAIM";
+    claimableAmount = snapshot.claimable;
+  } else {
+    status = "UNKNOWN";
+    claimableAmount = null;
+  }
+
+  return {
+    distributionId,
+    holder,
+    status,
+    known,
+    claimableAmount: claimableAmount === null ? null : claimableAmount.toString(),
+    claimedAmount: claimedAmount.toString(),
+    claimedAt: hasClaimed ? claims[0].claimedAt.toISOString() : null,
+    expiry: {
+      claimDeadlineLedger: pool.claimDeadlineLedger ?? null,
+      expiresAt: pool.expiresAt ? pool.expiresAt.toISOString() : null,
+      expired,
+    },
+    poolStatus: pool.status,
+  };
+}

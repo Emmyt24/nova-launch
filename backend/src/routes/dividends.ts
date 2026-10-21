@@ -249,6 +249,49 @@ router.get(
   }
 );
 
+/**
+ * GET /api/dividends/:distributionId/status/:holder
+ * Claimable amount and expiry for `holder`, read from the Prisma projection
+ * so callers can check eligibility without sending a transaction (#2207).
+ *
+ * 404 when the projection has no record of the distribution. An address the
+ * projection has never seen returns 200 with `status: "UNKNOWN"` and
+ * `claimableAmount: null`, not an error (see `getDividendClaimStatus`).
+ */
+router.get(
+  "/:distributionId/status/:holder",
+  async (req: Request, res: Response) => {
+    const distributionId = parseDistributionId(req, res);
+    if (distributionId === null) return;
+    const { holder } = req.params;
+    if (!STELLAR_ADDRESS_RE.test(holder)) {
+      return res.status(400).json(
+        errorResponse({
+          code: "INVALID_INPUT",
+          message: "Invalid holder address",
+        })
+      );
+    }
+    try {
+      const status = await dividendService.getDividendClaimStatus(
+        distributionId,
+        holder
+      );
+      if (!status) {
+        return res.status(404).json(
+          errorResponse({
+            code: "DISTRIBUTION_NOT_FOUND",
+            message: `Distribution ${distributionId} not found`,
+          })
+        );
+      }
+      res.json(successResponse(status));
+    } catch (err) {
+      handleServiceError(res, err);
+    }
+  }
+);
+
 // ── Read: paginated reporting (Prisma projection) ───────────────────────────
 
 const pageQuerySchema = z.object({

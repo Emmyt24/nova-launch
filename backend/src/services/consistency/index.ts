@@ -10,4 +10,7 @@ export {
   type ConsistencyCheckResult,
   type VerifierConfig,
   type ReconciliationResult,
+  type OnChainVaultState,
+  type VaultMismatch,
+  type VaultReconciliationReport,
 } from "./onchainProjectionVerifier";

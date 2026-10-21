@@ -13,6 +13,60 @@ which carries the full validation / auth middleware.
 
 ---
 
+## Pagination (Relay connections)
+
+List data is available through Relay-style cursor connections, which return a
+bounded page plus the cursor to fetch the next one:
+
+| Field               | Filters                                         | Node     |
+| ------------------- | ----------------------------------------------- | -------- |
+| `tokensConnection`  | `creator: String`                               | `Token`  |
+| `streamsConnection` | `creator`, `recipient: String`, `status: StreamStatus` | `Stream` |
+
+Arguments:
+
+- **`first: Int`**: page size. Defaults to `20`; must be between `1` and `100`.
+  A value outside that range is rejected with a `BAD_USER_INPUT` error rather
+  than silently clamped.
+- **`after: String`**: the `endCursor` from the previous page. Cursors are
+  opaque; don't parse or construct them. An unknown or malformed cursor is
+  rejected with `Invalid cursor`.
+
+Results are ordered newest first (`createdAt` desc, then `id` desc). Paging is
+keyset based, so rows inserted while a client is paging don't shift later pages.
+
+```graphql
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type TokenConnection {
+  edges: [TokenEdge!]!   # { cursor: String!, node: Token! }
+  pageInfo: PageInfo!
+  totalCount: Int!       # rows matching the filters, across all pages
+}
+```
+
+```graphql
+query NextTokens($after: String) {
+  tokensConnection(creator: "GCREATOR...", first: 50, after: $after) {
+    totalCount
+    edges { cursor node { address name symbol } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+```
+
+Repeat the query with `after: pageInfo.endCursor` until `hasNextPage` is
+`false`. The older `tokens` / `streams` fields (`limit` / `offset`) are still
+available for backwards compatibility, but new clients should use the connection
+fields. Connection fields count as list fields for query-complexity scoring.
+
+---
+
 ## Subscriptions
 
 Subscriptions deliver real-time domain events sourced from the in-process

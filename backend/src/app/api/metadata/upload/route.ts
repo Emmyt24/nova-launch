@@ -6,6 +6,9 @@ import {
 } from "@/lib/validation/validator";
 import type { UploadResponse } from "@/types/metadata";
 
+// NOTE: The `properties` form field is parsed with a guarded JSON.parse.
+// Malformed JSON is rejected with a 400 response instead of throwing.
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -43,6 +46,22 @@ export async function POST(request: NextRequest) {
       imageCID = await uploadImageToIPFS(buffer, imageFile.name);
     }
 
+    // Parse properties JSON defensively. Malformed properties are rejected
+    // with a 400 rather than throwing an unhandled SyntaxError. The raw
+    // payload is never echoed back in the error response.
+    let parsedProperties: unknown = {};
+    if (properties) {
+      try {
+        parsedProperties = JSON.parse(properties);
+      } catch {
+        console.error("Invalid properties JSON in metadata upload");
+        return NextResponse.json(
+          { success: false, error: "Invalid properties JSON" },
+          { status: 400 }
+        );
+      }
+    }
+
     // Generate metadata JSON
     const metadata = {
       name,
@@ -50,7 +69,7 @@ export async function POST(request: NextRequest) {
       description,
       image: imageCID ? `ipfs://${imageCID}` : "",
       decimals,
-      properties: properties ? JSON.parse(properties) : {},
+      properties: parsedProperties,
     };
 
     // Pin metadata to IPFS

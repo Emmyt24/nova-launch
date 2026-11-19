@@ -12,6 +12,7 @@ import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLi
 import { verifyStoredWebhookSignature } from "../utils/crypto";
 import { sendError } from "../utils/response";
 import { ErrorCode } from "../lib/errors";
+import { parseLimit } from "../lib/pagination";
 import {
   CustomHeaderValidationError,
   maskCustomHeaders,
@@ -314,7 +315,8 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const limit = parseInt(req.query.limit as string) || 50;
+      // Default to 50 entries, capped at 100 to bound the page size.
+      const limit = parseLimit(req.query.limit, 50, 100);
 
       const logs = await webhookService.getDeliveryLogs(id, limit);
 
@@ -432,7 +434,8 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const limit = parseInt(req.query.limit as string) || 50;
+      // Default to 50 entries, capped at 100 to bound the page size.
+      const limit = parseLimit(req.query.limit, 50, 100);
 
       const subscription = await webhookService.getSubscription(id);
       if (!subscription) {

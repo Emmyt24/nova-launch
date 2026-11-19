@@ -82,7 +82,15 @@ export class VaultClient {
     const cacheKey = `kv:${path}`;
     const cached   = this.cache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
-      return JSON.parse(cached.value) as Record<string, string>;
+      try {
+        return JSON.parse(cached.value) as Record<string, string>;
+      } catch {
+        // Corrupt cache entry (e.g. malformed/user-supplied value). Log only the
+        // path — never the raw cached value or any secret material — then evict
+        // the entry and fall through to refetch fresh secrets from Vault.
+        console.warn(`[VaultClient] corrupt cache entry for path ${path} — refetching`);
+        this.cache.delete(cacheKey);
+      }
     }
 
     await this.authenticate();

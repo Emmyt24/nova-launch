@@ -38,13 +38,29 @@ export class AuditArchiveCheckpointStore {
 
   /**
    * Load the checkpoint from disk.  Returns null if no checkpoint exists yet.
+   *
+   * Malformed or corrupt JSON is handled gracefully: a sanitized warning is
+   * logged (never the raw payload) and null is returned rather than throwing,
+   * so callers treat it as "no checkpoint".
    */
   async load(): Promise<CheckpointData | null> {
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.filePath, "utf-8");
+      raw = await fs.readFile(this.filePath, "utf-8");
+    } catch {
+      // Missing file or read failure – treat as no checkpoint.
+      this.checkpoint = null;
+      return null;
+    }
+
+    try {
       this.checkpoint = JSON.parse(raw) as CheckpointData;
       return this.checkpoint;
     } catch {
+      // Do not log the raw payload or its contents.
+      console.warn(
+        `[AuditArchiveCheckpointStore] Ignoring malformed checkpoint JSON at ${this.filePath}`,
+      );
       this.checkpoint = null;
       return null;
     }

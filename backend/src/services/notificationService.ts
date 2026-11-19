@@ -8,6 +8,11 @@
  *   2. Else if NOTIFICATION_EMAIL_API_URL is set → use generic HTTP adapter (legacy)
  *   3. Else → log warning and return unconfigured error
  *
+ * Each provider reads its required env vars into locals and validates them
+ * explicitly before issuing a request. A missing credential yields a failed
+ * AttemptResult with a descriptive, non-secret error instead of proceeding
+ * with `undefined`. Credential values are never logged or echoed in errors.
+ *
  * Provider strategy (SMS):
  *   1. If TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN are set → use Twilio REST API
  *   2. Else if NOTIFICATION_SMS_API_URL is set → use generic HTTP adapter (legacy)
@@ -217,7 +222,15 @@ async function sendViaSendGrid(
   textBody: string,
   htmlBody: string
 ): Promise<AttemptResult> {
-  const apiKey = process.env.SENDGRID_API_KEY!;
+  const apiKey = process.env.SENDGRID_API_KEY;
+  if (!apiKey) {
+    // Never include the credential (or its absence) beyond this message.
+    return {
+      success: false,
+      statusCode: null,
+      error: "SendGrid email channel is not configured (SENDGRID_API_KEY missing)",
+    };
+  }
   const from = process.env.NOTIFICATION_FROM_EMAIL ?? "noreply@nova-launch.app";
 
   try {
@@ -267,7 +280,14 @@ async function sendViaEmailApi(
   subject: string,
   body: string
 ): Promise<AttemptResult> {
-  const emailApiUrl = process.env.NOTIFICATION_EMAIL_API_URL!;
+  const emailApiUrl = process.env.NOTIFICATION_EMAIL_API_URL;
+  if (!emailApiUrl) {
+    return {
+      success: false,
+      statusCode: null,
+      error: "Email channel is not configured (NOTIFICATION_EMAIL_API_URL missing)",
+    };
+  }
   const emailApiKey = process.env.NOTIFICATION_EMAIL_API_KEY ?? "";
 
   try {
@@ -663,7 +683,32 @@ export class NotificationService {
         : undefined
     );
 
-    const useSendGrid = Boolean(process.env.SENDGRID_API_KEY);
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    const emailApiUrl = process.env.NOTIFICATION_EMAIL_API_URL;
+    const useSendGrid = Boolean(sendgridApiKey);
+
+    // Guard missing configuration before entering the retry/breaker loop so a
+    // misconfiguration fails fast with a clear, non-secret error.
+    if (useSendGrid) {
+      if (!sendgridApiKey) {
+        return {
+          channel: "EMAIL",
+          target,
+          provider: "sendgrid",
+          success: false,
+          error: "SendGrid email channel is not configured (SENDGRID_API_KEY missing)",
+        };
+      }
+    } else if (!emailApiUrl) {
+      return {
+        channel: "EMAIL",
+        target,
+        provider: "email",
+        success: false,
+        error: "Email channel is not configured (NOTIFICATION_EMAIL_API_URL missing)",
+      };
+    }
+
     const outcome = await runWithBreakerAndRetry(this.sendGridBreaker, retryService, async () => {
       if (useSendGrid) {
         return sendViaSendGrid(target.destination!, subject, payload.message, htmlBody);

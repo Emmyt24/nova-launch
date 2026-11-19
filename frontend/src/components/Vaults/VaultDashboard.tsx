@@ -17,7 +17,11 @@ export const VaultDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!address) return;
+    if (!address) {
+      setVaults([]);
+      setCurrentLedger(0);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -61,7 +65,7 @@ export const VaultDashboard: React.FC = () => {
 
   if (!address) {
     return (
-      <div className="p-8 text-center" role="status">
+      <div className="p-8 text-center" role="status" aria-live="polite">
         <h2 className="text-xl font-semibold mb-4">Vaults Dashboard</h2>
         <p className="text-gray-600">Connect your wallet to view your vesting schedules.</p>
       </div>
@@ -106,8 +110,16 @@ export const VaultDashboard: React.FC = () => {
             className="lg:col-span-3 bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center"
             role="status"
             aria-live="polite"
+            aria-label="No vesting vaults"
           >
-            <p className="text-gray-500">You have no vesting vaults yet.</p>
+            <h2 className="text-lg font-semibold text-gray-800 mb-2">
+              No vesting vaults found
+            </h2>
+            <p className="text-gray-500">
+              The connected wallet has no vesting schedules. Once a vault is
+              created for this address, it will appear here with its unlock
+              progress and claim status.
+            </p>
           </div>
         ) : (
           vaults.map((vault) => (

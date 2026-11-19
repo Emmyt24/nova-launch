@@ -23,6 +23,7 @@ import {
 import { STELLAR_HORIZON_URL } from "../config/env";
 import { getTxUrl, type ExplorerProvider } from "../config/explorer";
 import { createIdempotencyMiddleware } from "../middleware/idempotency";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -145,9 +146,18 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       return sendError(res, 400, ErrorCode.BAD_REQUEST, "cursor pagination is only supported with sortBy=created");
     }
 
-    // Parse pagination
-    const page = parseInt(params.page);
-    const limit = Math.min(parseInt(params.limit), 50); // Max 50 per page
+    // Parse pagination defensively. The schema already restricts `page`/`limit`
+    // to digit-only strings, but we still pass an explicit radix and guard
+    // against non-finite results so a malformed value can never propagate
+    // `NaN` into `skip`/`take`. Out-of-range values are clamped rather than
+    // rejected: `page` is floored at 1 and `limit` is bounded to 1..50
+    // (defaulting to 1 and 20 respectively when parsing fails).
+    const parsedPage = parseInt(params.page, 10);
+    const parsedLimit = parseInt(params.limit, 10);
+    const page = Number.isFinite(parsedPage) ? Math.max(parsedPage, 1) : 1;
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 50) // Max 50 per page
+      : 20;
     const skip = (page - 1) * limit;
 
     // Base filters — always scoped to the requesting tenant.
@@ -262,7 +272,7 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
     ]);
     const duration = performance.now() - start;
     if (duration > 150) {
-      console.warn(`[PERF] Token search took ${duration.toFixed(2)}ms`);
+      logger.warn("Token search slow", { durationMs: duration, tenantId });
     }
 
     const hasMore = rawTokens.length > limit;
@@ -321,7 +331,9 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
 
     return res.json(response);
   } catch (error) {
-    console.error("Token search error:", error);
+    logger.error("Token search error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Internal server error");
   }
 });
@@ -371,7 +383,9 @@ router.get(
       const quote = quoteTokenCreationFee(parsed.data);
       return res.json(successResponse(quote));
     } catch (error) {
-      console.error("[tokens] GET /fee-quote error:", error);
+      logger.error("Token fee quote error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return res.status(500).json(
         errorResponse({
           code: "INTERNAL_ERROR",
@@ -475,7 +489,9 @@ router.post(
 
       return res.status(statusCode).json(successResponse(result));
     } catch (error) {
-      console.error("[tokens] POST /batch unhandled error:", error);
+      logger.error("Token batch deploy error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return res.status(500).json(
         errorResponse({
           code: ErrorCode.INTERNAL_SERVER_ERROR,
@@ -585,7 +601,9 @@ router.get("/deployment-status/:txHash", async (req: Request, res: Response) => 
       });
     }
     
-    console.error("Deployment status error:", error);
+    logger.error("Deployment status error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch deployment status");
   }
 });

@@ -6,6 +6,7 @@ import webhookDeliveryService from "../services/webhookDeliveryService";
 import { authenticateAdmin, AuthRequest } from "../middleware/auth";
 import { auditLog } from "../middleware/auditLog";
 import { successResponse, errorResponse } from "../utils/response";
+import { logger } from "../lib/logger";
 
 /**
  * Admin-only API for inspecting, retrying, and discarding webhook
@@ -76,7 +77,10 @@ router.get(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error listing dead-letter entries:", error);
+      logger.error("Error listing dead-letter entries", {
+        error: error instanceof Error ? error.message : String(error),
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -132,7 +136,22 @@ router.post(
         );
       }
 
-      const payload = JSON.parse(deadLetter.payload);
+      // Guard the parse: a corrupt or user-supplied payload must not throw
+      // an unhandled SyntaxError. The raw payload is never echoed back.
+      let payload: any;
+      try {
+        payload = JSON.parse(deadLetter.payload);
+      } catch {
+        console.error(
+          `Dead-letter entry ${id} has a malformed JSON payload; refusing to retry`
+        );
+        return res.status(400).json(
+          errorResponse({
+            code: "INVALID_PAYLOAD",
+            message: "Dead-letter payload is not valid JSON",
+          }, req.correlationId)
+        );
+      }
 
       // Re-deliver via the standard delivery path. Each call to
       // deliverWebhook starts its own retry loop at attempt 1, so this is
@@ -164,7 +183,11 @@ router.post(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error retrying dead-letter entry:", error);
+      logger.error("Error retrying dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -221,7 +244,23 @@ router.post(
           );
         }
 
-        const payload = JSON.parse(requeued.payload);
+        // Guard the parse: a corrupt or user-supplied payload must not throw
+        // an unhandled SyntaxError. The raw payload is never echoed back.
+        let payload: any;
+        try {
+          payload = JSON.parse(requeued.payload);
+        } catch {
+          console.error(
+            `Dead-letter entry ${id} has a malformed JSON payload; refusing to requeue`
+          );
+          return res.status(400).json(
+            errorResponse({
+              code: "INVALID_PAYLOAD",
+              message: "Dead-letter payload is not valid JSON",
+            }, req.correlationId)
+          );
+        }
+
         const deliveryResult = await webhookDeliveryService.deliverWebhook(
           subscription,
           requeued.event,
@@ -260,7 +299,11 @@ router.post(
         throw error;
       }
     } catch (error) {
-      console.error("Error requeuing dead-letter entry:", error);
+      logger.error("Error requeuing dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -311,7 +354,11 @@ router.delete(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error discarding dead-letter entry:", error);
+      logger.error("Error discarding dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",

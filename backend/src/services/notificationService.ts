@@ -38,6 +38,7 @@ import { escapeHtml } from "../middleware/freeTextSanitization";
 import { CircuitBreaker, CircuitBreakerOpenError, registerCircuitBreaker } from "../lib/circuitBreaker";
 import { getNotificationPreferences, isNotificationChannelEnabled } from "./notificationPreferences";
 import { getExplorerUrl, getTxUrl, getContractUrl } from "../config/explorer";
+import { logger } from "../lib/logger";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -175,9 +176,10 @@ export function isEmailEnabled(): boolean {
   const hasSendGrid = Boolean(process.env.SENDGRID_API_KEY);
   const hasLegacy = Boolean(process.env.NOTIFICATION_EMAIL_API_URL);
   if (!hasSendGrid && !hasLegacy) {
-    console.warn(
-      "[NotificationService] EMAIL channel called but no provider is configured. " +
-        "Set SENDGRID_API_KEY (recommended) or NOTIFICATION_EMAIL_API_URL."
+    logger.warn(
+      "EMAIL channel called but no provider is configured. " +
+        "Set SENDGRID_API_KEY (recommended) or NOTIFICATION_EMAIL_API_URL.",
+      { channel: "EMAIL" }
     );
     return false;
   }
@@ -191,9 +193,10 @@ export function isSmsEnabled(): boolean {
     Boolean(process.env.TWILIO_AUTH_TOKEN);
   const hasLegacy = Boolean(process.env.NOTIFICATION_SMS_API_URL);
   if (!hasTwilio && !hasLegacy) {
-    console.warn(
-      "[NotificationService] SMS channel called but no provider is configured. " +
-        "Set TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN (recommended) or NOTIFICATION_SMS_API_URL."
+    logger.warn(
+      "SMS channel called but no provider is configured. " +
+        "Set TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN (recommended) or NOTIFICATION_SMS_API_URL.",
+      { channel: "SMS" }
     );
     return false;
   }
@@ -613,9 +616,11 @@ export class NotificationService {
     // Rate-limit guard
     const eventKey = String(payload.event ?? payload.subject ?? "generic");
     if (isRateLimited(target.destination, eventKey)) {
-      console.info(
-        `[NotificationService] EMAIL rate-limited for ${maskDestination(target.destination)} event=${eventKey}`
-      );
+      logger.info("EMAIL notification rate-limited", {
+        channel: "EMAIL",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+      });
       return {
         channel: "EMAIL",
         target,
@@ -668,15 +673,22 @@ export class NotificationService {
 
     if (outcome.success) {
       recordDelivery(target.destination, eventKey);
-      console.info(
-        `[NotificationService] EMAIL delivered to ${maskDestination(target.destination)} ` +
-          `event=${eventKey} attempts=${outcome.attempts}`
-      );
+      logger.info("EMAIL notification delivered", {
+        channel: "EMAIL",
+        provider: useSendGrid ? "sendgrid" : "email",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+        attempts: outcome.attempts,
+      });
     } else {
-      console.warn(
-        `[NotificationService] EMAIL delivery failed for ${maskDestination(target.destination)} ` +
-          `event=${eventKey} attempts=${outcome.attempts} error=${outcome.lastError}`
-      );
+      logger.warn("EMAIL notification delivery failed", {
+        channel: "EMAIL",
+        provider: useSendGrid ? "sendgrid" : "email",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+        attempts: outcome.attempts,
+        error: outcome.lastError ?? "Unknown email error",
+      });
     }
 
     return {
@@ -717,9 +729,11 @@ export class NotificationService {
     // Rate-limit guard
     const eventKey = String(payload.event ?? payload.subject ?? "generic");
     if (isRateLimited(target.destination, eventKey)) {
-      console.info(
-        `[NotificationService] SMS rate-limited for ${maskDestination(target.destination)} event=${eventKey}`
-      );
+      logger.info("SMS notification rate-limited", {
+        channel: "SMS",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+      });
       return {
         channel: "SMS",
         target,
@@ -747,15 +761,22 @@ export class NotificationService {
 
     if (outcome.success) {
       recordDelivery(target.destination, eventKey);
-      console.info(
-        `[NotificationService] SMS delivered to ${maskDestination(target.destination)} ` +
-          `event=${eventKey} attempts=${outcome.attempts}`
-      );
+      logger.info("SMS notification delivered", {
+        channel: "SMS",
+        provider: useTwilio ? "twilio" : "sms",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+        attempts: outcome.attempts,
+      });
     } else {
-      console.warn(
-        `[NotificationService] SMS delivery failed for ${maskDestination(target.destination)} ` +
-          `event=${eventKey} attempts=${outcome.attempts} error=${outcome.lastError}`
-      );
+      logger.warn("SMS notification delivery failed", {
+        channel: "SMS",
+        provider: useTwilio ? "twilio" : "sms",
+        destination: maskDestination(target.destination),
+        event: eventKey,
+        attempts: outcome.attempts,
+        error: outcome.lastError ?? "Unknown SMS error",
+      });
     }
 
     return {

@@ -5,6 +5,7 @@ import { query, param } from 'express-validator';
 import { validate } from '../middleware/validation';
 import { sendError } from '../utils/response';
 import { ErrorCode } from '../lib/errors';
+import { logger } from '../lib/logger';
 import type { ProposalListResponse, ProposalDetailResponse, ProposalVotesResponse } from '../contracts/apiSchemas';
 
 const router = Router();
@@ -178,7 +179,9 @@ router.get(
 
     res.json(response);
   } catch (error) {
-    console.error('Error fetching proposals:', error);
+    logger.error('Failed to fetch proposals', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch proposals');
   }
 });
@@ -257,7 +260,9 @@ router.get(
 
     res.json(response);
   } catch (error) {
-    console.error('Error fetching proposal:', error);
+    logger.error('Failed to fetch proposal', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch proposal');
   }
 });
@@ -341,7 +346,9 @@ router.get(
       },
     });
   } catch (error) {
-    console.error('Error fetching votes:', error);
+    logger.error('Failed to fetch votes', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch votes');
   }
 });
@@ -406,7 +413,9 @@ router.get(
         },
       });
     } catch (error) {
-      console.error('Error fetching execution status:', error);
+      logger.error('Failed to fetch execution status', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch execution status');
     }
   }
@@ -481,7 +490,9 @@ router.get(
         },
       });
     } catch (error) {
-      console.error('Error fetching governance queue:', error);
+      logger.error('Failed to fetch governance queue', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance queue');
     }
   }
@@ -508,7 +519,9 @@ router.get('/stats', async (req: Request, res: Response) => {
       data: stats,
     });
   } catch (error) {
-    console.error('Error fetching governance stats:', error);
+    logger.error('Failed to fetch governance stats', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance stats');
   }
 });
@@ -561,7 +574,9 @@ router.get('/voters/:address', async (req: Request, res: Response) => {
       data: voterStats,
     });
   } catch (error) {
-    console.error('Error fetching voter stats:', error);
+    logger.error('Failed to fetch voter stats', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch voter stats');
   }
 });
@@ -585,7 +600,10 @@ router.post('/events/ingest', async (req: Request, res: Response) => {
         await governanceParser.parseEvent(event);
         results.push({ success: true, event: event.type });
       } catch (error) {
-        console.error(`Error processing event:`, error);
+        logger.error('Failed to process governance event', {
+          eventType: event?.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
         results.push({
           success: false,
           event: event.type,
@@ -602,7 +620,9 @@ router.post('/events/ingest', async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error('Error ingesting events:', error);
+    logger.error('Failed to ingest events', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to ingest events');
   }
 });

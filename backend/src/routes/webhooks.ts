@@ -12,7 +12,7 @@ import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLi
 import { verifyStoredWebhookSignature } from "../utils/crypto";
 import { sendError } from "../utils/response";
 import { ErrorCode } from "../lib/errors";
-import logger from "../lib/logger";
+import { parseLimit } from "../lib/pagination";
 import {
   CustomHeaderValidationError,
   maskCustomHeaders,
@@ -334,7 +334,8 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const limit = parseInt(req.query.limit as string) || 50;
+      // Default to 50 entries, capped at 100 to bound the page size.
+      const limit = parseLimit(req.query.limit, 50, 100);
 
       const logs = await webhookService.getDeliveryLogs(id, limit);
 
@@ -461,7 +462,8 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const limit = parseInt(req.query.limit as string) || 50;
+      // Default to 50 entries, capped at 100 to bound the page size.
+      const limit = parseLimit(req.query.limit, 50, 100);
 
       const subscription = await webhookService.getSubscription(id);
       if (!subscription) {
@@ -506,8 +508,17 @@ router.post(
         return sendError(res, 404, ErrorCode.NOT_FOUND, "Associated subscription not found");
       }
 
-      // Re-deliver the webhook
-      const payload = JSON.parse(deadLetter.payload);
+      // Re-deliver the webhook. The stored payload is user-influenced, so a
+      // malformed value must be handled here rather than surfacing as an
+      // unhandled SyntaxError (500). Never echo the raw payload back.
+      let payload: any;
+      try {
+        payload = JSON.parse(deadLetter.payload);
+      } catch {
+        console.error("Dead-letter payload could not be parsed as JSON");
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "Dead-letter payload is not valid JSON");
+      }
+
       const deliveryResult = await webhookDeliveryService.deliverWebhook(
         subscription,
         deadLetter.event,

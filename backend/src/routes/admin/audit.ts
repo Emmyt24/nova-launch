@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Database } from "../../config/database";
 import { authenticateAdmin, requireRole } from "../../middleware/auth";
 import { successResponse, errorResponse } from "../../utils/response";
+import { parseLimit, parseNonNegativeInt } from "../../utils/pagination";
 
 const router = Router();
 
@@ -55,13 +56,18 @@ router.get("/", authenticateAdmin, requireAuditAccess, async (req, res) => {
   try {
     const filters = auditQuerySchema.parse(req.query);
 
-    const limit = filters.limit ? parseInt(filters.limit) : DEFAULT_AUDIT_PAGE_SIZE;
-    const page = filters.page ? parseInt(filters.page) : undefined;
-    const offset = page
-      ? (page - 1) * limit
-      : filters.offset
-        ? parseInt(filters.offset)
-        : 0;
+    // Parse numeric filters defensively: radix 10, discard NaN and negative
+    // values, and fall back to defaults (DEFAULT_AUDIT_PAGE_SIZE for limit).
+    const limit = parseLimit(
+      filters.limit,
+      DEFAULT_AUDIT_PAGE_SIZE,
+      MAX_AUDIT_PAGE_SIZE
+    );
+    const page = parseNonNegativeInt(filters.page);
+    const offset =
+      page !== undefined && page > 0
+        ? (page - 1) * limit
+        : (parseNonNegativeInt(filters.offset) ?? 0);
 
     const { logs, total } = await Database.queryAuditLogs({
       adminId: filters.actor ?? filters.adminId,

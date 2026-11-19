@@ -3,12 +3,51 @@ import { z } from "zod";
 import { Database } from "../../config/database";
 import { authenticateAdmin, requireSuperAdmin } from "../../middleware/auth";
 import { auditLog } from "../../middleware/auditLog";
+import { logger } from "../../lib/logger";
 import { successResponse, errorResponse } from "../../utils/response";
 
 const router = Router();
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+
+/**
+ * Parse a pagination limit value.
+ * Uses radix 10, falls back to `fallback` on NaN, clamps negatives to 0,
+ * and caps the result at `max`.
+ */
+export function parseLimit(
+  value: string | undefined,
+  fallback: number,
+  max: number
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(parsed, 0), max);
+}
+
+/**
+ * Parse a non-negative integer value (e.g. pagination offset).
+ * Uses radix 10, falls back to `fallback` on NaN, and clamps negatives to 0.
+ */
+export function parseNonNegativeInt(
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.max(parsed, 0);
+}
 
 // Validation schemas
 const tokenFilterSchema = z.object({
@@ -55,11 +94,8 @@ router.get(
         );
       }
 
-      const limit = Math.min(
-        filters.limit ? parseInt(filters.limit) : DEFAULT_LIMIT,
-        MAX_LIMIT
-      );
-      const offset = filters.offset ? parseInt(filters.offset) : 0;
+      const limit = parseLimit(filters.limit, DEFAULT_LIMIT, MAX_LIMIT);
+      const offset = parseNonNegativeInt(filters.offset, 0);
       const total = tokens.length;
       tokens = tokens.slice(offset, offset + limit);
 
@@ -84,7 +120,9 @@ router.get(
           })
         );
       }
-      console.error("Error fetching tokens:", error);
+      logger.error("Error fetching tokens", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -131,7 +169,10 @@ router.get(
         })
       );
     } catch (error) {
-      console.error("Error fetching token:", error);
+      logger.error("Error fetching token", {
+        error: error instanceof Error ? error.message : String(error),
+        tokenId: req.params.id,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -175,7 +216,10 @@ router.patch(
           })
         );
       }
-      console.error("Error updating token:", error);
+      logger.error("Error updating token", {
+        error: error instanceof Error ? error.message : String(error),
+        tokenId: req.params.id,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -207,7 +251,10 @@ router.delete(
 
       res.json(successResponse({ message: "Token deleted successfully" }));
     } catch (error) {
-      console.error("Error deleting token:", error);
+      logger.error("Error deleting token", {
+        error: error instanceof Error ? error.message : String(error),
+        tokenId: req.params.id,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",

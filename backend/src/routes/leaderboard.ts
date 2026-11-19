@@ -10,6 +10,7 @@ import {
 } from "../services/leaderboardService";
 import { successResponse, errorResponse } from "../utils/response";
 import { parseLeaderboardWindow } from "../lib/validation/leaderboardWindow";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -72,7 +73,9 @@ router.get("/most-burned", async (req: Request, res: Response) => {
     const result = await getMostBurnedLeaderboard(period, page, limit);
     res.json(successResponse(result));
   } catch (error) {
-    console.error("Error fetching most-burned leaderboard:", error);
+    logger.error("Error fetching most-burned leaderboard", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -99,7 +102,9 @@ router.get("/most-active", async (req: Request, res: Response) => {
     const result = await getMostActiveLeaderboard(period, page, limit);
     res.json(successResponse(result));
   } catch (error) {
-    console.error("Error fetching most-active leaderboard:", error);
+    logger.error("Error fetching most-active leaderboard", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -127,7 +132,9 @@ router.get("/newest", async (req: Request, res: Response) => {
     const result = await getNewestTokensLeaderboard(page, limit, period);
     res.json(successResponse(result));
   } catch (error) {
-    console.error("Error fetching newest leaderboard:", error);
+    logger.error("Error fetching newest leaderboard", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -155,7 +162,9 @@ router.get("/largest-supply", async (req: Request, res: Response) => {
     const result = await getLargestSupplyLeaderboard(page, limit, period);
     res.json(successResponse(result));
   } catch (error) {
-    console.error("Error fetching largest-supply leaderboard:", error);
+    logger.error("Error fetching largest-supply leaderboard", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -182,7 +191,9 @@ router.get("/most-burners", async (req: Request, res: Response) => {
     const result = await getMostBurnersLeaderboard(period, page, limit);
     res.json(successResponse(result));
   } catch (error) {
-    console.error("Error fetching most-burners leaderboard:", error);
+    logger.error("Error fetching most-burners leaderboard", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -203,7 +214,9 @@ router.get("/cache-status", async (_req: Request, res: Response) => {
     const status = await getCacheStatus();
     res.json(successResponse(status));
   } catch (error) {
-    console.error("Error fetching leaderboard cache status:", error);
+    logger.error("Error fetching leaderboard cache status", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",

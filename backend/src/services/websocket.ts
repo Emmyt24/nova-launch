@@ -20,6 +20,7 @@
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import { IncomingMessage, Server } from "http";
 import jwt from "jsonwebtoken";
+import { logger } from "../lib/logger";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,14 +97,18 @@ export class WebSocketService {
     this.wss = new WebSocketServer({ server, path: "/ws" });
 
     this.wss.on("connection", (ws, req) => this.handleConnection(ws, req));
-    this.wss.on("error", (err) => console.error("[WS] Server error:", err));
+    this.wss.on("error", (err) =>
+      logger.error("WS server error", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
 
     this.heartbeatTimer = setInterval(
       () => this.runHeartbeat(),
       HEARTBEAT_INTERVAL_MS
     );
 
-    console.log("[WS] WebSocket server attached at /ws");
+    logger.info("WebSocket server attached", { path: "/ws" });
   }
 
   /**
@@ -119,7 +124,7 @@ export class WebSocketService {
       if (!this.clientMatchesEvent(state, event)) continue;
 
       ws.send(payload, (err) => {
-        if (err) console.error("[WS] Send error:", err.message);
+        if (err) logger.error("WS send error", { error: err.message });
       });
     }
   }
@@ -198,7 +203,7 @@ export class WebSocketService {
     ws.on("close", () => this.handleClose(ws, ip));
 
     ws.on("error", (err) => {
-      console.error(`[WS] Client error (${ip}):`, err.message);
+      logger.error("WS client error", { ip, error: err.message });
     });
   }
 

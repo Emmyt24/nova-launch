@@ -550,17 +550,43 @@ export interface ClaimVaultResult {
   txHash: string;
 }
 
+export interface ClaimVaultOptions {
+  /** Soroban RPC server override (useful for tests). */
+  server?: Soroban.Server;
+  /** Poll interval in ms while waiting for confirmation. */
+  pollIntervalMs?: number;
+  /** Maximum number of confirmation polls before timing out. */
+  maxPolls?: number;
+}
+
 /**
- * Submit a claim_stream transaction for the given streamId.
- * Throws if the wallet is not connected, simulation fails, or the tx is rejected.
+ * Submit a `claim_stream` transaction for the given streamId against the
+ * token-factory contract.
+ *
+ * The contract method is invoked with `(address, u64)` arguments — the
+ * beneficiary address followed by the stream id — signed through the
+ * connected wallet, submitted via Soroban RPC and polled until confirmed.
+ *
+ * Throws if the wallet is not connected, simulation fails, signing is
+ * rejected, or the transaction fails on-chain.
  */
 export async function claimVault(
   streamId: number,
   claimerAddress: string,
   network: 'testnet' | 'mainnet' = 'testnet',
+  options: ClaimVaultOptions = {},
 ): Promise<ClaimVaultResult> {
+  if (!claimerAddress) {
+    throw new Error('Wallet must be connected to claim a vault');
+  }
+  if (!Number.isInteger(streamId) || streamId < 0) {
+    throw new Error('Invalid stream id');
+  }
+
   const config = getNetworkConfig(network);
-  const server = new Soroban.Server(config.sorobanRpcUrl);
+  const server = options.server ?? new Soroban.Server(config.sorobanRpcUrl);
+  const pollIntervalMs = options.pollIntervalMs ?? 1000;
+  const maxPolls = options.maxPolls ?? 60;
   const contractId = STELLAR_CONFIG.factoryContractId;
 
   const contract = new Contract(contractId);
@@ -597,8 +623,13 @@ export async function claimVault(
 
   // Poll for confirmation
   let getResponse = await server.getTransaction(response.hash);
+  let polls = 0;
   while (getResponse.status === 'NOT_FOUND') {
-    await new Promise((r) => setTimeout(r, 1000));
+    if (polls >= maxPolls) {
+      throw new Error('claim_stream transaction confirmation timed out');
+    }
+    polls += 1;
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
     getResponse = await server.getTransaction(response.hash);
   }
   if (getResponse.status === 'FAILED') {

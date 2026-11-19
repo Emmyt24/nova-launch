@@ -82,6 +82,65 @@ import {
   EndpointType,
 } from "./endpoint-pool";
 
+/**
+ * Minimal account-like shape accepted by `StellarSdk.TransactionBuilder`.
+ * Used for read-only simulations where a real funded account is not required.
+ */
+interface SimulationAccount {
+  accountId(): string;
+  sequenceNumber(): string;
+  incrementSequenceNumber(): void;
+}
+
+/**
+ * Raw shape returned by the factory contract's `quote_creation_fee` view.
+ * The contract may return a plain integer (total fee in stroops) or a struct
+ * with a breakdown; both shapes are supported by `mapTokenCreationFeeQuote`.
+ */
+type RawTokenCreationFeeQuote =
+  | bigint
+  | number
+  | string
+  | {
+      total_fee?: bigint | number | string;
+      totalFee?: bigint | number | string;
+      fee?: bigint | number | string;
+      amount?: bigint | number | string;
+      base_fee?: bigint | number | string;
+      baseFee?: bigint | number | string;
+      additional_fee?: bigint | number | string;
+      additionalFee?: bigint | number | string;
+      currency?: string;
+    };
+
+/**
+ * Narrows an unknown error to one carrying an HTTP-style `response.status`.
+ */
+function hasResponseStatus(
+  error: unknown
+): error is { response: { status: number } } {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as { response?: unknown };
+  if (typeof candidate.response !== "object" || candidate.response === null) {
+    return false;
+  }
+  const response = candidate.response as { status?: unknown };
+  return typeof response.status === "number";
+}
+
+/**
+ * Narrows an unknown error to one carrying a string `message`.
+ */
+function hasMessage(error: unknown): error is { message: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as { message?: unknown }).message === "string"
+  );
+}
+
 @Injectable()
 export class StellarService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StellarService.name);
@@ -204,7 +263,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     // Invalidate cached sequence numbers as soon as a ledger closes rather
     // than relying solely on the TTL fallback.
     try {
-      this.sequenceCache.startLedgerSubscription(this.horizon as any);
+      this.sequenceCache.startLedgerSubscription(this.horizon);
     } catch (error) {
       this.logger.error(
         "Failed to start ledger-close subscription; falling back to TTL-only sequence cache invalidation",
@@ -286,7 +345,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
    * @param buildTransaction - Function that builds and signs the transaction
    * @returns Transaction submission result
    */
-  async executeTransaction<T = any>(
+  async executeTransaction<T = unknown>(
     accountId: string,
     buildTransaction: (account: StellarSdk.Horizon.AccountResponse) => Promise<StellarSdk.Transaction>
   ): Promise<{ hash: string; result: T }> {
@@ -308,7 +367,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
         
         return {
           hash: response.hash,
-          result: response as any,
+          result: response as unknown as T,
         };
       }
     );
@@ -494,7 +553,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     return this.withRetry(async () => {
       this.rateLimiter.checkLimit();
       try {
-        const raw = await this.callContract<any>(
+        const raw = await this.callContract<RawTokenCreationFeeQuote>(
           this.config.factoryContractId,
           "quote_creation_fee",
           [StellarSdk.nativeToScVal(options, { type: "object" })]
@@ -572,8 +631,8 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           resultXdr: tx.result_xdr,
           resultMetaXdr: tx.result_meta_xdr,
         };
-      } catch (error: any) {
-        if (error?.response?.status === 404) {
+      } catch (error: unknown) {
+        if (hasResponseStatus(error) && error.response.status === 404) {
           throw new StellarNotFoundException("Transaction", txHash);
         }
         this.logger.error(`Failed to fetch transaction ${txHash}`, error);
@@ -632,8 +691,8 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
           createdAt: tx.created_at,
           attempts,
         };
-      } catch (error: any) {
-        if (error?.response?.status === 404) {
+      } catch (error: unknown) {
+        if (hasResponseStatus(error) && error.response.status === 404) {
           this.logger.debug(
             `Transaction ${txHash} not found yet (attempt ${attempts}/${maxAttempts})`
           );
@@ -646,7 +705,7 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
 
         this.logger.warn(
           `Error polling transaction ${txHash}:`,
-          error?.message
+          hasMessage(error) ? error.message : String(error)
         );
         if (attempts < maxAttempts) {
           await sleep(pollIntervalMs);
@@ -675,24 +734,27 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
     const account = await this.withEndpoint("soroban", (server) =>
       (server as StellarSdk.rpc.Server)
         .getAccount(StellarSdk.Keypair.random().publicKey())
-        .catch(() => {
+        .catch((): SimulationAccount => {
           // Use a dummy account for read-only simulations
           return {
             accountId: () => StellarSdk.Keypair.random().publicKey(),
             sequenceNumber: () => "0",
             incrementSequenceNumber: () => {},
-          } as any;
+          };
         })
     );
 
     const contract = new StellarSdk.Contract(contractId);
-    const tx = new StellarSdk.TransactionBuilder(account as any, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase:
-        this.config.network === "mainnet"
-          ? StellarSdk.Networks.PUBLIC
-          : StellarSdk.Networks.TESTNET,
-    })
+    const tx = new StellarSdk.TransactionBuilder(
+      account as unknown as StellarSdk.Account,
+      {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase:
+          this.config.network === "mainnet"
+            ? StellarSdk.Networks.PUBLIC
+            : StellarSdk.Networks.TESTNET,
+      }
+    )
       .addOperation(contract.call(method, ...args))
       .setTimeout(Math.floor(this.config.requestTimeout / 1000))
       .build();
@@ -813,7 +875,9 @@ export class StellarService implements OnModuleInit, OnModuleDestroy {
    * The contract may return either a plain integer (total fee in stroops) or a
    * struct with a breakdown; both shapes are supported.
    */
-  private mapTokenCreationFeeQuote(raw: any): TokenCreationFeeQuote {
+  private mapTokenCreationFeeQuote(
+    raw: RawTokenCreationFeeQuote | null | undefined
+  ): TokenCreationFeeQuote {
     if (raw === null || raw === undefined) {
       throw new StellarParseException(
         "Empty result from quote_creation_fee"

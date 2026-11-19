@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import axios from "axios";
+import { logger } from "../../lib/logger";
 
 /**
  * On-Chain to Backend Projection Verifier
@@ -133,7 +134,10 @@ export class OnChainDataFetcher {
       }
       return null;
     } catch (error) {
-      console.warn("Failed to fetch factory state from Horizon:", error);
+      logger.warn("Failed to fetch factory state from Horizon", {
+        factoryContractId: this.factoryContractId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -179,10 +183,11 @@ export class OnChainDataFetcher {
       }
       return [];
     } catch (error) {
-      console.warn(
-        `Failed to fetch burn events for ${tokenAddress}:`,
-        error
-      );
+      logger.warn("Failed to fetch burn events from Horizon", {
+        tokenAddress,
+        factoryContractId: this.factoryContractId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -224,7 +229,10 @@ export class OnChainDataFetcher {
       }
       return states;
     } catch (error) {
-      console.warn("Failed to fetch vault events from Horizon:", error);
+      logger.warn("Failed to fetch vault events from Horizon", {
+        factoryContractId: this.factoryContractId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -915,7 +923,15 @@ export async function runAndPrintConsistencyCheck(
   try {
     const verifier = new OnChainProjectionVerifier(prisma, config);
     const result = await verifier.runFullCheck();
-    console.log(verifier.formatResults(result));
+    logger.info("On-chain projection consistency check completed", {
+      consistent: result.consistent,
+      totalChecked: result.totalChecked,
+      tokensChecked: result.tokensChecked,
+      burnsChecked: result.burnsChecked,
+      diffCount: result.diffs.length,
+      errorCount: result.errors.length,
+      durationMs: result.duration,
+    });
     return result.consistent;
   } finally {
     await prisma.$disconnect();

@@ -328,6 +328,78 @@ describe("GET /api/tokens/search", () => {
     );
   });
 
+  it("should fall back to page 1 when page is not a number", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?page=abc")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.pagination.page).toBe(1);
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 0,
+        take: 21,
+      })
+    );
+  });
+
+  it("should clamp page 0 to page 1", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?page=0")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.pagination.page).toBe(1);
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 0,
+        take: 21,
+      })
+    );
+  });
+
+  it("should clamp a negative limit to 1", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?limit=-5")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.pagination.limit).toBe(1);
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 0,
+        take: 2,
+      })
+    );
+  });
+
+  it("should clamp an oversized limit to 50", async () => {
+    vi.mocked(prisma.token.findMany).mockResolvedValue(mockTokens);
+    vi.mocked(prisma.token.count).mockResolvedValue(2);
+
+    const response = await withTenant(
+      request(app).get("/api/tokens/search?limit=999")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.pagination.limit).toBe(50);
+    expect(prisma.token.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 0,
+        take: 51,
+      })
+    );
+  });
+
   it("should paginate by cursor on the created sort, returning a nextCursor when more results exist", async () => {
     // Service returns limit+1 rows so the route can detect hasMore.
     vi.mocked(prisma.token.findMany).mockResolvedValue([

@@ -188,9 +188,16 @@ router.get("/tokens", discoveryRateLimiter, async (req: Request, res: Response) 
   }
 
   const { q, category, network, hasMetadata, sortBy, sortOrder, limit: limitStr, offset: offsetStr } = parsed.data;
-  const limit  = Math.min(parseInt(limitStr), 100);
-  const offset = parseInt(offsetStr);
+  // Parse with an explicit radix and guard against non-finite results so a
+  // malformed value can never yield NaN (which would also poison the cache
+  // key). Fall back to the schema defaults, then clamp to sane bounds:
+  // offset >= 0, 1 <= limit <= 100.
+  const parsedLimit  = parseInt(limitStr, 10);
+  const parsedOffset = parseInt(offsetStr, 10);
+  const limit  = Number.isFinite(parsedLimit)  ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
+  const offset = Number.isFinite(parsedOffset) ? Math.max(parsedOffset, 0) : 0;
 
+  // Cache key is built from the sanitized numbers, never the raw strings.
   const cacheKey = JSON.stringify({ q, category, network, hasMetadata, sortBy, sortOrder, limit, offset });
   const cached = cacheGet(cacheKey);
   if (cached) return res.json({ ...cached as object, cached: true });

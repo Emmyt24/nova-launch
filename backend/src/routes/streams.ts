@@ -26,8 +26,13 @@ import {
 } from "../services/streamMetadataService";
 import { tenantMiddleware, type TenantRequest } from "../middleware/tenancy";
 import { validateStreamMetadata } from "../services/streamMetadataValidation";
+import { logger } from "../lib/logger";
 
 const router = Router();
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function parseStreamId(raw: string): bigint | null {
   if (!/^\d+$/.test(raw)) return null;
@@ -67,7 +72,11 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
     const metadata = await getStreamMetadata(streamId);
     res.json(successResponse(metadata ? serialize(metadata) : null));
   } catch (error) {
-    console.error("[streams] GET /:streamId/metadata error:", error);
+    logger.error("Failed to fetch stream metadata", {
+      route: "GET /api/streams/:streamId/metadata",
+      streamId: streamId.toString(),
+      error: errorMessage(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -143,7 +152,11 @@ router.put(
           .status(403)
           .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
       }
-      console.error("[streams] PUT /:streamId/metadata error:", error);
+      logger.error("Failed to update stream metadata", {
+        route: "PUT /api/streams/:streamId/metadata",
+        streamId: streamId.toString(),
+        error: errorMessage(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -163,7 +176,11 @@ router.get("/creator/:address", async (req: Request, res: Response) => {
     const streams = await listStreamMetadataByCreator(req.params.address);
     res.json(successResponse(serializeAll(streams)));
   } catch (error) {
-    console.error("[streams] GET /creator/:address error:", error);
+    logger.error("Failed to fetch creator streams", {
+      route: "GET /api/streams/creator/:address",
+      address: req.params.address,
+      error: errorMessage(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -182,7 +199,11 @@ router.get("/recipient/:address", async (req: Request, res: Response) => {
     const streams = await listStreamMetadataByRecipient(req.params.address);
     res.json(successResponse(serializeAll(streams)));
   } catch (error) {
-    console.error("[streams] GET /recipient/:address error:", error);
+    logger.error("Failed to fetch recipient streams", {
+      route: "GET /api/streams/recipient/:address",
+      address: req.params.address,
+      error: errorMessage(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",

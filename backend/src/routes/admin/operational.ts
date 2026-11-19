@@ -6,6 +6,7 @@
  */
 import { Router } from 'express';
 import { prisma } from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 import { authenticateAdmin } from '../../middleware/auth';
 import { successResponse, errorResponse } from '../../utils/response';
 import {
@@ -34,7 +35,10 @@ router.get('/', authenticateAdmin, async (_req, res) => {
       }),
     );
   } catch (error) {
-    console.error('Error fetching operational state:', error);
+    logger.error('Error fetching operational state', {
+      operation: 'getOperationalState',
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: 'INTERNAL_SERVER_ERROR',
@@ -59,7 +63,10 @@ router.get('/circuit-breaker/ipfs', authenticateAdmin, (_req, res) => {
       }),
     );
   } catch (error) {
-    console.error('Error fetching circuit breaker metrics:', error);
+    logger.error('Error fetching circuit breaker metrics', {
+      operation: 'getIPFSCircuitBreakerMetrics',
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: 'INTERNAL_SERVER_ERROR',
@@ -83,7 +90,10 @@ router.post('/circuit-breaker/ipfs/reset', authenticateAdmin, (_req, res) => {
       }),
     );
   } catch (error) {
-    console.error('Error resetting circuit breaker:', error);
+    logger.error('Error resetting circuit breaker', {
+      operation: 'resetIPFSCircuitBreaker',
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: 'INTERNAL_SERVER_ERROR',
@@ -119,7 +129,10 @@ router.post('/pinata/credentials', authenticateAdmin, async (req, res) => {
       }),
     );
   } catch (error) {
-    console.error('Error rotating Pinata credentials:', error);
+    logger.error('Error rotating Pinata credentials', {
+      operation: 'rotatePinataCredentials',
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: 'INTERNAL_SERVER_ERROR',

@@ -13,6 +13,7 @@ import {
 import { EventCursorStore } from './eventCursorStore';
 import { isRetryableError, sleep } from '../stellar-service-integration/rate-limiter';
 import { findNearestUsableSnapshotLedger, restoreAllProjectionSnapshots } from './projectionSnapshot';
+import { logger } from '../lib/logger';
 
 const _env = validateEnv();
 const HORIZON_URL = _env.STELLAR_HORIZON_URL;
@@ -110,9 +111,10 @@ export class EventReplayService {
         cursor = await this.cursorStore.load();
       }
 
-      console.log(
-        `[EventReplay] Starting replay from ledger ${startLedger || 'stored cursor'}, batch size: ${batchSize}`,
-      );
+      logger.info('[EventReplay] Starting replay', {
+        startLedger: startLedger ?? 'stored cursor',
+        batchSize,
+      });
 
       let hasMore = true;
       while (hasMore) {
@@ -150,9 +152,10 @@ export class EventReplayService {
               const errorMsg = err instanceof Error ? err.message : String(err);
               errors.push({ ledger: event.ledger, error: errorMsg });
               eventsSkipped++;
-              console.warn(
-                `[EventReplay] Error processing event at ledger ${event.ledger}: ${errorMsg}`,
-              );
+              logger.warn('[EventReplay] Error processing event', {
+                ledger: event.ledger,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           }
 
@@ -167,7 +170,10 @@ export class EventReplayService {
           }
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[EventReplay] Batch fetch failed: ${errorMsg}`);
+          logger.error('[EventReplay] Batch fetch failed', {
+            ledger: currentLedger,
+            error: err instanceof Error ? err.message : String(err),
+          });
           errors.push({ ledger: currentLedger, error: `Batch fetch: ${errorMsg}` });
           hasMore = false;
         }
@@ -176,7 +182,7 @@ export class EventReplayService {
       // Persist cursor if not dry-run
       if (!dryRun && finalCursor) {
         await this.cursorStore.save(finalCursor);
-        console.log(`[EventReplay] Cursor persisted: ${finalCursor}`);
+        logger.info('[EventReplay] Cursor persisted', { finalCursor });
       }
 
       const duration = Date.now() - startTime;
@@ -190,9 +196,11 @@ export class EventReplayService {
         duration,
       };
 
-      console.log(
-        `[EventReplay] Completed: ${eventsProcessed} processed, ${eventsSkipped} skipped in ${duration}ms`,
-      );
+      logger.info('[EventReplay] Completed', {
+        eventsProcessed,
+        eventsSkipped,
+        duration,
+      });
 
       return result;
     } catch (err) {
@@ -214,16 +222,12 @@ export class EventReplayService {
     const snapshotLedger = await findNearestUsableSnapshotLedger(this.prisma, targetLedger);
 
     if (snapshotLedger !== null) {
-      console.log(
-        `[EventReplay] Resuming from snapshot at ledger ${snapshotLedger} (target: ${targetLedger})`,
-      );
+      logger.info('[EventReplay] Resuming from snapshot', { snapshotLedger, targetLedger });
       await restoreAllProjectionSnapshots(this.prisma, snapshotLedger);
       return this.replay({ ...options, startLedger: snapshotLedger + 1, endLedger: targetLedger });
     }
 
-    console.log(
-      `[EventReplay] No usable snapshot at or before ledger ${targetLedger} — replaying from origin`,
-    );
+    logger.info('[EventReplay] No usable snapshot found, replaying from origin', { targetLedger });
     return this.replay({ ...options, endLedger: targetLedger });
   }
 
@@ -266,9 +270,11 @@ export class EventReplayService {
 
         if (attempt < maxRetries) {
           const delay = retryDelayMs * Math.pow(2, attempt);
-          console.warn(
-            `[EventReplay] Fetch failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`,
-          );
+          logger.warn('[EventReplay] Fetch failed, retrying', {
+            attempt: attempt + 1,
+            maxRetries: maxRetries + 1,
+            delay,
+          });
           await sleep(delay);
         }
       }
@@ -340,7 +346,7 @@ export class EventReplayService {
     }
 
     // Unknown event type - log but don't fail
-    console.debug(`[EventReplay] Skipping unknown event type: ${topic}`);
+    logger.debug('[EventReplay] Skipping unknown event type', { topic });
   }
 
   /**
@@ -361,7 +367,7 @@ export class EventReplayService {
    * WARNING: Destructive operation. Use with caution.
    */
   async clearAndRebuild(options: ReplayOptions = {}): Promise<ReplayResult> {
-    console.warn('[EventReplay] Clearing all projections...');
+    logger.warn('[EventReplay] Clearing all projections');
 
     // Clear all projection tables
     await this.prisma.$transaction([
@@ -375,7 +381,7 @@ export class EventReplayService {
       this.prisma.campaignAuditTrail.deleteMany(),
     ]);
 
-    console.log('[EventReplay] Projections cleared. Starting replay...');
+    logger.info('[EventReplay] Projections cleared, starting replay');
 
     // Reset cursor to origin
     const originCursor = process.env.STELLAR_CURSOR_ORIGIN || null;

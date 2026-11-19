@@ -47,6 +47,7 @@ import "./services/streamDivergenceAlerting";
 import sagaCoordinator from "./services/sagaCoordinator";
 import "./services/sagas/batchDeployGovernanceSaga";
 import { runProjectionSnapshotJob } from "./services/projectionSnapshotJob";
+import { logger } from "./lib/logger";
 
 dotenv.config();
 
@@ -60,10 +61,11 @@ const PORT = env.PORT;
 // Initialize OpenTelemetry tracing (OTEL_ENABLED=true) before the server
 // accepts any requests. No-op tracer stays active otherwise.
 const tracingActive = initTracing();
-console.log(
+logger.info(
   tracingActive
-    ? "🔭 OpenTelemetry tracing initialized"
-    : "🔭 OpenTelemetry tracing disabled (noop tracer active)"
+    ? "OpenTelemetry tracing initialized"
+    : "OpenTelemetry tracing disabled (noop tracer active)",
+  { tracingActive }
 );
 
 // Request logging middleware (first to capture all requests)
@@ -231,16 +233,18 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const server = app.listen(PORT, async () => {
-  console.log(`🚀 Admin API server running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || "development"}`);
+  logger.info("Admin API server running", { port: PORT });
+  logger.info("Environment configured", {
+    environment: process.env.NODE_ENV || "development",
+  });
 
   // Register job handlers
   jobQueue.register("stream_reconciliation", async (job) => {
     const result = await streamReconciliationService.reconcile();
     if (result.divergences.length > 0) {
-      console.warn(
-        `Stream reconciliation found ${result.divergences.length} divergences`
-      );
+      logger.warn("Stream reconciliation found divergences", {
+        divergences: result.divergences.length,
+      });
     }
   });
 
@@ -257,9 +261,9 @@ const server = app.listen(PORT, async () => {
       {},
       reconciliationInterval
     );
-    console.log(
-      `📋 Stream reconciliation scheduled every ${reconciliationInterval}ms`
-    );
+    logger.info("Stream reconciliation scheduled", {
+      intervalMs: reconciliationInterval,
+    });
   }
 
   // Register and schedule periodic cross-projection snapshot capture if enabled
@@ -271,9 +275,9 @@ const server = app.listen(PORT, async () => {
       process.env.PROJECTION_SNAPSHOT_INTERVAL_MS || "1800000" // 30 minutes default
     );
     jobQueue.scheduleRecurring("projection_snapshot", {}, snapshotInterval);
-    console.log(
-      `📋 Projection snapshot capture scheduled every ${snapshotInterval}ms`
-    );
+    logger.info("Projection snapshot capture scheduled", {
+      intervalMs: snapshotInterval,
+    });
   }
 
   // Attach WebSocket server for live event streaming
@@ -311,7 +315,9 @@ const gracefulShutdown = createGracefulShutdown({
         const { drained, inFlight } = await jobQueue.drain(
           Number(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS) || 10_000
         );
-        if (!drained) console.warn(`[shutdown] ${inFlight} job(s) still running at drain timeout`);
+        if (!drained) {
+          logger.warn("Job queue drain timeout reached", { inFlight });
+        }
       },
     },
     { name: "database", run: () => baseClient.$disconnect() },

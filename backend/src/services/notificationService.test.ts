@@ -35,8 +35,9 @@ describe("NotificationService", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    delete process.env.SENDGRID_API_KEY;
-    delete process.env.NOTIFICATION_EMAIL_API_URL;
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+    delete process.env.NOTIFICATION_SMS_API_URL;
   });
 
   it("throws when request has no targets", async () => {
@@ -211,6 +212,38 @@ describe("NotificationService", () => {
 
     expect(result[0].success).toBe(false);
     expect(result[0].error).toBe("SMS channel is not configured");
+  });
+
+  it("returns failure for sms when Twilio credentials are unset", async () => {
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+    delete process.env.NOTIFICATION_SMS_API_URL;
+
+    const result = await service.send({
+      targets: [{ type: "SMS", destination: "+15551234567", provider: "twilio" }],
+      payload: { message: "Test SMS" },
+    });
+
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toContain("Twilio");
+    expect(result[0].error).toContain("TWILIO_ACCOUNT_SID");
+    expect(result[0].error).toContain("TWILIO_AUTH_TOKEN");
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it("returns failure for sms when NOTIFICATION_SMS_API_URL is unset", async () => {
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+    delete process.env.NOTIFICATION_SMS_API_URL;
+
+    const result = await service.send({
+      targets: [{ type: "SMS", destination: "+15551234567", provider: "generic" }],
+      payload: { message: "Test SMS" },
+    });
+
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toContain("NOTIFICATION_SMS_API_URL");
+    expect(axios.post).not.toHaveBeenCalled();
   });
 
   it("throws when registering the same channel twice", () => {

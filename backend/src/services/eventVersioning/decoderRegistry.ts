@@ -17,6 +17,12 @@
  * verify coverage. See docs/CONTRACT_UPGRADE_COMPATIBILITY.md.
  */
 
+/**
+ * Decoded event payload. The shape varies per topic/contract version, so it is
+ * typed as `unknown` and narrowed via `asEventValue` before property access.
+ */
+export type RawEventValue = Record<string, unknown>;
+
 export interface RawStellarEvent {
   type: string;
   ledger: number;
@@ -25,9 +31,18 @@ export interface RawStellarEvent {
   id: string;
   paging_token: string;
   topic: string[];
-  value: any;
+  value: unknown;
   in_successful_contract_call: boolean;
   transaction_hash: string;
+}
+
+/**
+ * Narrow an unknown event payload to a property bag.
+ * Non-object payloads (null, primitives) yield an empty bag so that
+ * property reads fall back to the same defaults as before.
+ */
+function asEventValue(v: unknown): RawEventValue {
+  return typeof v === 'object' && v !== null ? (v as RawEventValue) : {};
 }
 
 // ── Normalized shapes ────────────────────────────────────────────────────────
@@ -121,163 +136,224 @@ function base(raw: RawStellarEvent): EventBase {
   };
 }
 
-function str(v: any): string  { return v?.toString() ?? '0'; }
-function num(v: any): number  { return typeof v === 'number' ? v : parseInt(v, 10) || 0; }
-function bool(v: any): boolean { return v === true || v === 1; }
-function dateFromSec(v: any): Date { return new Date(num(v) * 1000); }
+function str(v: unknown): string {
+  if (v == null) return '0';
+  return typeof v === 'string' ? v : String(v);
+}
+function num(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseInt(v, 10) || 0;
+  return 0;
+}
+function bool(v: unknown): boolean { return v === true || v === 1; }
+function dateFromSec(v: unknown): Date { return new Date(num(v) * 1000); }
 
 const DECODERS: Record<string, (raw: RawStellarEvent) => NormalizedEvent> = {
-  proposal_created: (raw) => ({
-    ...base(raw), kind: 'proposal_created',
-    proposalId: num(raw.value?.proposal_id),
-    tokenAddress: raw.topic[1] ?? '',
-    proposer: raw.value?.proposer ?? '',
-    title: raw.value?.title ?? 'Untitled',
-    description: raw.value?.description,
-    proposalType: num(raw.value?.proposal_type),
-    startTime: dateFromSec(raw.value?.start_time),
-    endTime: dateFromSec(raw.value?.end_time),
-    quorum: str(raw.value?.quorum),
-    threshold: str(raw.value?.threshold),
-    metadata: raw.value?.metadata,
-  }),
+  proposal_created: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_created',
+      proposalId: num(value.proposal_id),
+      tokenAddress: raw.topic[1] ?? '',
+      proposer: value.proposer ?? '',
+      title: value.title ?? 'Untitled',
+      description: value.description as string | undefined,
+      proposalType: num(value.proposal_type),
+      startTime: dateFromSec(value.start_time),
+      endTime: dateFromSec(value.end_time),
+      quorum: str(value.quorum),
+      threshold: str(value.threshold),
+      metadata: value.metadata as string | undefined,
+    };
+  },
 
-  vote_cast: (raw) => ({
-    ...base(raw), kind: 'vote_cast',
-    proposalId: num(raw.value?.proposal_id),
-    voter: raw.value?.voter ?? '',
-    support: bool(raw.value?.support),
-    weight: str(raw.value?.weight),
-    reason: raw.value?.reason,
-  }),
+  vote_cast: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'vote_cast',
+      proposalId: num(value.proposal_id),
+      voter: value.voter ?? '',
+      support: bool(value.support),
+      weight: str(value.weight),
+      reason: value.reason as string | undefined,
+    };
+  },
 
-  proposal_queued: (raw) => ({
-    ...base(raw), kind: 'proposal_queued',
-    proposalId: num(raw.value?.proposal_id ?? raw.topic[1]),
-    oldStatus: raw.value?.old_status?.toString() ?? 'passed',
-  }),
+  proposal_queued: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_queued',
+      proposalId: num(value.proposal_id ?? raw.topic[1]),
+      oldStatus: value.old_status?.toString() ?? 'passed',
+    };
+  },
 
-  proposal_executed: (raw) => ({
-    ...base(raw), kind: 'proposal_executed',
-    proposalId: num(raw.value?.proposal_id),
-    executor: raw.value?.executor ?? '',
-    success: bool(raw.value?.success ?? true),
-    returnData: raw.value?.return_data,
-    gasUsed: raw.value?.gas_used != null ? str(raw.value.gas_used) : undefined,
-  }),
+  proposal_executed: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_executed',
+      proposalId: num(value.proposal_id),
+      executor: value.executor ?? '',
+      success: bool(value.success ?? true),
+      returnData: value.return_data as string | undefined,
+      gasUsed: value.gas_used != null ? str(value.gas_used) : undefined,
+    };
+  },
 
-  proposal_cancelled: (raw) => ({
-    ...base(raw), kind: 'proposal_cancelled',
-    proposalId: num(raw.value?.proposal_id),
-    canceller: raw.value?.canceller ?? '',
-    reason: raw.value?.reason,
-  }),
+  proposal_cancelled: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_cancelled',
+      proposalId: num(value.proposal_id),
+      canceller: value.canceller ?? '',
+      reason: value.reason as string | undefined,
+    };
+  },
 
-  proposal_status_changed: (raw) => ({
-    ...base(raw), kind: 'proposal_status_changed',
-    proposalId: num(raw.value?.proposal_id),
-    oldStatus: str(raw.value?.old_status),
-    newStatus: str(raw.value?.new_status),
-  }),
+  proposal_status_changed: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_status_changed',
+      proposalId: num(value.proposal_id),
+      oldStatus: str(value.old_status),
+      newStatus: str(value.new_status),
+    };
+  },
 
-  proposal_state_snapshot: (raw) => ({
-    ...base(raw), kind: 'proposal_state_snapshot',
-    proposalId: num(raw.value?.proposal_id ?? raw.topic[1]),
-    status: raw.value?.status?.toString() ?? 'active',
-    yesVotes: str(raw.value?.yes_votes),
-    noVotes: str(raw.value?.no_votes),
-    quorumRequired: str(raw.value?.quorum_required),
-    snapshotLedger: num(raw.value?.ledger ?? raw.ledger),
-  }),
+  proposal_state_snapshot: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'proposal_state_snapshot',
+      proposalId: num(value.proposal_id ?? raw.topic[1]),
+      status: value.status?.toString() ?? 'active',
+      yesVotes: str(value.yes_votes),
+      noVotes: str(value.no_votes),
+      quorumRequired: str(value.quorum_required),
+      snapshotLedger: num(value.ledger ?? raw.ledger),
+    };
+  },
 
-  vault_created: (raw) => ({
-    ...base(raw), kind: 'vault_created',
-    streamId: num(raw.value?.stream_id ?? raw.topic[1]),
-    creator: raw.value?.creator ?? '',
-    recipient: raw.value?.recipient ?? '',
-    amount: str(raw.value?.amount),
-    hasMetadata: bool(raw.value?.has_metadata),
-  }),
+  vault_created: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'vault_created',
+      streamId: num(value.stream_id ?? raw.topic[1]),
+      creator: value.creator ?? '',
+      recipient: value.recipient ?? '',
+      amount: str(value.amount),
+      hasMetadata: bool(value.has_metadata),
+    };
+  },
 
-  vault_claimed: (raw) => ({
-    ...base(raw), kind: 'vault_claimed',
-    streamId: num(raw.value?.stream_id ?? raw.topic[1]),
-    recipient: raw.value?.recipient ?? '',
-    amount: str(raw.value?.amount),
-  }),
+  vault_claimed: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'vault_claimed',
+      streamId: num(value.stream_id ?? raw.topic[1]),
+      recipient: value.recipient ?? '',
+      amount: str(value.amount),
+    };
+  },
 
-  vault_cancelled: (raw) => ({
-    ...base(raw), kind: 'vault_cancelled',
-    streamId: num(raw.value?.stream_id ?? raw.topic[1]),
-    canceller: raw.value?.canceller ?? '',
-    remainingAmount: str(raw.value?.remaining_amount),
-  }),
+  vault_cancelled: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'vault_cancelled',
+      streamId: num(value.stream_id ?? raw.topic[1]),
+      canceller: value.canceller ?? '',
+      remainingAmount: str(value.remaining_amount),
+    };
+  },
 
-  vault_metadata_updated: (raw) => ({
-    ...base(raw), kind: 'vault_metadata_updated',
-    streamId: num(raw.value?.stream_id ?? raw.topic[1]),
-    updater: raw.value?.updater ?? '',
-    hasMetadata: bool(raw.value?.has_metadata),
-  }),
+  vault_metadata_updated: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'vault_metadata_updated',
+      streamId: num(value.stream_id ?? raw.topic[1]),
+      updater: value.updater ?? '',
+      hasMetadata: bool(value.has_metadata),
+    };
+  },
 
-  campaign_created: (raw) => ({
-    ...base(raw), kind: 'campaign_created',
-    campaignId: num(raw.value?.campaign_id),
-    tokenId: raw.value?.token_id ?? raw.topic[1] ?? '',
-    creator: raw.value?.creator ?? '',
-    campaignType: raw.value?.campaign_type ?? 'BUYBACK',
-    targetAmount: str(raw.value?.target_amount),
-    startTime: dateFromSec(raw.value?.start_time),
-    endTime: raw.value?.end_time ? dateFromSec(raw.value.end_time) : undefined,
-    metadata: raw.value?.metadata,
-  }),
+  campaign_created: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'campaign_created',
+      campaignId: num(value.campaign_id),
+      tokenId: value.token_id ?? raw.topic[1] ?? '',
+      creator: value.creator ?? '',
+      campaignType: value.campaign_type ?? 'BUYBACK',
+      targetAmount: str(value.target_amount),
+      startTime: dateFromSec(value.start_time),
+      endTime: value.end_time ? dateFromSec(value.end_time) : undefined,
+      metadata: value.metadata as string | undefined,
+    };
+  },
 
-  campaign_executed: (raw) => ({
-    ...base(raw), kind: 'campaign_executed',
-    campaignId: num(raw.value?.campaign_id),
-    executor: raw.value?.executor ?? '',
-    amount: str(raw.value?.amount),
-    recipient: raw.value?.recipient,
-  }),
+  campaign_executed: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'campaign_executed',
+      campaignId: num(value.campaign_id),
+      executor: value.executor ?? '',
+      amount: str(value.amount),
+      recipient: value.recipient as string | undefined,
+    };
+  },
 
-  campaign_status_changed: (raw) => ({
-    ...base(raw), kind: 'campaign_status_changed',
-    campaignId: num(raw.value?.campaign_id),
-    status: raw.value?.status ?? '',
-  }),
+  campaign_status_changed: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'campaign_status_changed',
+      campaignId: num(value.campaign_id),
+      status: value.status ?? '',
+    };
+  },
 
-  token_created: (raw) => ({
-    ...base(raw), kind: 'token_created',
-    tokenAddress: raw.topic[1] ?? '',
-    creator: raw.value?.creator ?? '',
-    name: raw.value?.name ?? '',
-    symbol: raw.value?.symbol ?? '',
-    decimals: num(raw.value?.decimals ?? 7),
-    initialSupply: str(raw.value?.initial_supply),
-  }),
+  token_created: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'token_created',
+      tokenAddress: raw.topic[1] ?? '',
+      creator: value.creator ?? '',
+      name: value.name ?? '',
+      symbol: value.symbol ?? '',
+      decimals: num(value.decimals ?? 7),
+      initialSupply: str(value.initial_supply),
+    };
+  },
 
-  token_burned: (raw) => ({
-    ...base(raw), kind: 'token_burned',
-    tokenAddress: raw.topic[1] ?? '',
-    from: raw.value?.from ?? '',
-    amount: str(raw.value?.amount),
-    burner: raw.value?.burner ?? raw.value?.from ?? '',
-  }),
+  token_burned: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'token_burned',
+      tokenAddress: raw.topic[1] ?? '',
+      from: value.from ?? '',
+      amount: str(value.amount),
+      burner: value.burner ?? value.from ?? '',
+    };
+  },
 
-  token_admin_burned: (raw) => ({
-    ...base(raw), kind: 'token_admin_burned',
-    tokenAddress: raw.topic[1] ?? '',
-    from: raw.value?.from ?? '',
-    amount: str(raw.value?.amount),
-    admin: raw.value?.admin ?? '',
-  }),
+  token_admin_burned: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'token_admin_burned',
+      tokenAddress: raw.topic[1] ?? '',
+      from: value.from ?? '',
+      amount: str(value.amount),
+      admin: value.admin ?? '',
+    };
+  },
 
-  token_metadata_updated: (raw) => ({
-    ...base(raw), kind: 'token_metadata_updated',
-    tokenAddress: raw.topic[1] ?? '',
-    metadataUri: raw.value?.metadata_uri ?? '',
-    updatedBy: raw.value?.updated_by ?? '',
-  }),
+  token_metadata_updated: (raw) => {
+    const value = asEventValue(raw.value);
+    return {
+      ...base(raw), kind: 'token_metadata_updated',
+      tokenAddress: raw.topic[1] ?? '',
+      metadataUri: value.metadata_uri ?? '',
+      updatedBy: value.updated_by ?? '',
+    };
+  },
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────

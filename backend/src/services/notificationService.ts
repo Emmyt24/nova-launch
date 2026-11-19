@@ -18,6 +18,10 @@
  *   2. Else if NOTIFICATION_SMS_API_URL is set → use generic HTTP adapter (legacy)
  *   3. Else → log warning and return unconfigured error
  *
+ * Each SMS provider re-validates its required configuration at send time and
+ * returns a failed AttemptResult naming the missing variable (never its value)
+ * instead of proceeding with `undefined` credentials.
+ *
  * Delivery failures are retried with exponential backoff via WebhookRetryService.
  * PII (email address / phone number) is masked in all log output.
  * A per-recipient-per-event-type rate limiter prevents notification spam.
@@ -331,8 +335,20 @@ async function sendViaTwilio(
   to: string,
   body: string
 ): Promise<AttemptResult> {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID!;
-  const authToken = process.env.TWILIO_AUTH_TOKEN!;
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+  // Guard against missing configuration: never proceed with undefined
+  // credentials. The error names the missing variables but never their values.
+  if (!accountSid || !authToken) {
+    return {
+      success: false,
+      statusCode: null,
+      error:
+        "SMS channel is not configured: TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN missing",
+    };
+  }
+
   const from = process.env.TWILIO_PHONE_NUMBER ?? "";
 
   try {
@@ -375,7 +391,18 @@ async function sendViaSmsApi(
   to: string,
   message: string
 ): Promise<AttemptResult> {
-  const smsApiUrl = process.env.NOTIFICATION_SMS_API_URL!;
+  const smsApiUrl = process.env.NOTIFICATION_SMS_API_URL;
+
+  // Guard against missing configuration: never proceed with an undefined URL.
+  // The error names the missing variable but never its value.
+  if (!smsApiUrl) {
+    return {
+      success: false,
+      statusCode: null,
+      error: "SMS channel is not configured: NOTIFICATION_SMS_API_URL missing",
+    };
+  }
+
   const smsApiKey = process.env.NOTIFICATION_SMS_API_KEY ?? "";
 
   try {

@@ -243,26 +243,40 @@ export class CacheService<T> {
   }
 }
 
+/**
+ * Shape of a governance proposal as stored in the cache. The concrete
+ * proposal model is not owned by this module, so the payload is kept
+ * opaque (`unknown`) and narrowed by callers at the boundary.
+ */
+export type GovernanceProposal = unknown;
+
+/** A cached list of governance proposals. */
+export type GovernanceProposalList = GovernanceProposal[];
+
 export class GovernanceProposalCache {
-  private cache: CacheService<any>;
+  private cache: CacheService<GovernanceProposal | GovernanceProposalList>;
 
   constructor(ttl: number = 5 * 60 * 1000) {
     this.cache = new CacheService(ttl);
   }
 
-  getProposal(proposalId: string): any | null {
-    return this.cache.get(`proposal:${proposalId}`);
+  getProposal(proposalId: string): GovernanceProposal | null {
+    return this.cache.get(`proposal:${proposalId}`) ?? null;
   }
 
-  setProposal(proposalId: string, proposal: any): void {
+  setProposal(proposalId: string, proposal: GovernanceProposal): void {
     this.cache.set(`proposal:${proposalId}`, proposal);
   }
 
-  getProposalsList(filter: string = 'all'): any[] | null {
-    return this.cache.get(`proposals:list:${filter}`);
+  getProposalsList(filter: string = 'all'): GovernanceProposalList | null {
+    const list = this.cache.get(`proposals:list:${filter}`);
+    return Array.isArray(list) ? list : null;
   }
 
-  setProposalsList(proposals: any[], filter: string = 'all'): void {
+  setProposalsList(
+    proposals: GovernanceProposalList,
+    filter: string = 'all'
+  ): void {
     this.cache.set(`proposals:list:${filter}`, proposals);
   }
 

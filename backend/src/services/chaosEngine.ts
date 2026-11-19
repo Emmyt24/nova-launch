@@ -48,6 +48,19 @@ export interface ChaosResult {
   recoveryTime: number;
 }
 
+export interface ChaosEvent {
+  type: "create" | "execute";
+  campaignId: number;
+  timestamp: number;
+  executionId?: string;
+  amount?: bigint;
+  delayed?: boolean;
+  delayMs?: number;
+  duplicate?: boolean;
+  outage?: boolean;
+  retry?: number;
+}
+
 export class ChaosEngine {
   private seed: number;
   private random: () => number;
@@ -69,8 +82,8 @@ export class ChaosEngine {
     return this.random() < fault.probability;
   }
 
-  generateInterleavedEvents(scenario: ChaosScenario) {
-    const events: any[] = [];
+  generateInterleavedEvents(scenario: ChaosScenario): ChaosEvent[] {
+    const events: ChaosEvent[] = [];
 
     // Create campaigns
     for (let i = 1; i <= scenario.campaigns; i++) {
@@ -103,7 +116,7 @@ export class ChaosEngine {
     return events;
   }
 
-  injectIndexerLag(events: any[], lagMs: number) {
+  injectIndexerLag(events: ChaosEvent[], lagMs: number): ChaosEvent[] {
     const laggedEvents = [...events];
     const lagCount = Math.floor(events.length * 0.2);
 
@@ -119,7 +132,7 @@ export class ChaosEngine {
     return laggedEvents;
   }
 
-  injectDuplicateEvents(events: any[], duplicateRate: number) {
+  injectDuplicateEvents(events: ChaosEvent[], duplicateRate: number): ChaosEvent[] {
     const withDuplicates = [...events];
     const duplicateCount = Math.floor(events.length * duplicateRate);
 
@@ -131,7 +144,7 @@ export class ChaosEngine {
     return withDuplicates;
   }
 
-  injectBackendOutage(events: any[], outageDuration: number) {
+  injectBackendOutage(events: ChaosEvent[], outageDuration: number): ChaosEvent[] {
     const outageStart = Math.floor(this.random() * events.length * 0.5);
     const outageEnd = outageStart + Math.floor(events.length * 0.1);
 
@@ -141,7 +154,7 @@ export class ChaosEngine {
     }));
   }
 
-  injectRetryStorm(events: any[], retryRate: number) {
+  injectRetryStorm(events: ChaosEvent[], retryRate: number): ChaosEvent[] {
     const withRetries = [...events];
     const retryCount = Math.floor(events.length * retryRate);
 

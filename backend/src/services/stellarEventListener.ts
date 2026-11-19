@@ -76,8 +76,19 @@ const LAG_WINDOW_SIZE_MS = 60000;
 const globalLagWindow = new LagWindow(LAG_WINDOW_SIZE_MS);
 const eventKindLagWindows = new Map<string, LagWindow>();
 
+/** Query parameters accepted by Horizon's contract events endpoint. */
+export interface HorizonEventsQueryParams {
+  limit: number;
+  order: "asc" | "desc";
+  cursor?: string;
+}
+
+export interface HorizonEventsResponse {
+  data: { _embedded?: { records: StellarEvent[] } };
+}
+
 export interface HorizonTransport {
-  getEvents(url: string, params: any): Promise<{ data: { _embedded?: { records: StellarEvent[] } } }>;
+  getEvents(url: string, params: HorizonEventsQueryParams): Promise<HorizonEventsResponse>;
   /** Fetch the latest ledger sequence from Horizon. May return null on error. */
   getCurrentLedger?(url: string): Promise<number | null>;
 }
@@ -90,8 +101,8 @@ export interface HorizonTransport {
 const horizonClient = new OutboundHttpClient({ serviceName: "horizon" });
 
 export class DefaultHorizonTransport implements HorizonTransport {
-  async getEvents(url: string, params: any): Promise<any> {
-    return horizonClient.execute(() => axios.get(url, { params, timeout: 30000 }));
+  async getEvents(url: string, params: HorizonEventsQueryParams): Promise<HorizonEventsResponse> {
+    return horizonClient.execute(() => axios.get<HorizonEventsResponse["data"]>(url, { params, timeout: 30000 }));
   }
 
   async getCurrentLedger(horizonUrl: string): Promise<number | null> {
@@ -104,6 +115,26 @@ export class DefaultHorizonTransport implements HorizonTransport {
   }
 }
 
+/**
+ * Decoded payload carried in a Soroban contract event's `value` field.
+ * Fields are optional because the shape depends on the event topic; every
+ * access below is narrowed with optional chaining and `??`/`||` fallbacks,
+ * matching the previous (untyped) runtime behaviour exactly.
+ */
+export interface StellarEventValue {
+  from?: string;
+  amount?: string | number | bigint;
+  burner?: string;
+  admin?: string;
+  creator?: string;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  initial_supply?: string | number | bigint;
+  metadata_uri?: string;
+  updated_by?: string;
+}
+
 interface StellarEvent {
   type: string;
   ledger: number;
@@ -112,9 +143,30 @@ interface StellarEvent {
   id: string;
   paging_token: string;
   topic: string[];
-  value: any;
+  value: StellarEventValue;
   in_successful_contract_call: boolean;
   transaction_hash: string;
+}
+
+/**
+ * Payload shape handed to the webhook delivery service. The base fields are
+ * always present; per-event fields are populated depending on the event type.
+ */
+export interface WebhookEventData {
+  transactionHash: string;
+  ledger: number;
+  tokenAddress?: string;
+  from?: string;
+  amount?: string;
+  burner?: string;
+  admin?: string;
+  creator?: string;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  initialSupply?: string;
+  metadataUri?: string;
+  updatedBy?: string;
 }
 
 export class StellarEventListener {
@@ -322,7 +374,7 @@ export class StellarEventListener {
    */
   private async fetchAndProcessEvents(): Promise<void> {
     const url = `${HORIZON_URL}/contracts/${FACTORY_CONTRACT_ID}/events`;
-    const params: any = {
+    const params: HorizonEventsQueryParams = {
       limit: 100,
       order: "asc",
     };
@@ -449,7 +501,7 @@ export class StellarEventListener {
       if (webhookType) {
         const eventData = this.extractEventData(event, webhookType);
         if (eventData) {
-          await webhookDeliveryService.triggerEvent(webhookType, eventData, eventData.tokenAddress);
+          await webhookDeliveryService.triggerEvent(webhookType, eventData, eventData.tokenAddress ?? "");
         }
       }
 
@@ -490,8 +542,8 @@ export class StellarEventListener {
   private extractEventData(
     event: StellarEvent,
     eventType: WebhookEventType | null
-  ): any {
-    const baseData = {
+  ): WebhookEventData {
+    const baseData: WebhookEventData = {
       transactionHash: event.transaction_hash,
       ledger: event.ledger,
     };

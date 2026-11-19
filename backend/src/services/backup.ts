@@ -14,7 +14,7 @@
  *    flag so callers cannot trigger a restore accidentally.
  */
 
-import { execFile } from "child_process";
+import { execFile, ExecFileOptions } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import fs from "fs/promises";
@@ -24,6 +24,20 @@ const execFileAsync = promisify(execFile);
 
 /** Absolute path to the scripts directory. */
 const SCRIPTS_DIR = path.resolve(__dirname, "../../../scripts");
+
+/**
+ * Options accepted by `execFileAsync` when a value is piped to the child's
+ * stdin. `input` is supported by the promisified `execFile` implementation
+ * but is not part of the base `ExecFileOptions` type.
+ */
+interface ExecFileWithInputOptions extends ExecFileOptions {
+  input?: string;
+}
+
+/** Extracts a human-readable message from an unknown thrown value. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export interface BackupStatus {
   /** ISO-8601 timestamp of the most recent base backup, or null if none. */
@@ -128,10 +142,10 @@ export class BackupService {
         backupLabel,
         durationMs: Date.now() - start,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         success: false,
-        message: `Base backup failed: ${err.message ?? String(err)}`,
+        message: `Base backup failed: ${errorMessage(err)}`,
         durationMs: Date.now() - start,
       };
     }
@@ -202,14 +216,16 @@ export class BackupService {
     if (options.baseLabel) args.push("--base", options.baseLabel);
     if (!options.confirmed) args.push("--dry-run");
 
+    const execOptions: ExecFileWithInputOptions = {
+      env: { ...process.env },
+      timeout: 60 * 60 * 1000, // 1 hour max
+      // Pipe "yes\n" to stdin so the confirmation prompt is answered
+      // automatically when confirmed=true.
+      input: options.confirmed ? "yes\n" : undefined,
+    };
+
     try {
-      await execFileAsync("bash", [script, ...args], {
-        env: { ...process.env },
-        timeout: 60 * 60 * 1000, // 1 hour max
-        // Pipe "yes\n" to stdin so the confirmation prompt is answered
-        // automatically when confirmed=true.
-        input: options.confirmed ? "yes\n" : undefined,
-      } as any);
+      await execFileAsync("bash", [script, ...args], execOptions);
 
       return {
         success: true,
@@ -219,10 +235,10 @@ export class BackupService {
         dryRun: !options.confirmed,
         durationMs: Date.now() - start,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         success: false,
-        message: `Restore failed: ${err.message ?? String(err)}`,
+        message: `Restore failed: ${errorMessage(err)}`,
         dryRun: !options.confirmed,
         durationMs: Date.now() - start,
       };
@@ -276,14 +292,14 @@ export class BackupService {
         path: filePath,
         durationMs: Date.now() - start,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         success: false,
         archived: 0,
         tier,
         path: filePath,
         durationMs: Date.now() - start,
-        error: err.message ?? String(err),
+        error: errorMessage(err),
       };
     }
   }

@@ -12,6 +12,7 @@ import { Database } from "../config/database";
 import { authenticateAdmin } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { CursorPagination } from "../lib/pagination";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -96,7 +97,9 @@ router.get(
       setCache("overview", overview);
       return res.json(successResponse(overview));
     } catch (err) {
-      console.error("[analytics] overview error:", err);
+      logger.error("Analytics overview error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return res.status(500).json(
         errorResponse({ code: "ANALYTICS_ERROR", message: "Failed to fetch overview" })
       );
@@ -153,7 +156,9 @@ router.get(
       setCache("tokens", data);
       return res.json(successResponse(data));
     } catch (err) {
-      console.error("[analytics] tokens error:", err);
+      logger.error("Analytics tokens error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return res.status(500).json(
         errorResponse({ code: "ANALYTICS_ERROR", message: "Failed to fetch token analytics" })
       );
@@ -203,7 +208,9 @@ router.get(
       setCache("users", data);
       return res.json(successResponse(data));
     } catch (err) {
-      console.error("[analytics] users error:", err);
+      logger.error("Analytics users error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return res.status(500).json(
         errorResponse({ code: "ANALYTICS_ERROR", message: "Failed to fetch user analytics" })
       );
@@ -259,7 +266,9 @@ router.get(
           errorResponse({ code: "INVALID_PARAMETERS", message: "Invalid pagination cursor" })
         );
       }
-      console.error("[analytics] tokens/list error:", err);
+      logger.error("Analytics tokens/list error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return res.status(500).json(
         errorResponse({ code: "ANALYTICS_ERROR", message: "Failed to fetch token list" })
       );
@@ -315,7 +324,9 @@ router.get(
           errorResponse({ code: "INVALID_PARAMETERS", message: "Invalid pagination cursor" })
         );
       }
-      console.error("[analytics] users/list error:", err);
+      logger.error("Analytics users/list error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return res.status(500).json(
         errorResponse({ code: "ANALYTICS_ERROR", message: "Failed to fetch user list" })
       );

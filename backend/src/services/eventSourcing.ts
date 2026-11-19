@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 export interface DomainEvent {
   id: string;
   aggregateId: string;
@@ -338,8 +340,17 @@ export class EventSourcingService {
     return events.length + 1;
   }
 
+  /**
+   * Generates a collision-resistant event ID.
+   *
+   * The format is `${Date.now()}-<suffix>`, where the suffix is derived from
+   * `crypto.randomUUID()` (UUID v4, cryptographically strong randomness).
+   * This replaces the previous `Math.random().toString(36).substr(2, 9)`
+   * approach, which used a deprecated API and was not collision-resistant.
+   */
   private generateEventId(): string {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const suffix = randomUUID().replace(/-/g, '').slice(0, 9);
+    return `${Date.now()}-${suffix}`;
   }
 
   clearAuditTrail(): void {

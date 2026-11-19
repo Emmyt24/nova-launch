@@ -132,7 +132,22 @@ router.post(
         );
       }
 
-      const payload = JSON.parse(deadLetter.payload);
+      // Guard the parse: a corrupt or user-supplied payload must not throw
+      // an unhandled SyntaxError. The raw payload is never echoed back.
+      let payload: any;
+      try {
+        payload = JSON.parse(deadLetter.payload);
+      } catch {
+        console.error(
+          `Dead-letter entry ${id} has a malformed JSON payload; refusing to retry`
+        );
+        return res.status(400).json(
+          errorResponse({
+            code: "INVALID_PAYLOAD",
+            message: "Dead-letter payload is not valid JSON",
+          }, req.correlationId)
+        );
+      }
 
       // Re-deliver via the standard delivery path. Each call to
       // deliverWebhook starts its own retry loop at attempt 1, so this is
@@ -221,7 +236,23 @@ router.post(
           );
         }
 
-        const payload = JSON.parse(requeued.payload);
+        // Guard the parse: a corrupt or user-supplied payload must not throw
+        // an unhandled SyntaxError. The raw payload is never echoed back.
+        let payload: any;
+        try {
+          payload = JSON.parse(requeued.payload);
+        } catch {
+          console.error(
+            `Dead-letter entry ${id} has a malformed JSON payload; refusing to requeue`
+          );
+          return res.status(400).json(
+            errorResponse({
+              code: "INVALID_PAYLOAD",
+              message: "Dead-letter payload is not valid JSON",
+            }, req.correlationId)
+          );
+        }
+
         const deliveryResult = await webhookDeliveryService.deliverWebhook(
           subscription,
           requeued.event,

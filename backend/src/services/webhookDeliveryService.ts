@@ -18,6 +18,7 @@ import {
 import { CircuitBreaker } from "../lib/circuitBreaker";
 import { WorkerPool } from "../lib/WorkerPool";
 import { getRequestId } from "../lib/async-context";
+import logger from "../lib/logger";
 import {
   createRedisClient,
   incrementSlidingWindow,
@@ -138,9 +139,12 @@ export class WebhookDeliveryService {
 
     const cid = correlationId || `whk_${Date.now().toString(36)}`;
     const requestId = getRequestId();
-    console.log(
-      JSON.stringify({ event: 'webhook.trigger', correlationId: cid, ...(requestId && { requestId }), webhookEvent: event, subscriptionCount: subscriptions.length })
-    );
+    logger.info('webhook.trigger', {
+      correlationId: cid,
+      ...(requestId && { requestId }),
+      webhookEvent: event,
+      subscriptionCount: subscriptions.length,
+    });
 
     // Deliver through the bounded worker pool. Concurrency is capped by
     // WEBHOOK_WORKER_CONCURRENCY; once every worker slot is busy, additional
@@ -287,9 +291,11 @@ export class WebhookDeliveryService {
     if (!(await this.isWithinTenantRateLimit(tenantId))) {
       await this.delay(TENANT_RATE_LIMIT_WINDOW_MS / TENANT_RATE_LIMIT_MAX);
       if (!(await this.isWithinTenantRateLimit(tenantId))) {
-        console.warn(
-          JSON.stringify({ event: 'webhook.rate_limited', correlationId: cid, subscriptionId: subscription.id, tenantId })
-        );
+        logger.warn('webhook.rate_limited', {
+          correlationId: cid,
+          subscriptionId: subscription.id,
+          tenantId,
+        });
         return { success: false, statusCode: null, attempts: 0, error: "Rate limited" };
       }
     }
@@ -300,18 +306,15 @@ export class WebhookDeliveryService {
       maxBytes: this.maxPayloadBytes,
     });
     if (limited.truncated) {
-      console.warn(
-        JSON.stringify({
-          event: 'webhook.payload_truncated',
-          correlationId: cid,
-          subscriptionId: subscription.id,
-          webhookEvent: event,
-          originalSizeBytes: limited.originalSizeBytes,
-          finalSizeBytes: limited.finalSizeBytes,
-          maxSizeBytes: limited.maxSizeBytes,
-          droppedFields: limited.droppedFields,
-        })
-      );
+      logger.warn('webhook.payload_truncated', {
+        correlationId: cid,
+        subscriptionId: subscription.id,
+        webhookEvent: event,
+        originalSizeBytes: limited.originalSizeBytes,
+        finalSizeBytes: limited.finalSizeBytes,
+        maxSizeBytes: limited.maxSizeBytes,
+        droppedFields: limited.droppedFields,
+      });
     }
 
     const payload = webhookService.createPayload(
@@ -361,9 +364,14 @@ export class WebhookDeliveryService {
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         attempts = attempt;
         try {
-          console.log(
-            JSON.stringify({ event: 'webhook.attempt', correlationId: cid, url: subscription.url, attempt, maxRetries: MAX_RETRIES, compressed: useCompression && !compressionDisabled, ...(txHash && { txHash }) })
-          );
+          logger.info('webhook.attempt', {
+            correlationId: cid,
+            url: subscription.url,
+            attempt,
+            maxRetries: MAX_RETRIES,
+            compressed: useCompression && !compressionDisabled,
+            ...(txHash && { txHash }),
+          });
 
           const sendCompressed = useCompression && !compressionDisabled && compressedBody !== null;
           const requestBody = sendCompressed ? compressedBody : rawBody;
@@ -388,9 +396,12 @@ export class WebhookDeliveryService {
           success = true;
           lastError = null;
 
-          console.log(
-            JSON.stringify({ event: 'webhook.delivered', correlationId: cid, url: subscription.url, statusCode, ...(txHash && { txHash }) })
-          );
+          logger.info('webhook.delivered', {
+            correlationId: cid,
+            url: subscription.url,
+            statusCode,
+            ...(txHash && { txHash }),
+          });
 
           // Update last triggered timestamp
           await webhookService.updateLastTriggered(subscription.id);
@@ -401,9 +412,14 @@ export class WebhookDeliveryService {
           statusCode = axiosError.response?.status || null;
           lastError = axiosError.message;
 
-          console.error(
-            JSON.stringify({ event: 'webhook.failed', correlationId: cid, url: subscription.url, attempt, statusCode, error: lastError, ...(txHash && { txHash }) })
-          );
+          logger.error('webhook.failed', {
+            correlationId: cid,
+            url: subscription.url,
+            attempt,
+            statusCode,
+            error: lastError,
+            ...(txHash && { txHash }),
+          });
 
           // 415 Unsupported Media Type — consumer cannot accept encoded content;
           // disable compression and retry with the uncompressed body.
@@ -459,18 +475,27 @@ export class WebhookDeliveryService {
             attempts
           );
           IntegrationMetrics.recordWebhookDeadLetter(event);
-          console.warn(
-            JSON.stringify({ event: 'webhook.deadletter', correlationId: cid, deadLetterId, subscriptionId: subscription.id, attempts: MAX_RETRIES, ...(txHash && { txHash }) })
-          );
+          logger.warn('webhook.deadletter', {
+            correlationId: cid,
+            deadLetterId,
+            subscriptionId: subscription.id,
+            attempts: MAX_RETRIES,
+            ...(txHash && { txHash }),
+          });
         } catch (dlError) {
-          console.error(
-            JSON.stringify({ event: 'webhook.deadletter.error', correlationId: cid, subscriptionId: subscription.id, error: dlError })
-          );
+          logger.error('webhook.deadletter.error', {
+            correlationId: cid,
+            subscriptionId: subscription.id,
+            error: dlError instanceof Error ? dlError.message : String(dlError),
+          });
         }
       } else if (!success) {
-        console.warn(
-          JSON.stringify({ event: 'webhook.failed', correlationId: cid, subscriptionId: subscription.id, attempts, ...(txHash && { txHash }) })
-        );
+        logger.warn('webhook.failed', {
+          correlationId: cid,
+          subscriptionId: subscription.id,
+          attempts,
+          ...(txHash && { txHash }),
+        });
       }
 
       return { success, statusCode, attempts, error: lastError };
@@ -517,7 +542,10 @@ export class WebhookDeliveryService {
 
       return response.status >= 200 && response.status < 300;
     } catch (error) {
-      console.error("Test webhook failed:", error);
+      logger.error('webhook.test_failed', {
+        subscriptionId: subscription.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
   }

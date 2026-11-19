@@ -12,6 +12,7 @@ import { webhookRateLimiter, webhookUserRateLimiter } from "../middleware/rateLi
 import { verifyStoredWebhookSignature } from "../utils/crypto";
 import { sendError } from "../utils/response";
 import { ErrorCode } from "../lib/errors";
+import logger from "../lib/logger";
 import {
   CustomHeaderValidationError,
   maskCustomHeaders,
@@ -46,7 +47,9 @@ router.post(
       if (error instanceof CustomHeaderValidationError) {
         return res.status(400).json({ success: false, error: error.message });
       }
-      console.error("Error creating subscription:", error);
+      logger.error("Error creating subscription", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to create webhook subscription");
     }
   }
@@ -81,7 +84,10 @@ router.delete(
         message: "Webhook subscription deleted successfully. It can be restored within the retention window.",
       });
     } catch (error) {
-      console.error("Error deleting subscription:", error);
+      logger.error("Error deleting subscription", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to delete webhook subscription");
     }
   }
@@ -129,7 +135,10 @@ router.post(
         message: "Webhook subscription restored successfully",
       });
     } catch (error) {
-      console.error("Error restoring subscription:", error);
+      logger.error("Error restoring subscription", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json({
         success: false,
         error: "Failed to restore webhook subscription",
@@ -170,7 +179,9 @@ router.post(
         count: publicSubscriptions.length,
       });
     } catch (error) {
-      console.error("Error listing subscriptions:", error);
+      logger.error("Error listing subscriptions", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to list webhook subscriptions");
     }
   }
@@ -204,7 +215,10 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error fetching subscription:", error);
+      logger.error("Error fetching subscription", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch webhook subscription");
     }
   }
@@ -260,7 +274,10 @@ router.put(
       if (error instanceof CustomHeaderValidationError) {
         return res.status(400).json({ success: false, error: error.message });
       }
-      console.error("Error updating custom headers:", error);
+      logger.error("Error updating custom headers", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json({
         success: false,
         error: "Failed to update custom headers",
@@ -298,7 +315,10 @@ router.patch(
         message: `Subscription ${active ? "activated" : "deactivated"} successfully`,
       });
     } catch (error) {
-      console.error("Error toggling subscription:", error);
+      logger.error("Error toggling subscription", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to toggle webhook subscription");
     }
   }
@@ -324,7 +344,10 @@ router.get(
         count: logs.length,
       });
     } catch (error) {
-      console.error("Error fetching delivery logs:", error);
+      logger.error("Error fetching delivery logs", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch delivery logs");
     }
   }
@@ -384,7 +407,10 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error verifying delivery signature:", error);
+      logger.error("Error verifying delivery signature", {
+        deliveryId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to verify delivery signature");
     }
   }
@@ -416,7 +442,10 @@ router.post(
           : "Test webhook delivery failed",
       });
     } catch (error) {
-      console.error("Error testing webhook:", error);
+      logger.error("Error testing webhook", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to test webhook");
     }
   }
@@ -447,7 +476,10 @@ router.get(
         count: deadLetters.length,
       });
     } catch (error) {
-      console.error("Error fetching dead letters:", error);
+      logger.error("Error fetching dead letters", {
+        subscriptionId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to fetch dead-letter deliveries");
     }
   }
@@ -496,7 +528,10 @@ router.post(
         message: "Dead-letter delivery retried successfully",
       });
     } catch (error) {
-      console.error("Error retrying dead letter:", error);
+      logger.error("Error retrying dead letter", {
+        deadLetterId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to retry dead-letter delivery");
     }
   }
@@ -524,7 +559,10 @@ router.post(
         message: "Dead-letter delivery archived",
       });
     } catch (error) {
-      console.error("Error skipping dead letter:", error);
+      logger.error("Error skipping dead letter", {
+        deadLetterId: req.params.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, "Failed to archive dead-letter delivery");
     }
   }

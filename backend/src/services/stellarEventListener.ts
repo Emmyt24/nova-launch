@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { hostname } from "os";
 import { Gauge, register } from "prom-client";
 import { validateEnv } from "../config/env";
+import { logger } from "../lib/logger";
 import { LeaderElection, LEADER_LOCK_TTL_MS, LEADER_RENEW_INTERVAL_MS } from "../lib/leaderElection";
 import { getRedis } from "../lib/redis";
 import { WebhookEventType } from "../types/webhook";
@@ -57,10 +58,10 @@ const _rawMaxCatchup = parseInt(process.env.MAX_CATCHUP_LEDGERS ?? "1000", 10);
 export const MAX_CATCHUP_LEDGERS: number = (Number.isFinite(_rawMaxCatchup) && _rawMaxCatchup > 0)
   ? _rawMaxCatchup
   : (() => {
-      console.warn(
-        `[StellarEventListener] MAX_CATCHUP_LEDGERS env var is malformed ` +
-        `("${process.env.MAX_CATCHUP_LEDGERS}") — falling back to default of 1000`
-      );
+      logger.warn("MAX_CATCHUP_LEDGERS env var is malformed — falling back to default", {
+        rawValue: process.env.MAX_CATCHUP_LEDGERS,
+        fallback: 1000,
+      });
       return 1000;
     })();
 
@@ -181,7 +182,7 @@ export class StellarEventListener {
    */
   async start(): Promise<void> {
     if (this.electionStarted) {
-      console.warn("Event listener election already started");
+      logger.warn("Event listener election already started");
       return;
     }
 
@@ -201,7 +202,7 @@ export class StellarEventListener {
     }
 
     this.electionStarted = true;
-    console.log("[StellarEventListener] starting leader election heartbeat...");
+    logger.info("Starting leader election heartbeat");
     await this.leaderElection.start();
   }
 
@@ -220,7 +221,10 @@ export class StellarEventListener {
 
     // Load durable cursor before starting — resumes from last processed event
     this.lastCursor = await this.cursorStore.load();
-    console.log(`[StellarEventListener] became leader (fencingToken=${fencingToken}), resuming from cursor: ${this.lastCursor ?? "origin"}`);
+    logger.info("Became leader, resuming from cursor", {
+      fencingToken,
+      cursor: this.lastCursor ?? "origin",
+    });
 
     // If cursor is too far behind the live ledger, drop it and do a full catchup
     await this.applyCatchupPolicyIfNeeded();
@@ -238,7 +242,7 @@ export class StellarEventListener {
    */
   private onLostLeadership(reason: string): void {
     if (this.isRunning) {
-      console.warn(`[StellarEventListener] lost leadership (${reason}) — halting ingestion`);
+      logger.warn("Lost leadership — halting ingestion", { reason });
     }
     this.isRunning = false;
     this.fencingToken = null;
@@ -255,11 +259,13 @@ export class StellarEventListener {
       try {
         await this.cursorStore.save(this.lastCursor);
       } catch (err) {
-        console.error("[StellarEventListener] failed to persist cursor on stop:", err);
+        logger.error("Failed to persist cursor on stop", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     await this.leaderElection.stop();
-    console.log("Stopping Stellar event listener...");
+    logger.info("Stopping Stellar event listener");
   }
 
   /**
@@ -280,32 +286,30 @@ export class StellarEventListener {
       } catch (error) {
         const isTransient = isRetryableError(error);
 
-        console.warn(
-          `[StellarEventListener] poll error (transient=${isTransient}):`,
-          error instanceof Error ? error.message : String(error),
-        );
+        logger.warn("Poll error", {
+          transient: isTransient,
+          error: error instanceof Error ? error.message : String(error),
+        });
 
         if (isTransient) {
           const { delayMs, attempt } = backoff.recordFailure();
 
           if (attempt > LISTENER_RECONNECT_CONFIG.maxRetries) {
-            console.error(
-              `[StellarEventListener] ${attempt} consecutive failures — max retries exhausted. Surfacing terminal error.`,
-            );
+            logger.error("Max retries exhausted — surfacing terminal error", { attempt });
             throw new Error(`Max retries exhausted after ${attempt} attempts`);
           }
 
           if (attempt > 5) {
-            console.error(
-              `[StellarEventListener] ${attempt} consecutive failures — continuing with extended backoff`,
-            );
+            logger.error("Consecutive failures — continuing with extended backoff", { attempt });
           }
 
           IntegrationMetrics.recordEventProcessed('reconnect', 'error');
           await sleep(delayMs);
         } else {
           // Non-transient error: log and resume normal cadence without backoff
-          console.error("[StellarEventListener] non-retryable error (will continue):", error);
+          logger.error("Non-retryable error (will continue)", {
+            error: error instanceof Error ? error.message : String(error),
+          });
           backoff.recordSuccess();
           await this.delay(POLL_INTERVAL_MS);
         }
@@ -335,7 +339,7 @@ export class StellarEventListener {
         return;
       }
 
-      console.log(`Processing ${events.length} new events`);
+      logger.info("Processing new events", { count: events.length });
 
       for (const event of events) {
         // Every cursor write is gated on the fencing token still being
@@ -344,9 +348,7 @@ export class StellarEventListener {
         // partition detection), the token check fails and we must not
         // advance the cursor with stale/duplicate progress.
         if (this.fencingToken === null || !(await this.leaderElection.validateFencingToken(this.fencingToken))) {
-          console.error(
-            "[StellarEventListener] fencing-token rejected — refusing stale cursor write, halting ingestion",
-          );
+          logger.error("Fencing-token rejected — refusing stale cursor write, halting ingestion");
           this.isRunning = false;
           this.fencingToken = null;
           return;
@@ -362,18 +364,20 @@ export class StellarEventListener {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         if (status === 429) {
-          console.warn("Rate limited by Horizon API (429)");
+          logger.warn("Rate limited by Horizon API", { status });
           throw error;
         } else if (status && status >= 500) {
-          console.warn(`Horizon API server error (${status})`);
+          logger.warn("Horizon API server error", { status });
           throw error;
         } else if (status && status >= 400 && status < 500) {
-          console.error(`Horizon API client error (${status}):`, error.message);
+          logger.error("Horizon API client error", { status, error: error.message });
           throw error;
         }
       }
-      
-      console.error("Error fetching events:", error);
+
+      logger.error("Error fetching events", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -452,7 +456,11 @@ export class StellarEventListener {
       IntegrationMetrics.recordIngestionLag(kind, event.ledger_close_time);
       IntegrationMetrics.recordEventProcessed(kind, 'success');
     } catch (error) {
-      console.error("Error processing event:", error);
+      logger.error("Error processing event", {
+        error: error instanceof Error ? error.message : String(error),
+        eventId: event.id,
+        ledger: event.ledger,
+      });
       const kind = kindForTopic(event.topic?.[0] ?? '') ?? 'unknown';
       IntegrationMetrics.recordEventProcessed(kind, 'error');
     }
@@ -726,19 +734,19 @@ export class StellarEventListener {
 
     // Log high lag events
     if (metrics.thresholdStatus === 'critical') {
-      console.error(
-        `[CRITICAL LAG] ${metrics.eventKind}: ` +
-        `${metrics.currentLag}ms ` +
-        `(window: avg=${Math.round(metrics.averageLagInWindow)}ms, ` +
-        `max=${Math.round(metrics.maxLagInWindow)}ms)`
-      );
+      logger.error("Critical projection lag", {
+        eventKind: metrics.eventKind,
+        currentLagMs: metrics.currentLag,
+        averageLagMs: Math.round(metrics.averageLagInWindow),
+        maxLagMs: Math.round(metrics.maxLagInWindow),
+      });
     } else if (metrics.thresholdStatus === 'warning') {
-      console.warn(
-        `[WARNING LAG] ${metrics.eventKind}: ` +
-        `${metrics.currentLag}ms ` +
-        `(window: avg=${Math.round(metrics.averageLagInWindow)}ms, ` +
-        `max=${Math.round(metrics.maxLagInWindow)}ms)`
-      );
+      logger.warn("Warning projection lag", {
+        eventKind: metrics.eventKind,
+        currentLagMs: metrics.currentLag,
+        averageLagMs: Math.round(metrics.averageLagInWindow),
+        maxLagMs: Math.round(metrics.maxLagInWindow),
+      });
     }
 
     // Generate alert if threshold exceeded (with debouncing to reduce noise)
@@ -754,7 +762,10 @@ export class StellarEventListener {
 
       if (now - lastAlertTime > this.alertDebounceMs) {
         this.lastAlertTime.set(alert.eventKind, now);
-        console.error(`[PROJECTION LAG ALERT] ${alert.message}`);
+        logger.error("Projection lag alert", {
+          eventKind: alert.eventKind,
+          message: alert.message,
+        });
         // Could emit to monitoring service here
       }
     }
@@ -836,13 +847,13 @@ export class StellarEventListener {
     if (lag == null) return;
 
     cursorLagGauge.set(lag);
-    console.log(`[StellarEventListener] cursor lag: ${lag} ledgers`);
+    logger.info("Cursor lag", { lag });
 
     if (lag > MAX_CATCHUP_LEDGERS) {
-      console.warn(
-        `[StellarEventListener] cursor lag ${lag} exceeds MAX_CATCHUP_LEDGERS ` +
-          `(${MAX_CATCHUP_LEDGERS}) — resetting to current tip for full catchup`
-      );
+      logger.warn("Cursor lag exceeds MAX_CATCHUP_LEDGERS — resetting to current tip for full catchup", {
+        lag,
+        maxCatchupLedgers: MAX_CATCHUP_LEDGERS,
+      });
       this.lastCursor = null;
     }
   }
@@ -906,7 +917,10 @@ export class StellarEventListener {
         processed++;
       } catch (err) {
         errors++;
-        console.error(`replayBatch: error on event ${event.id}:`, err);
+        logger.error("replayBatch: error on event", {
+          eventId: event.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     return { processed, errors };

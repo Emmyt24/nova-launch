@@ -23,6 +23,7 @@
 import { z } from 'zod';
 import { BackendEnv } from './env';
 import { outboundFetch } from '../lib/outboundHttpClient';
+import { logger } from '../lib/logger';
 
 // ---------------------------------------------------------------------------
 // Internal probe helpers
@@ -141,47 +142,27 @@ export function validateEnvVars(env: NodeJS.ProcessEnv = process.env): void {
     }
   }
 
-  // Emit warnings for optional missing vars
+  // Emit warnings for optional missing vars (names/descriptions only — no values)
   if (warnings.length > 0) {
-    const byService: Record<string, ValidationWarning[]> = {};
-    for (const w of warnings) {
-      (byService[w.service] ??= []).push(w);
-    }
-    console.warn('\n⚠️  Optional environment variables not set:');
-    for (const [service, vars] of Object.entries(byService)) {
-      console.warn(`  [${service}]`);
-      for (const v of vars) {
-        console.warn(`    • ${v.variable}: ${v.description}`);
-      }
-    }
-    console.warn('');
+    logger.warn('Optional environment variables not set', {
+      missing: warnings.map((w) => ({
+        service: w.service,
+        variable: w.variable,
+        description: w.description,
+      })),
+    });
   }
 
   // Fail fast if any required vars are missing or malformed
   if (failures.length > 0) {
-    const byService: Record<string, ValidationFailure[]> = {};
-    for (const f of failures) {
-      (byService[f.service] ??= []).push(f);
-    }
-
-    const lines: string[] = [
-      '',
-      '❌ Startup failed — missing or invalid environment variables:',
-      '',
-    ];
-    for (const [service, vars] of Object.entries(byService)) {
-      lines.push(`  [${service}]`);
-      for (const v of vars) {
-        lines.push(`    • ${v.variable}: ${v.message}`);
-      }
-    }
-    lines.push('');
-    lines.push(
-      'Set the missing variables in your .env file or deployment environment and restart.'
-    );
-    lines.push('');
-
-    console.error(lines.join('\n'));
+    logger.error('Startup failed — missing or invalid environment variables', {
+      failures: failures.map((f) => ({
+        service: f.service,
+        variable: f.variable,
+        message: f.message,
+      })),
+      hint: 'Set the missing variables in your .env file or deployment environment and restart.',
+    });
     process.exit(1);
   }
 }
@@ -370,7 +351,7 @@ export async function runStartupValidation(env: BackendEnv): Promise<void> {
   const allOk = networkOk && dbCheck.ok;
 
   if (allOk) {
-    console.log('✅ Startup validation passed. Network report:', JSON.stringify(networkReport));
+    logger.info('Startup validation passed', { networkReport });
     return;
   }
 
@@ -395,6 +376,8 @@ export async function runStartupValidation(env: BackendEnv): Promise<void> {
   if (isProduction) {
     throw new Error(message);
   } else {
-    console.warn(`⚠️  ${message}`);
+    logger.warn('Startup validation failed', {
+      failures: failures.map((c) => ({ name: c.name, error: c.error })),
+    });
   }
 }

@@ -5,6 +5,7 @@ import { authenticateAdmin, requireSuperAdmin } from "../../middleware/auth";
 import { auditLog } from "../../middleware/auditLog";
 import { successResponse, errorResponse } from "../../utils/response";
 import { getNotificationPreferences, upsertNotificationPreferences } from "../../services/notificationPreferences";
+import { logger } from "../../lib/logger";
 
 const router = Router();
 
@@ -89,7 +90,9 @@ router.get(
           })
         );
       }
-      console.error("Error fetching users:", error);
+      logger.error("Error fetching users", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -112,7 +115,9 @@ router.get(
       const preferences = await getNotificationPreferences(user.id);
       res.json(successResponse({ userId: user.id, preferences }));
     } catch (error) {
-      console.error("Error fetching notification preferences:", error);
+      logger.error("Error fetching notification preferences", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch notification preferences" }));
     }
   }
@@ -131,7 +136,9 @@ router.put(
       res.json(successResponse({ userId: user.id, preferences: saved }));
     } catch (error) {
       if (error instanceof z.ZodError) return res.status(400).json(errorResponse({ code: "VALIDATION_ERROR", message: "Invalid notification preferences", details: error.issues }));
-      console.error("Error updating notification preferences:", error);
+      logger.error("Error updating notification preferences", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to update notification preferences" }));
     }
   }
@@ -182,7 +189,9 @@ router.get(
         })
       );
     } catch (error) {
-      console.error("Error fetching user:", error);
+      logger.error("Error fetching user", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -225,7 +234,9 @@ router.patch(
           })
         );
       }
-      console.error("Error updating user:", error);
+      logger.error("Error updating user", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -273,7 +284,9 @@ router.get(
       );
       res.json(successResponse(exportData));
     } catch (error) {
-      console.error("Error exporting user data:", error);
+      logger.error("Error exporting user data", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",

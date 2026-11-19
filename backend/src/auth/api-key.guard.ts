@@ -43,6 +43,9 @@ export class ApiKeyGuard implements CanActivate {
     const raw = this.configService.get<string>("API_KEYS_CONFIG", "");
     if (!raw) return;
 
+    // Guard against malformed/corrupt API_KEYS_CONFIG: a JSON.parse failure must never
+    // bubble up as an unhandled error. On failure we log a sanitized warning (never the
+    // raw value, which may contain secrets) and fall back to legacy API_KEYS parsing.
     try {
       const config = JSON.parse(raw) as ApiKeyConfig[];
       config.forEach((cfg) => {
@@ -51,8 +54,10 @@ export class ApiKeyGuard implements CanActivate {
           this.apiKeys.set(digest, cfg);
         }
       });
-    } catch (e) {
-      this.logger.warn("Failed to parse API_KEYS_CONFIG, using legacy mode");
+    } catch {
+      this.logger.warn(
+        "Failed to parse API_KEYS_CONFIG (invalid JSON); falling back to legacy API_KEYS"
+      );
       const legacyRaw = this.configService.get<string>("API_KEYS", "");
       legacyRaw
         .split(",")

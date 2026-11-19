@@ -153,7 +153,20 @@ export class NonceService implements OnModuleDestroy {
         for (const key of keys) {
           const raw = await this.redis.get(key);
           if (!raw) continue;
-          const entry: NonceEntry = JSON.parse(raw);
+
+          // Guard against poisoned/corrupt serialized state: a malformed value
+          // must not throw and crash the cleanup task. Skip the key instead.
+          // The raw payload is intentionally not logged to avoid leaking data.
+          let entry: NonceEntry;
+          try {
+            entry = JSON.parse(raw) as NonceEntry;
+          } catch {
+            this.logger.warn(
+              `Skipping nonce key with invalid JSON during cleanup: ${key}`
+            );
+            continue;
+          }
+
           if (entry.used) {
             await this.redis.del(key);
             cleaned++;

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { randomUUID } from "node:crypto";
 import Redis from "ioredis";
 import { createRedisClient, getRedis } from "../lib/redis";
 import { sendError } from "../utils/response";
@@ -80,7 +81,10 @@ export { createRedisClient };
 /**
  * Sliding-window counter using Redis ZADD / ZREMRANGEBYSCORE.
  *
- * Each request is recorded as a member with score = timestamp (ms).
+ * Each request is recorded as a member with score = timestamp (ms). The member
+ * itself is suffixed with a UUID so that two requests arriving in the same
+ * millisecond never collide on the same sorted-set member (which would cause
+ * ZADD to overwrite instead of insert and undercount the window).
  * Old entries outside the window are pruned on every check.
  * The key expires automatically after the window to avoid stale data.
  *
@@ -98,7 +102,7 @@ export async function incrementSlidingWindow(
   // Atomic pipeline: prune old entries, add current, count, set TTL
   const pipeline = redis.pipeline();
   pipeline.zremrangebyscore(key, "-inf", windowStart);
-  pipeline.zadd(key, now, `${now}-${Math.random()}`);
+  pipeline.zadd(key, now, `${now}-${randomUUID()}`);
   pipeline.zcard(key);
   pipeline.expire(key, expireSeconds);
 

@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import axios from "axios";
 import { logger } from "../../lib/logger";
 
@@ -90,6 +90,90 @@ export interface VerifierConfig {
   };
 }
 
+/**
+ * Minimal shape of a Horizon contract event record, as returned by
+ * `GET /contracts/:id/events`. Fields are optional because Horizon payloads
+ * are untrusted input and may omit any of them.
+ */
+interface HorizonEventRecord {
+  topic?: unknown[];
+  value?: unknown;
+  transaction_hash?: string;
+  id?: string;
+  paging_token?: string;
+}
+
+/**
+ * Type guard narrowing an untrusted value to a `HorizonEventRecord`.
+ */
+function isHorizonEventRecord(value: unknown): value is HorizonEventRecord {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Narrow an untrusted value to a plain object so its fields can be read.
+ */
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Coerce an untrusted value to a string, falling back to `""`.
+ */
+function toStringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * Coerce an untrusted value to a bigint, falling back to `0n`.
+ */
+function toBigIntValue(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    try {
+      return BigInt(value);
+    } catch {
+      return BigInt(0);
+    }
+  }
+  return BigInt(0);
+}
+
+/**
+ * Coerce an untrusted value to a boolean, falling back to `false`.
+ */
+function toBooleanValue(value: unknown): boolean {
+  return typeof value === "boolean" ? value : false;
+}
+
+/**
+ * Coerce an untrusted value to an integer, falling back to `0`.
+ */
+function toIntValue(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+/**
+ * Extract the embedded event records from a Horizon response body.
+ */
+function extractEventRecords(data: unknown): unknown[] {
+  const embedded = asRecord(asRecord(data)._embedded);
+  const records = embedded.records;
+  return Array.isArray(records) ? records : [];
+}
+
 // ============================================================================
 // On-Chain Data Fetcher
 // ============================================================================
@@ -129,8 +213,9 @@ export class OnChainDataFetcher {
         }
       );
 
-      if (response.data?._embedded?.records?.length > 0) {
-        return this.parseFactoryStateFromEvents(response.data._embedded.records);
+      const records = extractEventRecords(response.data);
+      if (records.length > 0) {
+        return this.parseFactoryStateFromEvents(records);
       }
       return null;
     } catch (error) {
@@ -173,13 +258,14 @@ export class OnChainDataFetcher {
         }
       );
 
-      if (response.data?._embedded?.records) {
-        return response.data._embedded.records
+      const records = extractEventRecords(response.data);
+      if (records.length > 0) {
+        return records
+          .filter(isHorizonEventRecord)
           .filter(
-            (r: any) =>
-              r.topic?.[0] === "tok_burn" || r.topic?.[0] === "adm_burn"
+            (r) => r.topic?.[0] === "tok_burn" || r.topic?.[0] === "adm_burn"
           )
-          .map((r: any) => this.parseBurnEvent(r));
+          .map((r) => this.parseBurnEvent(r));
       }
       return [];
     } catch (error) {
@@ -218,13 +304,16 @@ export class OnChainDataFetcher {
           }
         );
 
-        const records: any[] = response.data?._embedded?.records ?? [];
+        const records = extractEventRecords(response.data);
         for (const record of records) {
           this.applyVaultEvent(states, record);
         }
 
         if (records.length < 200) break;
-        cursor = records[records.length - 1]?.paging_token;
+        const lastRecord = records[records.length - 1];
+        cursor = isHorizonEventRecord(lastRecord)
+          ? lastRecord.paging_token
+          : undefined;
         if (!cursor) break;
       }
       return states;
@@ -239,19 +328,22 @@ export class OnChainDataFetcher {
 
   private applyVaultEvent(
     states: Map<number, OnChainVaultState>,
-    event: any
+    event: unknown
   ): void {
-    const topic = event?.topic?.[0];
-    const value = event?.value ?? {};
-    const streamId = Number(value.stream_id ?? value.streamId ?? event?.topic?.[1]);
+    if (!isHorizonEventRecord(event)) return;
+    const topic = event.topic?.[0];
+    const value = asRecord(event.value);
+    const streamId = Number(
+      value.stream_id ?? value.streamId ?? event.topic?.[1]
+    );
     if (!Number.isInteger(streamId)) return;
 
     if (topic === "vlt_cr_v1") {
       states.set(streamId, {
         streamId,
-        creator: value.creator || "",
-        recipient: value.recipient || "",
-        amount: BigInt(value.amount || "0"),
+        creator: toStringValue(value.creator),
+        recipient: toStringValue(value.recipient),
+        amount: toBigIntValue(value.amount),
         status: "CREATED",
       });
       return;
@@ -263,25 +355,30 @@ export class OnChainDataFetcher {
     if (topic === "vlt_cn_v1") existing.status = "CANCELLED";
   }
 
-  private parseFactoryStateFromEvents(events: any[]): OnChainFactoryState {
+  private parseFactoryStateFromEvents(events: unknown[]): OnChainFactoryState {
     const latest = events[0];
+    const value = isHorizonEventRecord(latest)
+      ? asRecord(latest.value)
+      : {};
     return {
-      admin: latest?.value?.admin || "",
-      treasury: latest?.value?.treasury || "",
-      baseFee: BigInt(latest?.value?.base_fee || "0"),
-      metadataFee: BigInt(latest?.value?.metadata_fee || "0"),
-      paused: latest?.value?.paused || false,
-      tokenCount: parseInt(latest?.value?.token_count || "0", 10),
+      admin: toStringValue(value.admin),
+      treasury: toStringValue(value.treasury),
+      baseFee: toBigIntValue(value.base_fee),
+      metadataFee: toBigIntValue(value.metadata_fee),
+      paused: toBooleanValue(value.paused),
+      tokenCount: toIntValue(value.token_count),
     };
   }
 
-  private parseBurnEvent(event: any): OnChainBurnRecord {
-    const value = event.value || {};
+  private parseBurnEvent(event: HorizonEventRecord): OnChainBurnRecord {
+    const value = asRecord(event.value);
+    const topicToken = event.topic?.[1];
     return {
-      tokenAddress: value.token_address || event.topic?.[1] || "",
-      from: value.from || "",
-      amount: BigInt(value.amount || "0"),
-      burnedBy: value.burned_by || value.from || "",
+      tokenAddress:
+        toStringValue(value.token_address) || toStringValue(topicToken),
+      from: toStringValue(value.from),
+      amount: toBigIntValue(value.amount),
+      burnedBy: toStringValue(value.burned_by) || toStringValue(value.from),
       isAdminBurn: event.topic?.[0] === "adm_burn",
       txHash: event.transaction_hash || event.id || "",
     };
@@ -736,7 +833,9 @@ export class OnChainProjectionVerifier {
     }
 
     // Build update payload — only fields that differ
-    const updateData: Record<string, any> = { lastReconciledAt: now };
+    const updateData: Prisma.TokenUncheckedUpdateInput = {
+      lastReconciledAt: now,
+    };
 
     if (token.totalBurned !== onChainTotalBurned) {
       updateData.totalBurned = onChainTotalBurned;

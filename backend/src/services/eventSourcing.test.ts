@@ -142,6 +142,26 @@ describe('EventSourcingService', () => {
     }
   });
 
+  it('generates unique event IDs with the expected format across 10k generations (Issue #2359)', async () => {
+    const count = 10_000;
+    const ids: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const event = await service.publishEvent('agg-ids', 'Event', { index: i });
+      ids.push(event.id);
+    }
+
+    // All IDs must be unique
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(count);
+
+    // Each ID must follow the `${timestamp}-<suffix>` format
+    const idPattern = /^\d+-[0-9a-f]+$/;
+    for (const id of ids) {
+      expect(id).toMatch(idPattern);
+    }
+  });
+
   it('assigns unique, sequential versions under concurrent publishes for same aggregate (Issue #1977)', async () => {
     // Fire multiple concurrent publishEvent calls for the same aggregateId
     // Each event should get a unique, sequential version number

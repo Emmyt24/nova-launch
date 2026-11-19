@@ -27,9 +27,16 @@ interface StellarEvent {
   id: string;
   paging_token: string;
   topic: string[];
-  value: any;
+  value: unknown;
   in_successful_contract_call: boolean;
   transaction_hash: string;
+}
+
+interface HorizonEventsQueryParams {
+  limit: number;
+  order: string;
+  type: string;
+  cursor?: string;
 }
 
 interface ReplayOptions {
@@ -244,7 +251,7 @@ export class EventReplayService {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const params: any = {
+        const params: HorizonEventsQueryParams = {
           limit,
           order: 'asc',
           type: 'contract',
@@ -306,7 +313,7 @@ export class EventReplayService {
       topic === 'allowlist' ||
       topic === 'allowlist_v2'
     ) {
-      await this.tokenEventParser.parseEvent(event as any);
+      await this.tokenEventParser.parseEvent(event);
       return;
     }
 
@@ -317,31 +324,31 @@ export class EventReplayService {
       topic.includes('prop_exec') ||
       topic.includes('prop_snap')
     ) {
-      await this.governanceParser.parseEvent(event as any);
+      await this.governanceParser.parseEvent(event);
       return;
     }
 
     // Stream events
     if (topic === 'stream_create' || topic === 'stream_claim' || topic === 'stream_cancel') {
-      await this.streamEventParser.parseEvent(event as any);
+      await this.streamEventParser.parseEvent(event);
       return;
     }
 
     // Vault events
     if (topic === 'vault_created') {
-      await parseVaultCreatedEvent(this.prisma, event as any);
+      await parseVaultCreatedEvent(this.prisma, event);
       return;
     }
     if (topic === 'vault_claimed') {
-      await parseVaultClaimedEvent(this.prisma, event as any);
+      await parseVaultClaimedEvent(this.prisma, event);
       return;
     }
     if (topic === 'vault_cancelled') {
-      await parseVaultCancelledEvent(this.prisma, event as any);
+      await parseVaultCancelledEvent(this.prisma, event);
       return;
     }
     if (topic === 'vault_metadata_updated') {
-      await parseVaultMetadataUpdatedEvent(this.prisma, event as any);
+      await parseVaultMetadataUpdatedEvent(this.prisma, event);
       return;
     }
 

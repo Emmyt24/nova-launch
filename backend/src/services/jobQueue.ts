@@ -15,6 +15,7 @@
  *  - Errors in handlers are caught and never propagate to callers.
  */
 
+import { randomUUID } from "node:crypto";
 import { Gauge, Counter, Histogram, register } from "../lib/metrics";
 import { getCorrelationId, runWithContext } from "../lib/async-context";
 import { logger } from "../lib/logger";
@@ -230,7 +231,9 @@ export class JobQueue {
     }
 
     const job: Job<T> = {
-      id: `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      // Crypto-based UUID suffix keeps IDs unique even under burst enqueue in
+      // the same millisecond (Math.random provided too little entropy).
+      id: `job_${randomUUID()}`,
       type,
       payload,
       priority: opts.priority ?? 0,

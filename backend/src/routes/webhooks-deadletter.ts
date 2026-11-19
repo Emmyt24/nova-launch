@@ -6,6 +6,7 @@ import webhookDeliveryService from "../services/webhookDeliveryService";
 import { authenticateAdmin, AuthRequest } from "../middleware/auth";
 import { auditLog } from "../middleware/auditLog";
 import { successResponse, errorResponse } from "../utils/response";
+import { logger } from "../lib/logger";
 
 /**
  * Admin-only API for inspecting, retrying, and discarding webhook
@@ -76,7 +77,10 @@ router.get(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error listing dead-letter entries:", error);
+      logger.error("Error listing dead-letter entries", {
+        error: error instanceof Error ? error.message : String(error),
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -179,7 +183,11 @@ router.post(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error retrying dead-letter entry:", error);
+      logger.error("Error retrying dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -291,7 +299,11 @@ router.post(
         throw error;
       }
     } catch (error) {
-      console.error("Error requeuing dead-letter entry:", error);
+      logger.error("Error requeuing dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",
@@ -342,7 +354,11 @@ router.delete(
         }, req.correlationId)
       );
     } catch (error) {
-      console.error("Error discarding dead-letter entry:", error);
+      logger.error("Error discarding dead-letter entry", {
+        error: error instanceof Error ? error.message : String(error),
+        deadLetterId: req.params.id,
+        correlationId: req.correlationId,
+      });
       res.status(500).json(
         errorResponse({
           code: "INTERNAL_SERVER_ERROR",

@@ -58,11 +58,53 @@ export interface RetryOutcome {
 // Defaults (overridable via env vars)
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse an env var as a positive integer, falling back to `fallback` when the
+ * value is missing, non-numeric, non-finite, or not a positive integer.
+ * A radix of 10 is used explicitly to avoid octal/hex surprises.
+ */
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Parse an env var as a finite number greater than 1, falling back to
+ * `fallback` when the value is missing, non-numeric, non-finite, or <= 1.
+ */
+function parseMultiplier(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 1 ? parsed : fallback;
+}
+
+const DEFAULT_MAX_ATTEMPTS = 5;
+const DEFAULT_BASE_DELAY_MS = 1000;
+const DEFAULT_BACKOFF_MULTIPLIER = 2;
+const DEFAULT_MAX_DELAY_MS = 30_000;
+
+const parsedMaxDelayMs = parsePositiveInt(
+  process.env.WEBHOOK_MAX_DELAY_MS,
+  DEFAULT_MAX_DELAY_MS
+);
+const parsedBaseDelayMs = parsePositiveInt(
+  process.env.WEBHOOK_BASE_DELAY_MS,
+  DEFAULT_BASE_DELAY_MS
+);
+
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
-  maxAttempts: parseInt(process.env.WEBHOOK_MAX_ATTEMPTS ?? "5"),
-  baseDelayMs: parseInt(process.env.WEBHOOK_BASE_DELAY_MS ?? "1000"),
-  backoffMultiplier: parseFloat(process.env.WEBHOOK_BACKOFF_MULTIPLIER ?? "2"),
-  maxDelayMs: parseInt(process.env.WEBHOOK_MAX_DELAY_MS ?? "30000"),
+  maxAttempts: parsePositiveInt(
+    process.env.WEBHOOK_MAX_ATTEMPTS,
+    DEFAULT_MAX_ATTEMPTS
+  ),
+  // Clamp so the base delay never exceeds the maximum delay cap.
+  baseDelayMs: Math.min(parsedBaseDelayMs, parsedMaxDelayMs),
+  backoffMultiplier: parseMultiplier(
+    process.env.WEBHOOK_BACKOFF_MULTIPLIER,
+    DEFAULT_BACKOFF_MULTIPLIER
+  ),
+  maxDelayMs: parsedMaxDelayMs,
   jitter: (process.env.WEBHOOK_JITTER ?? "true") !== "false",
   nonRetryableStatuses: [400, 401, 403, 404, 405, 410, 422],
 };

@@ -30,9 +30,41 @@ import tenantWebhookRateLimiter, {
 
 const gzipAsync = promisify(gzip);
 
-const TIMEOUT_MS = parseInt(process.env.WEBHOOK_TIMEOUT_MS || "5000");
-const MAX_RETRIES = parseInt(process.env.WEBHOOK_MAX_RETRIES || "3");
-const RETRY_DELAY_MS = parseInt(process.env.WEBHOOK_RETRY_DELAY_MS || "1000");
+/**
+ * Read a positive integer from an environment variable.
+ *
+ * Parses with an explicit radix of 10 and validates the result. If the raw
+ * value is missing, non-numeric, non-finite, or not strictly positive, the
+ * provided default is returned and a warning is logged. The warning names the
+ * variable but never echoes its raw value, so misconfigured secrets or
+ * unexpected input are not leaked into logs.
+ */
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      JSON.stringify({
+        event: "webhook.config.invalid",
+        variable: name,
+        fallback: defaultValue,
+        message: "Invalid numeric value; using default",
+      })
+    );
+    return defaultValue;
+  }
+  return parsed;
+}
+
+// Delivery tunables. Each falls back to its default (with a warning) when the
+// env var is missing or not a positive integer, so a typo cannot silently
+// disable timeouts or retries (e.g. by producing NaN).
+const TIMEOUT_MS = envInt("WEBHOOK_TIMEOUT_MS", 5000);
+const MAX_RETRIES = envInt("WEBHOOK_MAX_RETRIES", 3);
+const RETRY_DELAY_MS = envInt("WEBHOOK_RETRY_DELAY_MS", 1000);
 
 // Bounded concurrency for the delivery worker pool. Workers fan out up to
 // this many deliveries at once; everything beyond that waits in the pool's
@@ -59,13 +91,13 @@ export function parseWorkerConcurrency(
 }
 
 // Per-tenant delivery rate limit, enforced inside each pool worker (not as
-// HTTP middleware, since this code path is not a request handler).
-const TENANT_RATE_LIMIT_WINDOW_MS = parseInt(
-  process.env.WEBHOOK_TENANT_RATE_LIMIT_WINDOW_MS || "60000"
+// HTTP middleware, since this code path is not a request handler). Both values
+// fall back to their defaults (with a warning) when misconfigured.
+const TENANT_RATE_LIMIT_WINDOW_MS = envInt(
+  "WEBHOOK_TENANT_RATE_LIMIT_WINDOW_MS",
+  60000
 );
-const TENANT_RATE_LIMIT_MAX = parseInt(
-  process.env.WEBHOOK_TENANT_RATE_LIMIT_MAX || "60"
-);
+const TENANT_RATE_LIMIT_MAX = envInt("WEBHOOK_TENANT_RATE_LIMIT_MAX", 60);
 
 interface DeliveryTask {
   subscription: WebhookSubscription;
@@ -97,14 +129,18 @@ export class WebhookDeliveryService {
 
   constructor(rateLimiter: TenantWebhookRateLimiter = tenantWebhookRateLimiter) {
     this.rateLimiter = rateLimiter;
+    // Circuit-breaker thresholds fall back to their defaults (with a warning)
+    // when the env vars are missing or not positive integers.
     this.circuitBreaker = new CircuitBreaker({
-      failureThreshold: parseInt(process.env.WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD || "5"),
-      successThreshold: parseInt(process.env.WEBHOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD || "2"),
-      timeoutMs: parseInt(process.env.WEBHOOK_CIRCUIT_BREAKER_TIMEOUT_MS || "60000"),
+      failureThreshold: envInt("WEBHOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
+      successThreshold: envInt("WEBHOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD", 2),
+      timeoutMs: envInt("WEBHOOK_CIRCUIT_BREAKER_TIMEOUT_MS", 60000),
     });
-    // Payloads larger than this threshold (bytes) are gzip-compressed on delivery.
-    this.compressionThresholdBytes = parseInt(
-      process.env.WEBHOOK_COMPRESSION_THRESHOLD_BYTES || "1024"
+    // Payloads larger than this threshold (bytes) are gzip-compressed on
+    // delivery. Falls back to 1024 (with a warning) when misconfigured.
+    this.compressionThresholdBytes = envInt(
+      "WEBHOOK_COMPRESSION_THRESHOLD_BYTES",
+      1024
     );
     // Payloads larger than this (bytes) are truncated before delivery.
     this.maxPayloadBytes = getMaxPayloadBytes();

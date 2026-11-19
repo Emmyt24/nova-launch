@@ -474,8 +474,17 @@ router.post(
         return sendError(res, 404, ErrorCode.NOT_FOUND, "Associated subscription not found");
       }
 
-      // Re-deliver the webhook
-      const payload = JSON.parse(deadLetter.payload);
+      // Re-deliver the webhook. The stored payload is user-influenced, so a
+      // malformed value must be handled here rather than surfacing as an
+      // unhandled SyntaxError (500). Never echo the raw payload back.
+      let payload: any;
+      try {
+        payload = JSON.parse(deadLetter.payload);
+      } catch {
+        console.error("Dead-letter payload could not be parsed as JSON");
+        return sendError(res, 400, ErrorCode.BAD_REQUEST, "Dead-letter payload is not valid JSON");
+      }
+
       const deliveryResult = await webhookDeliveryService.deliverWebhook(
         subscription,
         deadLetter.event,

@@ -12,6 +12,120 @@ import {
 } from "../services/webhookRetry";
 
 // ---------------------------------------------------------------------------
+// Environment parsing
+// ---------------------------------------------------------------------------
+
+describe("environment configuration parsing", () => {
+  const ENV_KEYS = [
+    "WEBHOOK_MAX_ATTEMPTS",
+    "WEBHOOK_BASE_DELAY_MS",
+    "WEBHOOK_MAX_DELAY_MS",
+    "WEBHOOK_BACKOFF_MULTIPLIER",
+  ] as const;
+
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    vi.resetModules();
+  });
+
+  const restoreEnv = () => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  };
+
+  /** Re-import the module so module-level defaults are re-evaluated. */
+  const loadConfig = async () => {
+    vi.resetModules();
+    const mod = await import("../services/webhookRetry");
+    return mod.DEFAULT_RETRY_CONFIG;
+  };
+
+  it("uses defaults when env vars are unset", async () => {
+    const cfg = await loadConfig();
+    expect(cfg.maxAttempts).toBe(3);
+    expect(cfg.baseDelayMs).toBe(1000);
+    expect(cfg.maxDelayMs).toBe(30_000);
+    expect(cfg.backoffMultiplier).toBe(2);
+    restoreEnv();
+  });
+
+  it("falls back to defaults for non-numeric values", async () => {
+    process.env.WEBHOOK_MAX_ATTEMPTS = "abc";
+    process.env.WEBHOOK_BASE_DELAY_MS = "abc";
+    process.env.WEBHOOK_MAX_DELAY_MS = "abc";
+    process.env.WEBHOOK_BACKOFF_MULTIPLIER = "abc";
+
+    const cfg = await loadConfig();
+    expect(cfg.maxAttempts).toBe(3);
+    expect(cfg.baseDelayMs).toBe(1000);
+    expect(cfg.maxDelayMs).toBe(30_000);
+    expect(cfg.backoffMultiplier).toBe(2);
+    restoreEnv();
+  });
+
+  it("falls back to defaults for zero values", async () => {
+    process.env.WEBHOOK_MAX_ATTEMPTS = "0";
+    process.env.WEBHOOK_BASE_DELAY_MS = "0";
+    process.env.WEBHOOK_MAX_DELAY_MS = "0";
+    process.env.WEBHOOK_BACKOFF_MULTIPLIER = "0";
+
+    const cfg = await loadConfig();
+    expect(cfg.maxAttempts).toBe(3);
+    expect(cfg.baseDelayMs).toBe(1000);
+    expect(cfg.maxDelayMs).toBe(30_000);
+    expect(cfg.backoffMultiplier).toBe(2);
+    restoreEnv();
+  });
+
+  it("falls back to defaults for negative values", async () => {
+    process.env.WEBHOOK_MAX_ATTEMPTS = "-5";
+    process.env.WEBHOOK_BASE_DELAY_MS = "-1000";
+    process.env.WEBHOOK_MAX_DELAY_MS = "-30000";
+    process.env.WEBHOOK_BACKOFF_MULTIPLIER = "-2";
+
+    const cfg = await loadConfig();
+    expect(cfg.maxAttempts).toBe(3);
+    expect(cfg.baseDelayMs).toBe(1000);
+    expect(cfg.maxDelayMs).toBe(30_000);
+    expect(cfg.backoffMultiplier).toBe(2);
+    restoreEnv();
+  });
+
+  it("accepts valid positive integer values", async () => {
+    process.env.WEBHOOK_MAX_ATTEMPTS = "5";
+    process.env.WEBHOOK_BASE_DELAY_MS = "500";
+    process.env.WEBHOOK_MAX_DELAY_MS = "10000";
+    process.env.WEBHOOK_BACKOFF_MULTIPLIER = "3";
+
+    const cfg = await loadConfig();
+    expect(cfg.maxAttempts).toBe(5);
+    expect(cfg.baseDelayMs).toBe(500);
+    expect(cfg.maxDelayMs).toBe(10_000);
+    expect(cfg.backoffMultiplier).toBe(3);
+    restoreEnv();
+  });
+
+  it("ensures baseDelayMs <= maxDelayMs when base exceeds max", async () => {
+    process.env.WEBHOOK_BASE_DELAY_MS = "60000";
+    process.env.WEBHOOK_MAX_DELAY_MS = "1000";
+
+    const cfg = await loadConfig();
+    expect(cfg.baseDelayMs).toBeLessThanOrEqual(cfg.maxDelayMs);
+    restoreEnv();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // computeDelay
 // ---------------------------------------------------------------------------
 

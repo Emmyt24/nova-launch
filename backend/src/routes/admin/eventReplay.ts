@@ -3,6 +3,7 @@ import { EventReplayService } from '../../services/eventReplayService';
 import { authenticateAdmin, requireSuperAdmin } from '../../middleware/auth';
 import type { AuthRequest } from '../../middleware/auth';
 import { Database } from '../../config/database';
+import { logger } from '../../lib/logger';
 
 const router = Router();
 const replayService = new EventReplayService();
@@ -94,7 +95,11 @@ function recordReplayAudit(
     afterState: outcome,
     ipAddress: req.ip || req.socket?.remoteAddress || 'unknown',
     userAgent: req.headers['user-agent'] || 'unknown',
-  }).catch((err) => console.error('[EventReplay] Audit log error:', err));
+  }).catch((err) =>
+    logger.error('EventReplay audit log error', {
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
 }
 
 /**
@@ -152,9 +157,14 @@ router.post(
 
     const params = { startLedger, endLedger, dryRun, batchSize, maxRetries };
     rangeReplayInProgress = true;
-    console.warn(
-      `[EventReplay] Range replay ${startLedger}-${endLedger} (dryRun=${dryRun}) initiated by ${req.admin?.id}`,
-    );
+    logger.warn('EventReplay range replay initiated', {
+      startLedger,
+      endLedger,
+      dryRun,
+      batchSize,
+      maxRetries,
+      adminId: req.admin?.id,
+    });
 
     try {
       const result = await replayService.replay(params);
@@ -169,7 +179,7 @@ router.post(
       res.json({ ...result, dryRun });
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      console.error('[EventReplay] Range replay error:', error);
+      logger.error('EventReplay range replay error', { error, startLedger, endLedger });
       recordReplayAudit(req, params, { status: 'failed', error });
       res.status(500).json({ error });
     } finally {
@@ -230,7 +240,7 @@ router.post('/event-replay', authenticateAdmin, requireSuperAdmin, async (req: R
     res.json(result);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    console.error('[EventReplay] Route error:', error);
+    logger.error('EventReplay route error', { error });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Event replay failed', { reason: error });
   }
 });
@@ -257,7 +267,9 @@ router.post('/event-replay/clear-and-rebuild', authenticateAdmin, requireSuperAd
       });
     }
 
-    console.warn('[EventReplay] Clear and rebuild initiated by admin');
+    logger.warn('EventReplay clear and rebuild initiated', {
+      adminId: (req as AuthRequest).admin?.id,
+    });
 
     const result = await replayService.clearAndRebuild({
       startLedger: startLedger ? Number(startLedger) : undefined,
@@ -266,7 +278,7 @@ router.post('/event-replay/clear-and-rebuild', authenticateAdmin, requireSuperAd
     res.json(result);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    console.error('[EventReplay] Clear and rebuild error:', error);
+    logger.error('EventReplay clear and rebuild error', { error });
     sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Clear and rebuild failed', { reason: error });
   }
 });

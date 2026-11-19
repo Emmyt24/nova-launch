@@ -145,9 +145,18 @@ router.get("/search", async (req: TenantRequest & Request, res: Response) => {
       return sendError(res, 400, ErrorCode.BAD_REQUEST, "cursor pagination is only supported with sortBy=created");
     }
 
-    // Parse pagination
-    const page = parseInt(params.page);
-    const limit = Math.min(parseInt(params.limit), 50); // Max 50 per page
+    // Parse pagination defensively. The schema already restricts `page`/`limit`
+    // to digit-only strings, but we still pass an explicit radix and guard
+    // against non-finite results so a malformed value can never propagate
+    // `NaN` into `skip`/`take`. Out-of-range values are clamped rather than
+    // rejected: `page` is floored at 1 and `limit` is bounded to 1..50
+    // (defaulting to 1 and 20 respectively when parsing fails).
+    const parsedPage = parseInt(params.page, 10);
+    const parsedLimit = parseInt(params.limit, 10);
+    const page = Number.isFinite(parsedPage) ? Math.max(parsedPage, 1) : 1;
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 50) // Max 50 per page
+      : 20;
     const skip = (page - 1) * limit;
 
     // Base filters — always scoped to the requesting tenant.

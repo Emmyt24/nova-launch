@@ -13,6 +13,7 @@ import { z } from "zod";
 import { authenticateAdmin } from "../../middleware/auth";
 import { successResponse, errorResponse } from "../../utils/response";
 import { jobQueue } from "../../services/jobQueue";
+import { logger } from "../../lib/logger";
 
 const router = Router();
 
@@ -36,7 +37,9 @@ router.get("/metrics", authenticateAdmin, (_req, res) => {
   try {
     res.json(successResponse({ metrics: jobQueue.metrics() }));
   } catch (error) {
-    console.error("Error fetching job queue metrics:", error);
+    logger.error("Error fetching job queue metrics", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(errorResponse({ code: "INTERNAL_SERVER_ERROR", message: "Failed to fetch job queue metrics" }));
   }
 });
@@ -88,7 +91,9 @@ router.get("/failed", authenticateAdmin, (req, res) => {
         })
       );
     }
-    console.error("Error fetching failed jobs:", error);
+    logger.error("Error fetching failed jobs", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -118,7 +123,10 @@ router.post("/:id/retry", authenticateAdmin, (req, res) => {
 
     res.json(successResponse({ job }));
   } catch (error) {
-    console.error("Error retrying job:", error);
+    logger.error("Error retrying job", {
+      jobId: req.params.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",
@@ -148,7 +156,10 @@ router.delete("/:id", authenticateAdmin, (req, res) => {
 
     res.json(successResponse({ discarded: true, id }));
   } catch (error) {
-    console.error("Error discarding job:", error);
+    logger.error("Error discarding job", {
+      jobId: req.params.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({
         code: "INTERNAL_SERVER_ERROR",

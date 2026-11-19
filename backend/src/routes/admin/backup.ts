@@ -13,6 +13,7 @@ import { Router, Request, Response } from "express";
 import { authenticateAdmin } from "../../middleware/auth";
 import { backupService } from "../../services/backup";
 import { successResponse, errorResponse } from "../../utils/response";
+import { logger } from "../../lib/logger";
 
 const router = Router();
 
@@ -25,7 +26,9 @@ router.get("/status", authenticateAdmin, async (_req: Request, res: Response) =>
     const status = await backupService.getStatus();
     res.json(successResponse(status));
   } catch (error) {
-    console.error("Error fetching backup status:", error);
+    logger.error("Failed to fetch backup status", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({ code: "BACKUP_STATUS_ERROR", message: "Failed to fetch backup status" })
     );
@@ -41,7 +44,9 @@ router.get("/list", authenticateAdmin, async (_req: Request, res: Response) => {
     const backups = await backupService.listBaseBackups();
     res.json(successResponse({ backups, count: backups.length }));
   } catch (error) {
-    console.error("Error listing backups:", error);
+    logger.error("Failed to list backups", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({ code: "BACKUP_LIST_ERROR", message: "Failed to list backups" })
     );
@@ -65,7 +70,9 @@ router.post("/trigger", authenticateAdmin, async (_req: Request, res: Response) 
         : errorResponse({ code: "BACKUP_FAILED", message: result.message })
     );
   } catch (error) {
-    console.error("Error triggering backup:", error);
+    logger.error("Failed to trigger backup", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     res.status(500).json(
       errorResponse({ code: "BACKUP_TRIGGER_ERROR", message: "Failed to trigger backup" })
     );
@@ -112,7 +119,12 @@ router.post("/restore", authenticateAdmin, async (req: Request, res: Response) =
         : errorResponse({ code: "RESTORE_FAILED", message: result.message })
     );
   } catch (error) {
-    console.error("Error initiating restore:", error);
+    logger.error("Failed to initiate restore", {
+      error: error instanceof Error ? error.message : String(error),
+      targetTime,
+      baseLabel,
+      confirmed,
+    });
     res.status(500).json(
       errorResponse({ code: "RESTORE_ERROR", message: "Failed to initiate restore" })
     );

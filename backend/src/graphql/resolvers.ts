@@ -20,6 +20,7 @@
  */
 
 import { GraphQLError } from "graphql";
+import { ProposalType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { eventBus, EventBus } from "../services/eventBus";
@@ -99,14 +100,23 @@ export function bigintToString<T>(obj: T): T {
  * errors (bad `first` / `after`) are surfaced to the client as-is; only
  * database errors are sanitized through `handleDbError`.
  */
+/**
+ * Minimal structural view of a Prisma model delegate used by
+ * `resolveConnection`. Declared with `unknown`-typed query arguments so the
+ * concrete Prisma delegates (whose argument types are far richer) are
+ * assignable without an `as any` cast, while still type-checking the call
+ * sites below.
+ */
+interface ConnectionDelegate<T extends { id: string }> {
+  findMany: (q: unknown) => Promise<T[]>;
+  count: (q: unknown) => Promise<number>;
+}
+
 async function resolveConnection<T extends { id: string }>(
   resolver: string,
   args: ConnectionArgs,
   where: Record<string, unknown>,
-  delegate: {
-    findMany: (q: any) => Promise<T[]>;
-    count: (q: any) => Promise<number>;
-  }
+  delegate: ConnectionDelegate<T>
 ) {
   const { first, ...query } = connectionQueryArgs(args);
   try {
@@ -344,7 +354,7 @@ export const resolvers = {
         "tokensConnection",
         args,
         args.creator ? { creator: args.creator } : {},
-        prisma.token as any
+        prisma.token
       );
     },
 
@@ -407,7 +417,7 @@ export const resolvers = {
         "streamsConnection",
         args,
         where,
-        prisma.stream as any
+        prisma.stream
       );
     },
 
@@ -620,7 +630,7 @@ export const resolvers = {
         const ahead = await prisma.proposal.count({
           where: {
             status: "QUEUED",
-            proposalType: parent.proposalType as any,
+            proposalType: parent.proposalType as ProposalType,
             createdAt: { lt: new Date(parent.createdAt) },
           },
         });

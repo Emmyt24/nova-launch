@@ -5,6 +5,8 @@
  * Supports schema-stable event parsing with version detection.
  */
 
+import { logger } from '../lib/logger';
+
 // Event schema versions
 export const VAULT_EVENT_VERSIONS = {
   CREATED: 'vlt_cr_v1',
@@ -140,7 +142,9 @@ export function parseVaultCreatedEvent(
       timestamp,
     };
   } catch (error) {
-    console.error('Error parsing vault created event:', error);
+    logger.error('Error parsing vault created event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -174,7 +178,9 @@ export function parseVaultFundedEvent(
       timestamp,
     };
   } catch (error) {
-    console.error('Error parsing vault funded event:', error);
+    logger.error('Error parsing vault funded event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -208,7 +214,9 @@ export function parseVaultClaimedEvent(
       timestamp,
     };
   } catch (error) {
-    console.error('Error parsing vault claimed event:', error);
+    logger.error('Error parsing vault claimed event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -242,7 +250,9 @@ export function parseVaultCancelledEvent(
       timestamp,
     };
   } catch (error) {
-    console.error('Error parsing vault cancelled event:', error);
+    logger.error('Error parsing vault cancelled event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -276,7 +286,9 @@ export function parseVaultMetadataUpdatedEvent(
       timestamp,
     };
   } catch (error) {
-    console.error('Error parsing vault metadata updated event:', error);
+    logger.error('Error parsing vault metadata updated event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -307,7 +319,9 @@ export function parseVaultEvent(
         return null;
     }
   } catch (error) {
-    console.error('Error parsing vault event:', error);
+    logger.error('Error parsing vault event', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }

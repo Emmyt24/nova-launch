@@ -11,6 +11,44 @@ const router = Router();
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
+/**
+ * Parse a pagination limit value.
+ * Uses radix 10, falls back to `fallback` on NaN, clamps negatives to 0,
+ * and caps the result at `max`.
+ */
+export function parseLimit(
+  value: string | undefined,
+  fallback: number,
+  max: number
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(parsed, 0), max);
+}
+
+/**
+ * Parse a non-negative integer value (e.g. pagination offset).
+ * Uses radix 10, falls back to `fallback` on NaN, and clamps negatives to 0.
+ */
+export function parseNonNegativeInt(
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.max(parsed, 0);
+}
+
 // Validation schemas
 const tokenFilterSchema = z.object({
   flagged: z.enum(["true", "false"]).optional(),
@@ -56,11 +94,8 @@ router.get(
         );
       }
 
-      const limit = Math.min(
-        filters.limit ? parseInt(filters.limit) : DEFAULT_LIMIT,
-        MAX_LIMIT
-      );
-      const offset = filters.offset ? parseInt(filters.offset) : 0;
+      const limit = parseLimit(filters.limit, DEFAULT_LIMIT, MAX_LIMIT);
+      const offset = parseNonNegativeInt(filters.offset, 0);
       const total = tokens.length;
       tokens = tokens.slice(offset, offset + limit);
 

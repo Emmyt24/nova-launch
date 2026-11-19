@@ -618,9 +618,29 @@ export class JobQueue {
   }
 }
 
+/**
+ * Resolve the worker concurrency from `JOB_QUEUE_CONCURRENCY`.
+ *
+ * Values must be integers >= 1. Missing, non-numeric (e.g. "abc"), zero or
+ * negative values would stall the queue, so they fall back to 2 and emit a
+ * warning. The raw value is never logged to avoid leaking environment data.
+ */
+function resolveConcurrency(): number {
+  const raw = process.env.JOB_QUEUE_CONCURRENCY;
+  if (raw === undefined || raw.trim() === "") return 2;
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    logger.warn("job_queue_invalid_concurrency", {
+      variable: "JOB_QUEUE_CONCURRENCY",
+      fallback: 2,
+    });
+    return 2;
+  }
+  return parsed;
+}
+
 /** Singleton instance used by the application. */
-export const jobQueue = new JobQueue(
-  parseInt(process.env.JOB_QUEUE_CONCURRENCY || "2")
-);
+export const jobQueue = new JobQueue(resolveConcurrency());
 
 export default jobQueue;

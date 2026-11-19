@@ -33,6 +33,47 @@ describe("JobQueue", () => {
     q.stop();
   });
 
+  // ── Concurrency resolution ────────────────────────────────────────────────
+
+  describe("JOB_QUEUE_CONCURRENCY resolution", () => {
+    const originalEnv = process.env.JOB_QUEUE_CONCURRENCY;
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env.JOB_QUEUE_CONCURRENCY;
+      } else {
+        process.env.JOB_QUEUE_CONCURRENCY = originalEnv;
+      }
+      vi.resetModules();
+    });
+
+    /** Re-import jobQueue so the module-level concurrency is re-evaluated. */
+    async function resolveConcurrency(value: string): Promise<number> {
+      process.env.JOB_QUEUE_CONCURRENCY = value;
+      vi.resetModules();
+      const mod = await import("../services/jobQueue");
+      return mod.JOB_QUEUE_CONCURRENCY;
+    }
+
+    it("falls back to 2 when JOB_QUEUE_CONCURRENCY=0", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect(await resolveConcurrency("0")).toBe(2);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("falls back to 2 when JOB_QUEUE_CONCURRENCY=abc", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect(await resolveConcurrency("abc")).toBe(2);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("honours a valid JOB_QUEUE_CONCURRENCY value", async () => {
+      expect(await resolveConcurrency("4")).toBe(4);
+    });
+  });
+
   // ── Registration ──────────────────────────────────────────────────────────
 
   describe("register", () => {

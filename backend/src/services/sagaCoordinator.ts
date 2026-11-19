@@ -35,6 +35,7 @@
  */
 
 import { PrismaClient, SagaStatus, SagaCompensationStatus } from "@prisma/client";
+import { logger } from "../lib/logger";
 
 export interface SagaStepDefinition<TContext = Record<string, unknown>> {
   /** Human-readable step name, used in logs and for debugging persisted state. */
@@ -115,15 +116,19 @@ export class SagaCoordinator {
     for (const saga of interrupted) {
       const definition = this.definitions.get(saga.sagaType);
       if (!definition) {
-        console.error(
-          `[SagaCoordinator] cannot recover saga ${saga.id}: no definition registered for sagaType "${saga.sagaType}"`,
-        );
+        logger.error("[SagaCoordinator] cannot recover saga: no definition registered", {
+          sagaId: saga.id,
+          sagaType: saga.sagaType,
+        });
         continue;
       }
 
-      console.log(
-        `[SagaCoordinator] recovering saga ${saga.id} (type=${saga.sagaType}, status=${saga.status}, stepIndex=${saga.currentStepIndex})`,
-      );
+      logger.info("[SagaCoordinator] recovering saga", {
+        sagaId: saga.id,
+        sagaType: saga.sagaType,
+        status: saga.status,
+        currentStepIndex: saga.currentStepIndex,
+      });
 
       try {
         if (saga.status === SagaStatus.RUNNING) {
@@ -133,7 +138,11 @@ export class SagaCoordinator {
           await this.runCompensation(saga.id, definition, saga.context as any, resumeFrom);
         }
       } catch (err) {
-        console.error(`[SagaCoordinator] recovery failed for saga ${saga.id}:`, err);
+        logger.error("[SagaCoordinator] recovery failed for saga", {
+          sagaId: saga.id,
+          sagaType: saga.sagaType,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
   }
@@ -159,7 +168,13 @@ export class SagaCoordinator {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Saga step failed";
-        console.error(`[SagaCoordinator] saga ${sagaId} step "${step.name}" (index ${i}) failed: ${message}`);
+        logger.error("[SagaCoordinator] saga step failed", {
+          sagaId,
+          sagaType: definition.sagaType,
+          stepName: step.name,
+          stepIndex: i,
+          error: err instanceof Error ? err.message : String(err),
+        });
 
         await this.prisma.sagaExecution.update({
           where: { id: sagaId },
@@ -199,6 +214,12 @@ export class SagaCoordinator {
   ): Promise<void> {
     for (let i = failedIndex - 1; i >= 0; i--) {
       const step = definition.steps[i];
+      logger.info("[SagaCoordinator] compensating saga step", {
+        sagaId,
+        sagaType: definition.sagaType,
+        stepName: step.name,
+        stepIndex: i,
+      });
       await step.compensate(context);
 
       await this.prisma.sagaExecution.update({

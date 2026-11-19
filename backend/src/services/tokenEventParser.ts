@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { eventBus } from "./eventBus";
+import { logger } from "../lib/logger";
 
 export interface RawTokenEvent {
   type: "tok_reg" | "tok_burn" | "adm_burn" | "tok_meta" | "fee_chg";
@@ -86,9 +87,11 @@ export class TokenEventParser {
       where: { address: event.tokenAddress },
     });
     if (!token) {
-      console.warn(
-        `TokenEventParser: burn for unknown token ${event.tokenAddress}, skipping`
-      );
+      logger.warn("TokenEventParser: burn for unknown token, skipping", {
+        tokenAddress: event.tokenAddress,
+        transactionHash: event.transactionHash,
+        isAdminBurn,
+      });
       return;
     }
 
@@ -129,7 +132,12 @@ export class TokenEventParser {
         isAdminBurn,
       })
       .catch((err) =>
-        console.error("[TokenEventParser] event emission failed:", err)
+        logger.error("[TokenEventParser] event emission failed", {
+          event: "token.burned",
+          tokenAddress: event.tokenAddress,
+          transactionHash: event.transactionHash,
+          error: err instanceof Error ? err.message : String(err),
+        })
       );
   }
 
@@ -148,9 +156,12 @@ export class TokenEventParser {
     const previousValue = isV2 ? event.previousValue : undefined;
 
     if (newValue === undefined) {
-      console.warn(
-        `TokenEventParser: fee_chg for ${event.tokenAddress} missing new value, skipping`
-      );
+      logger.warn("TokenEventParser: fee_chg missing new value, skipping", {
+        tokenAddress: event.tokenAddress,
+        transactionHash: event.transactionHash,
+        feeType: event.feeType ?? "unknown",
+        version: isV2 ? 2 : 1,
+      });
       return;
     }
 
@@ -165,7 +176,13 @@ export class TokenEventParser {
         newValue,
       })
       .catch((err) =>
-        console.error("[TokenEventParser] event emission failed:", err)
+        logger.error("[TokenEventParser] event emission failed", {
+          event: "fee.changed",
+          tokenAddress: event.tokenAddress,
+          transactionHash: event.transactionHash,
+          feeType: event.feeType ?? "unknown",
+          error: err instanceof Error ? err.message : String(err),
+        })
       );
   }
 }

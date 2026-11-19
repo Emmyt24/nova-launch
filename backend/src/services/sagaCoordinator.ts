@@ -34,8 +34,27 @@
  * Issue: #1621
  */
 
-import { PrismaClient, SagaStatus, SagaCompensationStatus } from "@prisma/client";
+import { Prisma, PrismaClient, SagaStatus, SagaCompensationStatus } from "@prisma/client";
 import { logger } from "../lib/logger";
+
+/**
+ * Type-erased saga definition used for storage in the coordinator's registry.
+ * Concrete definitions registered via `registerSaga()` are widened to this
+ * shape; the context is only ever read back as a plain JSON object.
+ */
+type AnySagaDefinition = SagaDefinition<Record<string, unknown>>;
+
+/**
+ * Narrows a persisted Prisma `JsonValue` back to a plain context object.
+ * Non-object JSON values (null, arrays, primitives) are not valid saga
+ * contexts, so they fall back to an empty object rather than being cast.
+ */
+function toSagaContext(value: Prisma.JsonValue): Record<string, unknown> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
 
 export interface SagaStepDefinition<TContext = Record<string, unknown>> {
   /** Human-readable step name, used in logs and for debugging persisted state. */
@@ -68,18 +87,18 @@ export interface SagaResult<TContext = Record<string, unknown>> {
 
 export class SagaCoordinator {
   private readonly prisma: PrismaClient;
-  private readonly definitions = new Map<string, SagaDefinition<any>>();
+  private readonly definitions = new Map<string, AnySagaDefinition>();
 
   constructor(prisma: PrismaClient = new PrismaClient()) {
     this.prisma = prisma;
   }
 
   /** Registers a saga definition so it can be run by `run()` and resumed by `recoverInterruptedSagas()`. */
-  registerSaga<TContext>(definition: SagaDefinition<TContext>): void {
-    this.definitions.set(definition.sagaType, definition);
+  registerSaga<TContext extends Record<string, unknown>>(definition: SagaDefinition<TContext>): void {
+    this.definitions.set(definition.sagaType, definition as AnySagaDefinition);
   }
 
-  private getDefinition(sagaType: string): SagaDefinition<any> {
+  private getDefinition(sagaType: string): AnySagaDefinition {
     const definition = this.definitions.get(sagaType);
     if (!definition) {
       throw new Error(`No saga definition registered for sagaType "${sagaType}"`);
@@ -98,7 +117,7 @@ export class SagaCoordinator {
       data: {
         sagaType,
         stepCount: definition.steps.length,
-        context: initialContext as any,
+        context: initialContext as Prisma.InputJsonValue,
         status: SagaStatus.RUNNING,
         currentStepIndex: 0,
       },
@@ -131,11 +150,12 @@ export class SagaCoordinator {
       });
 
       try {
+        const context = toSagaContext(saga.context);
         if (saga.status === SagaStatus.RUNNING) {
-          await this.executeFrom(saga.id, definition, saga.context as any, saga.currentStepIndex);
+          await this.executeFrom(saga.id, definition, context, saga.currentStepIndex);
         } else {
           const resumeFrom = saga.compensatedStepIndex ?? saga.currentStepIndex;
-          await this.runCompensation(saga.id, definition, saga.context as any, resumeFrom);
+          await this.runCompensation(saga.id, definition, context, resumeFrom);
         }
       } catch (err) {
         logger.error("[SagaCoordinator] recovery failed for saga", {
@@ -164,7 +184,7 @@ export class SagaCoordinator {
 
         await this.prisma.sagaExecution.update({
           where: { id: sagaId },
-          data: { currentStepIndex: i + 1, context: ctx as any },
+          data: { currentStepIndex: i + 1, context: ctx as Prisma.InputJsonValue },
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Saga step failed";
@@ -181,7 +201,7 @@ export class SagaCoordinator {
           data: {
             status: SagaStatus.COMPENSATING,
             error: message,
-            context: ctx as any,
+            context: ctx as Prisma.InputJsonValue,
             currentStepIndex: i,
           },
         });
@@ -194,7 +214,7 @@ export class SagaCoordinator {
 
     await this.prisma.sagaExecution.update({
       where: { id: sagaId },
-      data: { status: SagaStatus.COMPLETED, completedAt: new Date(), context: ctx as any },
+      data: { status: SagaStatus.COMPLETED, completedAt: new Date(), context: ctx as Prisma.InputJsonValue },
     });
 
     return { sagaId, status: SagaStatus.COMPLETED, context: ctx };

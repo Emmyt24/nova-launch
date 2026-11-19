@@ -29,6 +29,8 @@ describe("NotificationService", () => {
 
   beforeEach(() => {
     service = new NotificationService();
+    delete process.env.SENDGRID_API_KEY;
+    delete process.env.NOTIFICATION_EMAIL_API_URL;
   });
 
   afterEach(() => {
@@ -145,6 +147,59 @@ describe("NotificationService", () => {
 
     expect(result[0].success).toBe(false);
     expect(result[0].error).toBe("Email notifications require a destination email address");
+  });
+
+  it("returns failure for email when neither SENDGRID_API_KEY nor NOTIFICATION_EMAIL_API_URL is set", async () => {
+    const result = await service.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: { message: "Email body" },
+    });
+
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toMatch(/not configured/i);
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it("uses the generic HTTP branch when only NOTIFICATION_EMAIL_API_URL is set", async () => {
+    process.env.NOTIFICATION_EMAIL_API_URL = "https://email.example.com/send";
+    (axios.post as any).mockResolvedValue({ status: 202 });
+
+    const result = await service.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: { message: "Email body" },
+    });
+
+    expect(result[0].success).toBe(true);
+    expect(axios.post).toHaveBeenCalledWith(
+      "https://email.example.com/send",
+      expect.any(Object),
+      expect.any(Object)
+    );
+  });
+
+  it("uses the SendGrid branch when only SENDGRID_API_KEY is set", async () => {
+    process.env.SENDGRID_API_KEY = "SG.test-key";
+    (axios.post as any).mockResolvedValue({ status: 202 });
+
+    const result = await service.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: { message: "Email body" },
+    });
+
+    expect(result[0].success).toBe(true);
+    expect(axios.post).toHaveBeenCalled();
+  });
+
+  it("does not leak secret values in the missing-configuration error", async () => {
+    const result = await service.send({
+      targets: [{ type: "EMAIL", destination: "user@example.com" }],
+      payload: { message: "Email body" },
+    });
+
+    expect(result[0].success).toBe(false);
+    expect(result[0].error).toBeDefined();
+    expect(result[0].error).not.toContain("SG.");
+    expect(result[0].error).not.toContain("SENDGRID_API_KEY=");
   });
 
   it("returns failure for sms when SMS channel is not configured", async () => {

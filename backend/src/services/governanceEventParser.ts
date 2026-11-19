@@ -11,6 +11,7 @@ import {
 } from '../types/governance';
 import { GovernanceEventMapper } from './governanceEventMapper';
 import { EventCursorStore } from './eventCursorStore';
+import { logger } from '../lib/logger';
 
 /**
  * Default bounded catchup window in ledgers.
@@ -263,9 +264,12 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         update: {}, // no-op on replay — proposal fields are immutable after creation
       });
 
-      console.log(`Proposal ${event.proposalId} created successfully`);
+      logger.info('Proposal created', { proposalId: event.proposalId });
     } catch (error) {
-      console.error(`Error parsing proposal created event:`, error);
+      logger.error('Error parsing proposal created event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -299,9 +303,15 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         update: {}, // no-op on replay — votes are immutable
       });
 
-      console.log(`Vote cast for proposal ${event.proposalId} by ${event.voter}`);
+      logger.info('Vote cast', {
+        proposalId: event.proposalId,
+        voter: event.voter,
+      });
     } catch (error) {
-      console.error(`Error parsing vote cast event:`, error);
+      logger.error('Error parsing vote cast event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -359,12 +369,18 @@ const KNOWN_CONTRACT_ERRORS = new Set([
       });
 
       if (event.success) {
-        console.log(`Proposal ${event.proposalId} executed successfully`);
+        logger.info('Proposal executed', { proposalId: event.proposalId });
       } else {
-        console.log(`Proposal ${event.proposalId} execution failed:`, errorDetails);
+        logger.info('Proposal execution failed', {
+          proposalId: event.proposalId,
+          errorDetails,
+        });
       }
     } catch (error) {
-      console.error(`Error parsing proposal executed event:`, error);
+      logger.error('Error parsing proposal executed event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -392,9 +408,12 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         },
       });
 
-      console.log(`Proposal ${event.proposalId} cancelled`);
+      logger.info('Proposal cancelled', { proposalId: event.proposalId });
     } catch (error) {
-      console.error(`Error parsing proposal cancelled event:`, error);
+      logger.error('Error parsing proposal cancelled event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -421,9 +440,16 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         },
       });
 
-      console.log(`Proposal ${event.proposalId} status changed from ${event.oldStatus} to ${event.newStatus}`);
+      logger.info('Proposal status changed', {
+        proposalId: event.proposalId,
+        oldStatus: event.oldStatus,
+        newStatus: event.newStatus,
+      });
     } catch (error) {
-      console.error(`Error parsing proposal status changed event:`, error);
+      logger.error('Error parsing proposal status changed event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -457,10 +483,10 @@ const KNOWN_CONTRACT_ERRORS = new Set([
       });
 
       if (!proposal) {
-        console.warn(
-          `[GovernanceEventParser] Snapshot for unknown proposal ${event.proposalId} ` +
-            `at ledger ${event.snapshotLedger} — skipping (proposal not yet indexed)`,
-        );
+        logger.warn('Snapshot for unknown proposal — skipping (proposal not yet indexed)', {
+          proposalId: event.proposalId,
+          snapshotLedger: event.snapshotLedger,
+        });
         return;
       }
 
@@ -476,13 +502,19 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         },
       });
 
-      console.log(
-        `Proposal ${event.proposalId} snapshot at ledger ${event.snapshotLedger}: ` +
-          `status=${event.status} yes=${event.yesVotes} no=${event.noVotes} ` +
-          `quorumRequired=${event.quorumRequired}`,
-      );
+      logger.info('Proposal state snapshot applied', {
+        proposalId: event.proposalId,
+        snapshotLedger: event.snapshotLedger,
+        status: event.status,
+        yesVotes: event.yesVotes,
+        noVotes: event.noVotes,
+        quorumRequired: event.quorumRequired,
+      });
     } catch (error) {
-      console.error(`Error parsing proposal state snapshot event:`, error);
+      logger.error('Error parsing proposal state snapshot event', {
+        proposalId: event.proposalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -511,7 +543,9 @@ const KNOWN_CONTRACT_ERRORS = new Set([
         await this.parseProposalStateSnapshotEvent(event);
         break;
       default:
-        console.warn(`Unknown governance event type:`, event);
+        logger.warn('Unknown governance event type', {
+          eventType: (event as { type?: unknown }).type,
+        });
     }
   }
 

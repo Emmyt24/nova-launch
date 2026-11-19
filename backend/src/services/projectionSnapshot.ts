@@ -13,7 +13,12 @@
  * so there is genuinely only one table to capture for either type.
  */
 
-import { PrismaClient, ProjectionType, ProjectionSnapshot as ProjectionSnapshotRow } from "@prisma/client";
+import {
+  Prisma,
+  PrismaClient,
+  ProjectionType,
+  ProjectionSnapshot as ProjectionSnapshotRow,
+} from "@prisma/client";
 
 export const PROJECTION_SNAPSHOT_FORMAT_VERSION = 1;
 
@@ -76,7 +81,7 @@ async function captureStreamData(prisma: PrismaClient): Promise<unknown> {
   return toJsonSafe({ streams: sortById(streams) });
 }
 
-async function captureForType(prisma: PrismaClient, projectionType: ProjectionType): Promise<unknown> {
+async function captureForType(prisma: PrismaClient, projectionType: ProjectionType): Promise<Prisma.InputJsonValue> {
   switch (projectionType) {
     case ProjectionType.CAMPAIGN:
       return captureCampaignData(prisma);
@@ -109,12 +114,12 @@ export async function captureAllProjectionSnapshots(
         ledger,
         cursor,
         formatVersion: PROJECTION_SNAPSHOT_FORMAT_VERSION,
-        data: data as any,
+        data,
       },
       update: {
         cursor,
         formatVersion: PROJECTION_SNAPSHOT_FORMAT_VERSION,
-        data: data as any,
+        data,
       },
     });
   }
@@ -165,6 +170,24 @@ interface RestoreFieldSpec {
   dateFields?: string[];
 }
 
+/** Minimal shape of a Prisma model delegate used when re-inserting snapshot rows. */
+interface SnapshotRestoreDelegate {
+  create(args: { data: Record<string, unknown> }): Promise<unknown>;
+}
+
+/** Narrows an unknown snapshot row to a plain object so fields can be read/written by name. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Narrows an unknown snapshot payload to a plain object before reading its per-table arrays. */
+function asSnapshotData(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error("Malformed projection snapshot: expected a JSON object payload");
+  }
+  return value;
+}
+
 /**
  * Re-inserts snapshot rows via `delegate.create()`, reversing `toJsonSafe`'s
  * BigInt->string and Date->ISO-string conversions on the way back in.
@@ -175,12 +198,15 @@ interface RestoreFieldSpec {
  * even when the restore was otherwise correct.
  */
 async function restoreRows(
-  delegate: any,
-  rows: any[] | undefined,
+  delegate: SnapshotRestoreDelegate,
+  rows: unknown[] | undefined,
   { bigIntFields = [], dateFields = [] }: RestoreFieldSpec,
 ): Promise<void> {
   if (!rows || rows.length === 0) return;
   for (const row of rows) {
+    if (!isRecord(row)) {
+      throw new Error("Malformed projection snapshot: expected each row to be a JSON object");
+    }
     const data: Record<string, unknown> = { ...row };
     for (const field of bigIntFields) {
       if (data[field] !== null && data[field] !== undefined) {
@@ -197,7 +223,7 @@ async function restoreRows(
 }
 
 async function restoreOne(prisma: PrismaClient, snapshot: ProjectionSnapshotRow): Promise<void> {
-  const data = snapshot.data as any;
+  const data = asSnapshotData(snapshot.data);
 
   switch (snapshot.projectionType) {
     case ProjectionType.CAMPAIGN: {

@@ -20,6 +20,7 @@
  */
 
 import { Database } from "../config/database";
+import { logger } from "../lib/logger";
 import { MetricsCollector } from "../lib/metrics";
 import { backupService } from "./backup";
 import {
@@ -76,12 +77,9 @@ export async function runAuditArchival(
   const warmResult = await backupService.archiveAuditRecords(warmCutoff, "warm");
 
   if (!warmResult.success) {
-    console.error(
-      JSON.stringify({
-        event: "audit_archival.warm.error",
-        error: warmResult.error,
-      })
-    );
+    logger.error("audit_archival.warm.error", {
+      error: warmResult.error,
+    });
   }
 
   await checkpointStore.save({
@@ -96,12 +94,9 @@ export async function runAuditArchival(
   const coldResult = await backupService.archiveAuditRecords(coldCutoff, "cold");
 
   if (!coldResult.success) {
-    console.error(
-      JSON.stringify({
-        event: "audit_archival.cold.error",
-        error: coldResult.error,
-      })
-    );
+    logger.error("audit_archival.cold.error", {
+      error: coldResult.error,
+    });
   }
 
   const totalArchived = warmResult.archived + coldResult.archived;
@@ -116,14 +111,11 @@ export async function runAuditArchival(
     completedAt: new Date().toISOString(),
   });
 
-  console.log(
-    JSON.stringify({
-      event: "audit_archival.complete",
-      warmArchived: warmResult.archived,
-      coldArchived: coldResult.archived,
-      totalArchived,
-    })
-  );
+  logger.info("audit_archival.complete", {
+    warmArchived: warmResult.archived,
+    coldArchived: coldResult.archived,
+    totalArchived,
+  });
 
   return { warm: warmResult.archived, cold: coldResult.archived };
 }
@@ -163,15 +155,12 @@ export async function runAuditRetention(
   const durationSeconds = (Date.now() - start) / 1000;
   MetricsCollector.recordBackgroundJob("audit_retention", "success", durationSeconds);
 
-  console.log(
-    JSON.stringify({
-      event: "audit_retention.complete",
-      cutoff: cutoff.toISOString(),
-      retentionDays,
-      purged: toRemove.length,
-      durationMs: Date.now() - start,
-    })
-  );
+  logger.info("audit_retention.complete", {
+    cutoff: cutoff.toISOString(),
+    retentionDays,
+    purged: toRemove.length,
+    durationMs: Date.now() - start,
+  });
 
   return toRemove.length;
 }
@@ -182,22 +171,23 @@ export async function runAuditRetention(
 export function startAuditRetentionJob(): void {
   if (_timer !== null) return;
 
-  console.log(
-    JSON.stringify({
-      event: "audit_retention.started",
-      retentionDays: RETENTION_DAYS,
-      intervalMs: INTERVAL_MS,
-    })
-  );
+  logger.info("audit_retention.started", {
+    retentionDays: RETENTION_DAYS,
+    intervalMs: INTERVAL_MS,
+  });
 
   // Run immediately on startup, then on the configured interval.
   runAuditRetention().catch((err) =>
-    console.error("audit_retention initial run failed", err)
+    logger.error("audit_retention initial run failed", {
+      error: err instanceof Error ? err.message : String(err),
+    })
   );
 
   _timer = setInterval(() => {
     runAuditRetention().catch((err) =>
-      console.error("audit_retention job failed", err)
+      logger.error("audit_retention job failed", {
+        error: err instanceof Error ? err.message : String(err),
+      })
     );
   }, INTERVAL_MS);
 

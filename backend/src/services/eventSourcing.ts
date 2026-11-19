@@ -1,18 +1,20 @@
+export type EventPayload = Record<string, unknown>;
+
 export interface DomainEvent {
   id: string;
   aggregateId: string;
   type: string;
   timestamp: number;
   version: number;
-  data: Record<string, any>;
-  metadata?: Record<string, any>;
+  data: EventPayload;
+  metadata?: EventPayload;
 }
 
 export interface AggregateSnapshot {
   id: string;
   aggregateId: string;
   version: number;
-  state: Record<string, any>;
+  state: EventPayload;
   timestamp: number;
 }
 
@@ -30,7 +32,7 @@ export interface AuditTrail {
   eventType: string;
   timestamp: string;
   actor?: string;
-  changes: Record<string, any>;
+  changes: EventPayload;
 }
 
 /**
@@ -46,16 +48,16 @@ export const FEE_PARAMETER_CHANGED_SCHEMA_VERSION = 2;
 
 export interface FeeParameterChangedPayloadV1 {
   parameter: string;
-  value: any;
+  value: unknown;
 }
 
 export interface FeeParameterChangedPayloadV2 {
   schemaVersion: typeof FEE_PARAMETER_CHANGED_SCHEMA_VERSION;
   parameter: string;
-  previousValue: any;
-  newValue: any;
+  previousValue: unknown;
+  newValue: unknown;
   /** Legacy field kept for backward compatibility; mirrors `newValue`. */
-  value: any;
+  value: unknown;
 }
 
 export type FeeParameterChangedPayload =
@@ -68,8 +70,8 @@ export type FeeParameterChangedPayload =
  */
 export function buildFeeParameterChangedPayload(
   parameter: string,
-  previousValue: any,
-  newValue: any
+  previousValue: unknown,
+  newValue: unknown
 ): FeeParameterChangedPayloadV2 {
   return {
     schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
@@ -86,23 +88,28 @@ export function buildFeeParameterChangedPayload(
  * `undefined` for them.
  */
 export function parseFeeParameterChangedPayload(
-  data: Record<string, any>
+  data: EventPayload
 ): FeeParameterChangedPayloadV2 {
-  const schemaVersion = data?.schemaVersion ?? 1;
+  const rawSchemaVersion = data?.schemaVersion;
+  const schemaVersion =
+    typeof rawSchemaVersion === 'number' ? rawSchemaVersion : 1;
+
+  const parameter = typeof data?.parameter === 'string' ? data.parameter : '';
 
   if (schemaVersion >= FEE_PARAMETER_CHANGED_SCHEMA_VERSION) {
+    const newValue = data.newValue !== undefined ? data.newValue : data.value;
     return {
       schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
-      parameter: data.parameter,
+      parameter,
       previousValue: data.previousValue,
-      newValue: data.newValue !== undefined ? data.newValue : data.value,
-      value: data.newValue !== undefined ? data.newValue : data.value,
+      newValue,
+      value: newValue,
     };
   }
 
   return {
     schemaVersion: FEE_PARAMETER_CHANGED_SCHEMA_VERSION,
-    parameter: data.parameter,
+    parameter,
     previousValue: undefined,
     newValue: data.value,
     value: data.value,
@@ -176,7 +183,8 @@ export class InMemoryEventStore implements EventStore {
 export class EventSourcingService {
   private eventStore: EventStore;
   private auditTrail: AuditTrail[] = [];
-  private eventHandlers: Map<string, Function[]> = new Map();
+  private eventHandlers: Map<string, Array<(event: DomainEvent) => Promise<void>>> =
+    new Map();
   private snapshotInterval: number;
 
   constructor(eventStore?: EventStore, snapshotInterval: number = 100) {
@@ -187,9 +195,9 @@ export class EventSourcingService {
   async publishEvent(
     aggregateId: string,
     eventType: string,
-    data: Record<string, any>,
-    metadata?: Record<string, any>,
-    stateReducer?: (state: Record<string, any>, event: DomainEvent) => Record<string, any>
+    data: EventPayload,
+    metadata?: EventPayload,
+    stateReducer?: (state: EventPayload, event: DomainEvent) => EventPayload
   ): Promise<void> {
     const event: DomainEvent = {
       id: this.generateEventId(),
@@ -220,10 +228,10 @@ export class EventSourcingService {
   async publishFeeParameterChanged(
     aggregateId: string,
     parameter: string,
-    previousValue: any,
-    newValue: any,
-    metadata?: Record<string, any>,
-    stateReducer?: (state: Record<string, any>, event: DomainEvent) => Record<string, any>
+    previousValue: unknown,
+    newValue: unknown,
+    metadata?: EventPayload,
+    stateReducer?: (state: EventPayload, event: DomainEvent) => EventPayload
   ): Promise<void> {
     const data = buildFeeParameterChangedPayload(parameter, previousValue, newValue);
     await this.publishEvent(
@@ -241,10 +249,10 @@ export class EventSourcingService {
 
   async rebuildStateFromSnapshot(
     aggregateId: string,
-    stateReducer: (state: Record<string, any>, event: DomainEvent) => Record<string, any>
-  ): Promise<Record<string, any>> {
+    stateReducer: (state: EventPayload, event: DomainEvent) => EventPayload
+  ): Promise<EventPayload> {
     const snapshot = await this.eventStore.getLatestSnapshot(aggregateId);
-    let state = snapshot?.state || {};
+    let state: EventPayload = snapshot?.state || {};
     const fromVersion = snapshot ? snapshot.version + 1 : 1;
 
     const events = await this.eventStore.getEvents(aggregateId, fromVersion);
@@ -257,7 +265,7 @@ export class EventSourcingService {
 
   async createSnapshot(
     aggregateId: string,
-    state: Record<string, any>
+    state: EventPayload
   ): Promise<AggregateSnapshot> {
     const events = await this.eventStore.getEvents(aggregateId);
     const version = events.length > 0 ? events[events.length - 1].version : 0;
@@ -326,7 +334,7 @@ export class EventSourcingService {
    * expanded to the latest schema so the audit trail always records both the
    * previous and the new value, even for historical v1 events.
    */
-  private normalizeAuditChanges(event: DomainEvent): Record<string, any> {
+  private normalizeAuditChanges(event: DomainEvent): EventPayload {
     if (event.type === FEE_PARAMETER_CHANGED_EVENT_TYPE) {
       return parseFeeParameterChangedPayload(event.data);
     }

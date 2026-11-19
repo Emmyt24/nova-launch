@@ -69,6 +69,9 @@ import {
   parse,
   validate,
   type DocumentNode,
+  type GraphQLField,
+  type SelectionNode,
+  type FragmentDefinitionNode,
 } from "graphql";
 import {
   getComplexity,
@@ -151,8 +154,8 @@ const LIST_FIELDS = new Set([
  * `validate()` rejects anyway.
  */
 function maxQueryDepth(
-  node: any,
-  fragments: Record<string, any> = {},
+  node: SelectionNode | FragmentDefinitionNode,
+  fragments: Record<string, FragmentDefinitionNode> = {},
   depth = 0,
   visited: Set<string> = new Set()
 ): number {
@@ -168,7 +171,7 @@ function maxQueryDepth(
 
   if (node.selectionSet?.selections?.length) {
     return Math.max(
-      ...node.selectionSet.selections.map((s: any) =>
+      ...node.selectionSet.selections.map((s) =>
         maxQueryDepth(s, fragments, depth + 1, visited)
       )
     );
@@ -181,7 +184,7 @@ function maxQueryDepth(
  * measured where they are spread, not on their own.
  */
 export function computeQueryDepth(doc: DocumentNode): number {
-  const fragments: Record<string, any> = {};
+  const fragments: Record<string, FragmentDefinitionNode> = {};
   for (const def of doc.definitions) {
     if (def.kind === "FragmentDefinition") fragments[def.name.value] = def;
   }
@@ -230,8 +233,9 @@ if (subscriptionType) {
   for (const [name, def] of Object.entries(resolvers.Subscription)) {
     const field = fields[name];
     if (field) {
-      (field as any).subscribe = def.subscribe;
-      (field as any).resolve = def.resolve;
+      const resolvableField = field as GraphQLField<unknown, unknown>;
+      resolvableField.subscribe = def.subscribe;
+      resolvableField.resolve = def.resolve;
     }
   }
 }
@@ -411,7 +415,8 @@ export function attachGraphqlSubscriptions(
         if (extra.queueDepth > SLOW_CONSUMER_THRESHOLD) {
           subMetrics.slowConsumerDisconnected.inc();
           // Close the raw WebSocket — graphql-ws provides it via ctx.extra.socket
-          const socket = (ctx.extra as any).socket;
+          const socket = (ctx.extra as { socket?: WebSocket } | undefined)
+            ?.socket;
           if (socket) {
             socket.close(1008, "Policy Violation: slow consumer");
           }

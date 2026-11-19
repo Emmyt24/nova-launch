@@ -106,6 +106,32 @@ export type VaultEvent =
   | VaultMetadataUpdatedEvent;
 
 /**
+ * Minimal structural view of a Soroban `ScVal` covering only the methods this
+ * parser actually invokes. Using a structural interface (rather than `any`)
+ * keeps compile-time checking of event payload shapes without coupling the
+ * parser to a specific SDK version.
+ */
+export interface ScValLike {
+  sym(): { toString(): string };
+  u32(): number;
+  vec(): ScValLike[];
+  b(): boolean;
+  address(): { toString(): string };
+  switch(): { name: string };
+  i128(): { hi(): { toString(): string }; lo(): { toString(): string } };
+  toString(): string;
+}
+
+/**
+ * Minimal structural view of a Soroban contract event as consumed by the
+ * parser: a list of topic `ScVal`s and a single data `ScVal`.
+ */
+export interface SorobanEvent {
+  topics(): ScValLike[];
+  data(): ScValLike;
+}
+
+/**
  * Parse a vault created event (v1)
  */
 export function parseVaultCreatedEvent(

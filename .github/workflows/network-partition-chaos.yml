@@ -11,6 +11,8 @@ on:
 jobs:
   network-partition-chaos:
     runs-on: ubuntu-latest
+    # Bound runner consumption: generous but finite (~2x typical runtime)
+    timeout-minutes: 30
 
     defaults:
       run:

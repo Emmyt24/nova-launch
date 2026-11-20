@@ -69,7 +69,7 @@ const DEV_FALLBACK_DATABASE_URL =
  * - In `NODE_ENV=production`, a missing DATABASE_URL throws a clear error so
  *   the process fails fast instead of falling back to default credentials.
  * - In `development` / `test` (or any non-production env), the local fallback
- *   above is used for convenience.
+ *   above is used for convenience and a log line notes the dev fallback.
  */
 export function resolveDatabaseUrl(
   env: NodeJS.ProcessEnv = process.env
@@ -83,6 +83,11 @@ export function resolveDatabaseUrl(
         "explicit database connection string (no default-credential fallback)."
     );
   }
+
+  console.warn(
+    "[db] DATABASE_URL is not set; using local development fallback " +
+      "(postgres:postgres@localhost). This fallback is disabled in production."
+  );
 
   return DEV_FALLBACK_DATABASE_URL;
 }

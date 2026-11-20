@@ -67,7 +67,6 @@ export function useFactoryFees(network: 'testnet' | 'mainnet'): UseFactoryFeesRe
             });
 
         return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [network, refreshCount]);
 
     return { ...fees, loading, error, isFallback, refresh };

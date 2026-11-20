@@ -1412,3 +1412,12 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2059 -->
 - #2059: Document Why Trigger Recurring Period Doesn't Re-Require the Original Creator's Authorization
+
+<!-- handsoff-issue-2388 -->
+- #2388: Replace Trap-Prone Panic Path With Typed Contract Error in Batch_Settle Phase-2 Commit Lookup
+
+<!-- handsoff-issue-2389 -->
+- #2389: Convert Opaque Host Panic Into Deterministic Error Propagation Within Mint_Stream Counter Increment
+
+<!-- handsoff-issue-2390 -->
+- #2390: Eliminate Non-Descriptive Trap Semantics From Increment_Proposal_Count Overflow

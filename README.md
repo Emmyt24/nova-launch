@@ -1412,3 +1412,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2059 -->
 - #2059: Document Why Trigger Recurring Period Doesn't Re-Require the Original Creator's Authorization
+
+<!-- handsoff-issue-2378 -->
+- #2378: Prevent Internal Exception Detail Disclosure in Webhook Subscription Validation Responses

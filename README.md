@@ -1415,3 +1415,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2385 -->
 - #2385: Replace Trap-Prone Panic Path With Typed Contract Error in Schedule_Batch_Reveal Chunk Commit
+
+<!-- handsoff-issue-2386 -->
+- #2386: Convert Opaque Host Panic Into Deterministic Error Propagation Within Schedule_Batch_Settle Staged Balance Lookup

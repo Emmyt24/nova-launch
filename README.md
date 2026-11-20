@@ -1418,3 +1418,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2386 -->
 - #2386: Convert Opaque Host Panic Into Deterministic Error Propagation Within Schedule_Batch_Settle Staged Balance Lookup
+
+<!-- handsoff-issue-2387 -->
+- #2387: Eliminate Non-Descriptive Trap Semantics From Batch Operation Chunk Commit

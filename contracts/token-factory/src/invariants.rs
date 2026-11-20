@@ -1,4 +1,5 @@
 use crate::storage;
+use crate::types::Error;
 /// invariants.rs
 ///
 /// Internal correctness assertions for the token-factory contract.
@@ -18,9 +19,15 @@ use soroban_sdk::Env;
 /// Assert that `current_supply + total_burned == initial_supply` for the
 /// given token.
 ///
-/// Panics in debug/test builds when the invariant is violated.
-pub fn assert_supply_conservation(env: &Env, token_index: u32, initial_supply: i128) {
-    let info = storage::get_token_info(env, token_index).expect("invariant: token must exist");
+/// Returns `Error::TokenNotFound` when the token does not exist instead of
+/// panicking, so callers/SDKs can handle the failure. Panics in debug/test
+/// builds when the invariant is violated.
+pub fn assert_supply_conservation(
+    env: &Env,
+    token_index: u32,
+    initial_supply: i128,
+) -> Result<(), Error> {
+    let info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
     let current_supply = info.total_supply;
     let total_burned = storage::get_total_burned(env, token_index);
@@ -35,11 +42,16 @@ pub fn assert_supply_conservation(env: &Env, token_index: u32, initial_supply: i
          current_supply({}) + total_burned({}) = {} != initial_supply({})",
         current_supply, total_burned, reconstructed, initial_supply,
     );
+
+    Ok(())
 }
 
 /// Assert that `current_supply` is non-negative.
-pub fn assert_supply_non_negative(env: &Env, token_index: u32) {
-    let info = storage::get_token_info(env, token_index).expect("invariant: token must exist");
+///
+/// Returns `Error::TokenNotFound` when the token does not exist instead of
+/// panicking.
+pub fn assert_supply_non_negative(env: &Env, token_index: u32) -> Result<(), Error> {
+    let info = storage::get_token_info(env, token_index).ok_or(Error::TokenNotFound)?;
 
     assert!(
         info.total_supply >= 0,
@@ -47,6 +59,8 @@ pub fn assert_supply_non_negative(env: &Env, token_index: u32) {
          total_supply({}) must not be negative",
         info.total_supply,
     );
+
+    Ok(())
 }
 
 /// Assert that `total_burned` is non-negative and does not exceed
@@ -146,5 +160,25 @@ pub fn assert_terminal_state_immutable(before: ProposalStatus, after: ProposalSt
              proposal transitioned out of terminal state {:?} → {:?}",
             before, after,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::Env;
+
+    #[test]
+    fn supply_conservation_missing_token_returns_typed_error() {
+        let env = Env::default();
+        let result = assert_supply_conservation(&env, 0, 1_000);
+        assert_eq!(result, Err(Error::TokenNotFound));
+    }
+
+    #[test]
+    fn supply_non_negative_missing_token_returns_typed_error() {
+        let env = Env::default();
+        let result = assert_supply_non_negative(&env, 0);
+        assert_eq!(result, Err(Error::TokenNotFound));
     }
 }

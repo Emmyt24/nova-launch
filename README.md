@@ -1418,3 +1418,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2389 -->
 - #2389: Convert Opaque Host Panic Into Deterministic Error Propagation Within Mint_Stream Counter Increment
+
+<!-- handsoff-issue-2390 -->
+- #2390: Eliminate Non-Descriptive Trap Semantics From Increment_Proposal_Count Overflow

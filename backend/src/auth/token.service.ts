@@ -21,16 +21,33 @@ export class TokenService {
     private readonly configService: ConfigService,
     redisClient?: Redis
   ) {
+    const redisUrl = process.env.REDIS_URL;
+    const redisHost = process.env.REDIS_HOST;
+    const isProduction = process.env.NODE_ENV === "production";
+
+    // Guard the implicit localhost fallback: in production a missing Redis
+    // endpoint is a misconfiguration that must not be silently masked.
+    if (!redisUrl && !redisHost && isProduction) {
+      throw new Error(
+        "Redis endpoint is not configured: set REDIS_URL or REDIS_HOST in production"
+      );
+    }
+    if (!redisUrl && !redisHost && !isProduction) {
+      this.logger.warn(
+        "REDIS_URL/REDIS_HOST not set — falling back to localhost:6379 (non-production only)"
+      );
+    }
+
     this.redis =
       redisClient ??
       new Redis({
-        host: process.env.REDIS_HOST ?? "localhost",
+        host: redisHost ?? "localhost",
         port: Number(process.env.REDIS_PORT ?? 6379),
         password: process.env.REDIS_PASSWORD,
         lazyConnect: true,
       });
     // Use Redis if REDIS_URL is configured (indicates production)
-    this.useRedis = Boolean(process.env.REDIS_URL);
+    this.useRedis = Boolean(redisUrl);
   }
 
   generateTokenPair(walletAddress: string): AuthResponseDto {

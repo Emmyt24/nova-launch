@@ -11,6 +11,7 @@ jobs:
   frontend-lifecycle-e2e:
     name: Frontend Lifecycle E2E
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -40,6 +41,7 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend (production)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
 
@@ -83,6 +85,7 @@ jobs:
   lighthouse:
     name: Lighthouse CI
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./frontend
@@ -121,6 +124,7 @@ jobs:
   bundle-analysis:
     name: Bundle Size Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ./frontend
@@ -184,6 +188,7 @@ jobs:
   performance-benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./frontend
@@ -215,6 +220,7 @@ jobs:
   performance-monitoring:
     name: Performance Monitoring
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: github.ref == 'refs/heads/main'
     needs: [lighthouse, bundle-analysis]
     defaults:

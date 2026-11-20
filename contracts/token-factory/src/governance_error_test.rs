@@ -33,9 +33,8 @@ mod governance_error_tests {
         // Try to get a non-existent proposal
         let non_existent_proposal_id = 999u64;
         
-        // TODO: Uncomment once get_proposal function is implemented
-        // let result = client.try_get_proposal(&non_existent_proposal_id);
-        // assert_eq!(result, Err(Ok(Error::ProposalNotFound)));
+        let result = client.try_get_proposal(&non_existent_proposal_id);
+        assert_eq!(result, Err(Ok(Error::ProposalNotFound)));
         
         // Verify error code mapping
         assert_eq!(Error::ProposalNotFound as u32, 34);
@@ -48,22 +47,21 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal and voting functions are implemented
         // Create a proposal
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64, // voting_start
-        //     &2000u64, // voting_end
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64, // voting_start
+            &2000u64, // voting_end
+        );
         
         // Advance time past voting end
-        // env.ledger().set_timestamp(3000);
+        env.ledger().set_timestamp(3000);
         
         // Try to vote after voting period closed
-        // let voter = Address::generate(&env);
-        // let result = client.try_vote(&proposal_id, &voter, &true);
-        // assert_eq!(result, Err(Ok(Error::VotingEnded)));
+        let voter = Address::generate(&env);
+        let result = client.try_vote(&proposal_id, &voter, &true);
+        assert_eq!(result, Err(Ok(Error::VotingEnded)));
         
         // Verify error code mapping
         assert_eq!(Error::VotingEnded as u32, 38);
@@ -76,24 +74,23 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal and voting functions are implemented
         // Create a proposal
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &5000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &5000u64,
+        );
         
-        // env.ledger().set_timestamp(2000);
+        env.ledger().set_timestamp(2000);
         
         // Vote once
-        // let voter = Address::generate(&env);
-        // client.vote(&proposal_id, &voter, &true);
+        let voter = Address::generate(&env);
+        client.vote(&proposal_id, &voter, &true);
         
         // Try to vote again
-        // let result = client.try_vote(&proposal_id, &voter, &false);
-        // assert_eq!(result, Err(Ok(Error::AlreadyVoted)));
+        let result = client.try_vote(&proposal_id, &voter, &false);
+        assert_eq!(result, Err(Ok(Error::AlreadyVoted)));
         
         // Verify error code mapping
         assert_eq!(Error::AlreadyVoted as u32, 37);
@@ -106,21 +103,20 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal execution is implemented
         // Create a proposal with expiration
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &2000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &2000u64,
+        );
         
         // Advance time past expiration
-        // env.ledger().set_timestamp(10000);
+        env.ledger().set_timestamp(10000);
         
         // Try to execute expired proposal
-        // let result = client.try_execute_proposal(&proposal_id, &admin);
-        // assert_eq!(result, Err(Ok(Error::ProposalExpired)));
+        let result = client.try_execute_proposal(&proposal_id, &admin);
+        assert_eq!(result, Err(Ok(Error::ProposalExpired)));
         
         // Verify error code mapping
         assert_eq!(Error::ProposalExpired as u32, 39);
@@ -133,19 +129,18 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal execution is implemented
         // Create a proposal
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &5000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &5000u64,
+        );
         
         // Try to execute before voting ends
-        // env.ledger().set_timestamp(3000);
-        // let result = client.try_execute_proposal(&proposal_id, &admin);
-        // assert_eq!(result, Err(Ok(Error::ProposalNotExecutable)));
+        env.ledger().set_timestamp(3000);
+        let result = client.try_execute_proposal(&proposal_id, &admin);
+        assert_eq!(result, Err(Ok(Error::ProposalNotExecutable)));
         
         // Verify error code mapping
         assert_eq!(Error::ProposalNotExecutable as u32, 40);
@@ -158,26 +153,25 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal and quorum logic is implemented
         // Create a proposal with quorum requirement
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &2000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &2000u64,
+        );
         
         // Cast insufficient votes (below quorum)
-        // env.ledger().set_timestamp(1500);
-        // let voter = Address::generate(&env);
-        // client.vote(&proposal_id, &voter, &true);
+        env.ledger().set_timestamp(1500);
+        let voter = Address::generate(&env);
+        client.vote(&proposal_id, &voter, &true);
         
         // Advance past voting period
-        // env.ledger().set_timestamp(3000);
+        env.ledger().set_timestamp(3000);
         
         // Try to execute with quorum not met
-        // let result = client.try_execute_proposal(&proposal_id, &admin);
-        // assert_eq!(result, Err(Ok(Error::Unauthorized)));
+        let result = client.try_execute_proposal(&proposal_id, &admin);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
         
         // Verify error code mapping
         assert_eq!(Error::Unauthorized as u32, 41);
@@ -190,24 +184,23 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal execution is implemented
         // Create and execute a proposal
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &2000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &2000u64,
+        );
         
         // Vote and execute
-        // env.ledger().set_timestamp(1500);
-        // client.vote(&proposal_id, &admin, &true);
-        // env.ledger().set_timestamp(3000);
-        // client.execute_proposal(&proposal_id, &admin);
+        env.ledger().set_timestamp(1500);
+        client.vote(&proposal_id, &admin, &true);
+        env.ledger().set_timestamp(3000);
+        client.execute_proposal(&proposal_id, &admin);
         
         // Try to execute again
-        // let result = client.try_execute_proposal(&proposal_id, &admin);
-        // assert_eq!(result, Err(Ok(Error::AlreadyExecuted)));
+        let result = client.try_execute_proposal(&proposal_id, &admin);
+        assert_eq!(result, Err(Ok(Error::AlreadyExecuted)));
         
         // Verify error code mapping
         assert_eq!(Error::AlreadyExecuted as u32, 42);
@@ -220,20 +213,19 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal and voting functions are implemented
         // Create a proposal with future start time
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &5000u64, // voting starts in future
-        //     &10000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &5000u64, // voting starts in future
+            &10000u64,
+        );
         
         // Try to vote before voting starts
-        // env.ledger().set_timestamp(1000);
-        // let voter = Address::generate(&env);
-        // let result = client.try_vote(&proposal_id, &voter, &true);
-        // assert_eq!(result, Err(Ok(Error::VotingNotStarted)));
+        env.ledger().set_timestamp(1000);
+        let voter = Address::generate(&env);
+        let result = client.try_vote(&proposal_id, &voter, &true);
+        assert_eq!(result, Err(Ok(Error::VotingNotStarted)));
         
         // Verify error code mapping
         assert_eq!(Error::VotingNotStarted as u32, 35);
@@ -246,22 +238,21 @@ mod governance_error_tests {
         
         let (client, admin, _treasury) = setup_factory(&env);
         
-        // TODO: Uncomment once proposal and voting functions are implemented
         // Create a proposal
-        // let proposal_id = client.create_proposal(
-        //     &admin,
-        //     &String::from_str(&env, "Test Proposal"),
-        //     &1000u64,
-        //     &2000u64,
-        // );
+        let proposal_id = client.create_proposal(
+            &admin,
+            &String::from_str(&env, "Test Proposal"),
+            &1000u64,
+            &2000u64,
+        );
         
         // Advance time past voting end
-        // env.ledger().set_timestamp(3000);
+        env.ledger().set_timestamp(3000);
         
         // Try to vote after voting ended
-        // let voter = Address::generate(&env);
-        // let result = client.try_vote(&proposal_id, &voter, &true);
-        // assert_eq!(result, Err(Ok(Error::VotingEnded)));
+        let voter = Address::generate(&env);
+        let result = client.try_vote(&proposal_id, &voter, &true);
+        assert_eq!(result, Err(Ok(Error::VotingEnded)));
         
         // Verify error code mapping
         assert_eq!(Error::VotingEnded as u32, 36);
@@ -275,7 +266,6 @@ mod governance_error_tests {
             Error::VotingNotStarted as u32,
             Error::VotingEnded as u32,
             Error::AlreadyVoted as u32,
-            Error::VotingEnded as u32,
             Error::ProposalExpired as u32,
             Error::ProposalNotExecutable as u32,
             Error::Unauthorized as u32,
@@ -298,7 +288,6 @@ mod governance_error_tests {
         assert_eq!(Error::VotingNotStarted as u32, 35);
         assert_eq!(Error::VotingEnded as u32, 36);
         assert_eq!(Error::AlreadyVoted as u32, 37);
-        assert_eq!(Error::VotingEnded as u32, 38);
         assert_eq!(Error::ProposalExpired as u32, 39);
         assert_eq!(Error::ProposalNotExecutable as u32, 40);
         assert_eq!(Error::Unauthorized as u32, 41);
@@ -320,7 +309,6 @@ mod governance_error_tests {
         // Voting lifecycle errors
         assert_eq!(Error::VotingNotStarted as u32, 35, "Voting not yet open");
         assert_eq!(Error::VotingEnded as u32, 36, "Voting period ended");
-        assert_eq!(Error::VotingEnded as u32, 38, "Voting no longer accepting votes");
         assert_eq!(Error::AlreadyVoted as u32, 37, "Voter already cast vote");
         
         // Execution validation errors

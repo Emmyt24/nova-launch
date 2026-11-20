@@ -77,6 +77,7 @@ jobs:
   setup:
     name: Setup
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     concurrency:
       group: blue-green-${{ github.event.inputs.environment || 'staging' }}
       cancel-in-progress: false
@@ -141,6 +142,7 @@ jobs:
   build-backend:
     name: Build Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: setup
     if: needs.setup.outputs.deploy_backend == 'true' && needs.setup.outputs.is_tag_push == 'false'
     concurrency:
@@ -186,6 +188,7 @@ jobs:
   build-frontend:
     name: Build Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: setup
     if: needs.setup.outputs.deploy_frontend == 'true' && needs.setup.outputs.is_tag_push == 'false'
     concurrency:
@@ -231,6 +234,7 @@ jobs:
   deploy-backend:
     name: Deploy Backend (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [setup, build-backend]
     if: needs.setup.outputs.deploy_backend == 'true' && needs.setup.outputs.is_tag_push == 'false'
     environment: ${{ needs.setup.outputs.environment }}
@@ -317,6 +321,7 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [setup, build-frontend]
     if: needs.setup.outputs.deploy_frontend == 'true' && needs.setup.outputs.is_tag_push == 'false'
     environment: ${{ needs.setup.outputs.environment }}
@@ -361,6 +366,7 @@ jobs:
   summary:
     name: Deployment Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [setup, deploy-backend, deploy-frontend]
     if: always()
 
@@ -387,6 +393,7 @@ jobs:
   readiness-gate:
     name: Production Readiness Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment: ${{ github.event.inputs.network || 'testnet' }}
 

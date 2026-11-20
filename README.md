@@ -1412,3 +1412,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2059 -->
 - #2059: Document Why Trigger Recurring Period Doesn't Re-Require the Original Creator's Authorization
+
+<!-- handsoff-issue-2392 -->
+- #2392: Convert Opaque Host Panic Into Deterministic Error Propagation Within Hash-Chain State Conversion

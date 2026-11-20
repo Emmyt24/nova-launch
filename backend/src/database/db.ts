@@ -50,8 +50,34 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+/**
+ * Resolve the database host.
+ *
+ * In production `DB_HOST` is required — defaulting to `localhost` would mask
+ * misconfiguration in deployed environments and silently point the pool at the
+ * wrong (or a non-existent) server. In development/test we keep `localhost` as
+ * a convenience default.
+ */
+function resolveDbHost(): string {
+  const configuredHost = process.env.DB_HOST?.trim();
+
+  if (configuredHost) {
+    return configuredHost;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Missing required configuration: DB_HOST must be set in production"
+    );
+  }
+
+  return "localhost";
+}
+
+const dbHost = resolveDbHost();
+
 const pool = new Pool({
-  host: process.env.DB_HOST || "localhost",
+  host: dbHost,
   port: Number.parseInt(process.env.DB_PORT || "5432", 10),
   database: process.env.DB_NAME || "nova_launch",
   user: process.env.DB_USER || "user",
@@ -60,6 +86,9 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
 });
+
+// Log the resolved host only — never the password or full connection string.
+console.log("Database pool configured", { host: dbHost });
 
 pool.on("error", (err: unknown) => {
   console.error("Unexpected database error:", toSafeErrorSummary(err));

@@ -54,10 +54,40 @@ export function buildConnectionString(
   return `${beforeHash}${sep}${suffix}${hash}`;
 }
 
-const connectionString = buildConnectionString(
-  process.env.DATABASE_URL ??
-    "postgresql://postgres:postgres@localhost:5432/postgres?schema=public"
-);
+/**
+ * Local-only fallback used when DATABASE_URL is unset. This is intentionally
+ * restricted to development/test: in production a missing DATABASE_URL is a
+ * misconfiguration and must fail fast rather than silently connecting to a
+ * default-credential database.
+ */
+const DEV_FALLBACK_DATABASE_URL =
+  "postgresql://postgres:postgres@localhost:5432/postgres?schema=public";
+
+/**
+ * Resolves the base DATABASE_URL for the Prisma client.
+ *
+ * - In `NODE_ENV=production`, a missing DATABASE_URL throws a clear error so
+ *   the process fails fast instead of falling back to default credentials.
+ * - In `development` / `test` (or any non-production env), the local fallback
+ *   above is used for convenience.
+ */
+export function resolveDatabaseUrl(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const url = env.DATABASE_URL;
+  if (url && url.length > 0) return url;
+
+  if (env.NODE_ENV === "production") {
+    throw new Error(
+      "DATABASE_URL is not set. Refusing to start in production without an " +
+        "explicit database connection string (no default-credential fallback)."
+    );
+  }
+
+  return DEV_FALLBACK_DATABASE_URL;
+}
+
+const connectionString = buildConnectionString(resolveDatabaseUrl());
 
 const globalForPrisma = globalThis as unknown as {
   _baseprisma: PrismaClient | undefined;

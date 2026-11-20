@@ -1412,3 +1412,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2059 -->
 - #2059: Document Why Trigger Recurring Period Doesn't Re-Require the Original Creator's Authorization
+
+<!-- handsoff-issue-2388 -->
+- #2388: Replace Trap-Prone Panic Path With Typed Contract Error in Batch_Settle Phase-2 Commit Lookup

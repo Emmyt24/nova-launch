@@ -8,6 +8,9 @@
 
 ## Problem
 
+<!-- Note: The repository does not contain a docker-compose.yml file, so healthcheck-related changes are out of scope for this documentation. -->
+
+
 The token deployment wizard (`TokenDeployForm`) moves directly from the metadata input
 step to triggering `handleDeploy()` without presenting the user a full summary of what
 they are about to deploy. A user can submit a deployment without reviewing the token name,

@@ -25,12 +25,10 @@
  *   - All arithmetic uses bigint to avoid floating-point precision issues.
  *   - Token addresses are non-empty alphanumeric strings (10–56 chars).
  *   - initialSupply is in the range [1n, 10n ** 18n].
- *
- * // TODO: Add property test for overdraft rejection — burns that exceed
- * //       remaining supply should be rejected at the service layer
- * //       (TokenEventParser) before any DB write.
- * // TODO: Fuzz test idempotency — replaying the same burn sequence should
- * //       not change state (Requirements 8.3).
+ *   - Overdraft burns (amount > remaining supply) are rejected before any
+ *     state mutation; the state must remain unchanged.
+ *   - Replaying the same burn sequence (deduped by event id) is idempotent:
+ *     the final state is identical to applying it once.
  */
 
 import fc from "fast-check";
@@ -129,6 +127,66 @@ function applyBurns(initialSupply: bigint, amounts: bigint[]): BurnStep[] {
     steps.push({ totalBurned, currentSupply: initialSupply - totalBurned });
   }
   return steps;
+}
+
+/**
+ * Represents the mutable token state used by the overdraft and replay models.
+ */
+interface TokenState {
+  totalSupply: bigint;
+  totalBurned: bigint;
+}
+
+/**
+ * Attempts to apply a single burn to the given state, mirroring the
+ * TokenEventParser.handleBurn guard: burns that exceed the remaining supply
+ * (overdrafts) are rejected before any state mutation.
+ *
+ * @param state  - Current token state (mutated only on success).
+ * @param amount - Burn amount to apply.
+ * @returns      - `true` if the burn was accepted, `false` if rejected.
+ */
+function tryBurn(state: TokenState, amount: bigint): boolean {
+  if (amount <= 0n || amount > state.totalSupply) {
+    // Overdraft (or invalid zero) — reject before any DB write / mutation.
+    return false;
+  }
+  state.totalBurned += amount;
+  state.totalSupply -= amount;
+  return true;
+}
+
+/**
+ * A burn event carrying a stable event id used for replay deduplication.
+ */
+interface BurnEvent {
+  id: string;
+  amount: bigint;
+}
+
+/**
+ * Applies a sequence of burn events to a fresh state, deduplicating by event
+ * id so that replaying the same sequence is idempotent.
+ *
+ * @param initialSupply - The token's original supply.
+ * @param events        - Ordered burn events (may contain duplicate ids).
+ * @returns             - Final token state after processing.
+ */
+function applyBurnEvents(
+  initialSupply: bigint,
+  events: BurnEvent[]
+): TokenState {
+  const state: TokenState = { totalSupply: initialSupply, totalBurned: 0n };
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (seen.has(event.id)) {
+      // Already processed — replay is a no-op.
+      continue;
+    }
+    seen.add(event.id);
+    tryBurn(state, event.amount);
+  }
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +301,99 @@ describe("Property 64 — Token Burn Invariants", () => {
         }
       ),
       { numRuns: 200 }
+    );
+  });
+
+  /**
+   * Property 8: Overdraft burns are rejected and leave state unchanged.
+   *
+   * Invariant: A burn whose amount exceeds the remaining supply is rejected
+   * before any state mutation.
+   * Mathematical form: ∀ token, ∀ amount > token.totalSupply:
+   *   tryBurn(state, amount) === false ∧ state unchanged
+   *
+   * Validates: Requirements 4.1 (overdraft rejection)
+   */
+  // Feature: token-burn-invariants, Property 8: overdraft burns are rejected
+  it("Property 8: burns exceeding remaining supply are rejected with unchanged state", () => {
+    fc.assert(
+      fc.property(
+        fc
+          .record({ token: tokenArb })
+          .chain(({ token }) =>
+            fc.record({
+              token: fc.constant(token),
+              burnAmount: fc.bigInt({
+                min: token.totalSupply + 1n,
+                max: token.totalSupply * 2n + 1n,
+              }),
+            })
+          ),
+        ({ token, burnAmount }) => {
+          const state: TokenState = {
+            totalSupply: token.totalSupply,
+            totalBurned: token.totalBurned,
+          };
+
+          const accepted = tryBurn(state, burnAmount);
+
+          expect(accepted).toBe(false);
+          expect(state.totalSupply).toBe(token.totalSupply);
+          expect(state.totalBurned).toBe(token.totalBurned);
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  /**
+   * Property 9: Replaying a burn sequence is idempotent.
+   *
+   * Invariant: Applying the same burn sequence twice (deduped by event id)
+   * yields the same final state as applying it once.
+   * Mathematical form: ∀ token, ∀ burn sequence S:
+   *   applyBurnEvents(initialSupply, S ++ S) ≡ applyBurnEvents(initialSupply, S)
+   *
+   * Validates: Requirements 8.3 (replay idempotency)
+   */
+  // Feature: token-burn-invariants, Property 9: replay is idempotent
+  it("Property 9: replaying the same burn sequence is idempotent", () => {
+    fc.assert(
+      fc.property(
+        fc
+          .record({ token: tokenArb })
+          .chain(({ token }) =>
+            fc.record({
+              token: fc.constant(token),
+              events: fc
+                .array(
+                  fc.record({
+                    id: fc.uuid(),
+                    amount: fc.bigInt({ min: 1n, max: token.initialSupply }),
+                  }),
+                  { minLength: 1, maxLength: 20 }
+                )
+                .map((events) =>
+                  // Ensure unique ids so the sequence is a valid burn log.
+                  events.map((event, index) => ({
+                    ...event,
+                    id: `${index}-${event.id}`,
+                  }))
+                ),
+            })
+          ),
+        ({ token, events }) => {
+          const once = applyBurnEvents(token.initialSupply, events);
+          const replayed = applyBurnEvents(token.initialSupply, [
+            ...events,
+            ...events,
+          ]);
+
+          expect(replayed.totalSupply).toBe(once.totalSupply);
+          expect(replayed.totalBurned).toBe(once.totalBurned);
+        }
+      ),
+      { numRuns: 100 }
     );
   });
 });

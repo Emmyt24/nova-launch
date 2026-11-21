@@ -37,7 +37,7 @@ interface NonceEntry {
 export class NonceService implements OnModuleDestroy {
   private readonly logger = new Logger(NonceService.name);
   private readonly redis: Redis;
-  private cleanupInterval: NodeJS.Timeout;
+  private cleanupInterval?: NodeJS.Timeout;
 
   constructor(redisClient?: Redis) {
     this.redis = redisClient ?? NonceService.createRedisClient(this.logger);
@@ -45,7 +45,12 @@ export class NonceService implements OnModuleDestroy {
     // Safety-net cleanup: scan for any nonce keys whose TTL has already fired
     // but whose entries were somehow not evicted (e.g., Redis maxmemory policy
     // set to noeviction). In normal operation Redis TTL handles eviction.
+    //
+    // The interval is unref'd so it never keeps the Node event loop alive on
+    // its own (graceful shutdown, tests with --detectOpenHandles). The timer is
+    // still cleared explicitly via stop()/onModuleDestroy().
     this.cleanupInterval = setInterval(() => this.cleanupUsedNonces(), 60_000);
+    this.cleanupInterval?.unref?.();
   }
 
   /**
@@ -206,8 +211,18 @@ export class NonceService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Stops the background cleanup interval. Safe to call multiple times.
+   */
+  stop(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = undefined;
+    }
+  }
+
   onModuleDestroy(): void {
-    clearInterval(this.cleanupInterval);
+    this.stop();
     this.redis.disconnect();
   }
 }

@@ -1,5 +1,7 @@
 # Implementation Plan: Stateful Contract Fuzzing
 
+<!-- Note: Healthcheck liveness probes for gateway services to be added when docker-compose.gateway.yml is present. -->
+
 ## Status: ✅ COMPLETED (Alternative Implementation)
 
 The stateful contract fuzzing feature has been successfully implemented in `contracts/token-factory/src/fuzz_test.rs` using an alternative approach that achieves all functional requirements while using a custom deterministic generator instead of proptest strategies.

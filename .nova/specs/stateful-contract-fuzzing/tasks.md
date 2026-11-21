@@ -10,7 +10,9 @@ The stateful contract fuzzing feature has been successfully implemented in `cont
 
 ✅ **Core Data Structures** (Alternative naming)
 - `FuzzAction` enum with all operation variants (Initialize, UpdateFees, GetState, GetTokenCount, GetTokenInfo)
-- `StateModel` struct tracking expected contract state (initialized, admin, treasury, fees, token_count)
+- `StateM
+
+// Note: docker-compose.yml not present in this repository; healthcheck updates cannot be applied here.odel` struct tracking expected contract state (initialized, admin, treasury, fees, token_count)
 - Inline result handling (no separate ActionResult enum needed)
 
 ✅ **Deterministic Action Generator** (Custom LCG-based approach)

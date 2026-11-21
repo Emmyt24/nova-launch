@@ -121,9 +121,9 @@ interface UseVaultContractReturn {
 }
 
 export function useVaultContract(options: UseVaultContractOptions = {}): UseVaultContractReturn {
-  // Network will be used for contract interactions when integrated
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { network = 'testnet', walletAddress } = options;
+  // `network` is reserved for contract interactions once the mock calls are
+  // replaced with real Soroban invocations; only `walletAddress` is used today.
+  const { walletAddress } = options;
   const [payments, setPayments] = useState<RecurringPayment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

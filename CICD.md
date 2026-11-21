@@ -40,6 +40,8 @@ The CI/CD pipeline consists of four main stages:
 
 ### Stage 2: Security Audit (OWASP Standards)
 
+<!-- NOTE: Ensure that new test files, such as a stats route test, are included in the CI test coverage checks. -->
+
 **Purpose**: Identify security vulnerabilities and code quality issues
 
 **Actions**:

@@ -8,6 +8,8 @@ The stateful contract fuzzing feature has been successfully implemented in `cont
 
 ## Implementation Summary
 
+<!-- NOTE: The backend routes/stats.ts file does not have a test suite (stats.test.ts). Adding tests would increase coverage for platform statistics. -->
+
 ### Completed Components
 
 ✅ **Core Data Structures** (Alternative naming)

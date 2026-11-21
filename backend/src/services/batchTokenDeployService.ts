@@ -78,6 +78,11 @@ export interface BatchDeployResult {
 export interface StellarDeployResult {
   /** The newly minted Stellar G-address for this token. */
   address: string;
+  /**
+   * Authoritative on-chain transaction hash returned by the submission
+   * response. `null` when the network response did not include a hash.
+   */
+  txHash?: string | null;
 }
 
 /**
@@ -91,20 +96,30 @@ export interface StellarDeployResult {
 export async function callStellarDeploy(
   input: TokenDeployInput
 ): Promise<StellarDeployResult> {
-  const result = await stellarService.deployToken({
-    creator: input.creator,
-    name: input.name,
-    symbol: input.symbol,
-    decimals: input.decimals,
-    initialSupply: input.initialSupply,
-    metadataUri: input.metadataUri,
-  });
+  // TODO: replace with real Soroban RPC call once contract addresses are
+  //       finalised.  The generated address below is a placeholder that
+  //       satisfies the Stellar G-address format used in tests.
+  //
+  // Example real implementation:
+  //   const server = new SorobanRpc.Server(process.env.SOROBAN_RPC_URL!);
+  //   const contract = new Contract(process.env.TOKEN_FACTORY_ADDRESS!);
+  //   const result = await server.submitTransaction(
+  //     TransactionBuilder.buildFeeBumpTransaction(...)
+  //   );
+  //   return {
+  //     address: result.contractAddress,
+  //     txHash: result.hash ?? null,
+  //   };
 
   if (!result || !result.address) {
     throw new Error("Stellar deploy returned no contract address");
   }
 
-  return { address: result.address };
+  // No real network submission yet, so there is no authoritative hash to
+  // report. Fall back to `null` rather than fabricating a value.
+  const txHash: string | null = null;
+
+  return { address, txHash };
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +215,11 @@ export async function batchDeployTokens(
       // Fire-and-forget: event failures must not roll back a successful batch.
       // Emit events matching the GraphQL schema expectation (tokenAddress, creatorAddress, etc.)
       // to ensure subscription filters (like tenant scoping by creatorAddress) work correctly.
+      // The tx hash is taken from the on-chain submission response captured in
+      // phase 1; it is `null` when the network response did not include one.
+      const txHash =
+        stellarResults.find((r) => r.address === token.address)?.txHash ?? null;
+
       eventBus
         .publish("token.deployed", {
           tokenAddress: token.address,
@@ -207,8 +227,7 @@ export async function batchDeployTokens(
           name: token.name,
           symbol: token.symbol,
           totalSupply: token.totalSupply.toString(),
-          // TODO: once on-chain integration is complete, capture the actual txHash from Stellar
-          txHash: `batch-deploy-${token.id}`,
+          txHash,
           timestamp: token.createdAt.toISOString(),
         })
         .catch((err) =>

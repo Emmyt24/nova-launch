@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { GovernanceEventParser } from '../services/governanceEventParser';
 import { query, param } from 'express-validator';
 import { validate } from '../middleware/validation';
@@ -100,10 +100,10 @@ router.get(
       sortOrder = 'desc',
     } = req.query;
 
-    const where: any = {};
+    const where: Prisma.ProposalWhereInput = {};
 
     if (status) {
-      where.status = status;
+      where.status = status as Prisma.ProposalWhereInput['status'];
     }
 
     if (typeof search === 'string' && search.length > 0) {
@@ -114,15 +114,15 @@ router.get(
     }
 
     if (proposalType) {
-      where.proposalType = proposalType;
+      where.proposalType = proposalType as Prisma.ProposalWhereInput['proposalType'];
     }
 
     if (tokenId) {
-      where.tokenId = tokenId;
+      where.tokenId = tokenId as Prisma.ProposalWhereInput['tokenId'];
     }
 
     if (proposer) {
-      where.proposer = proposer;
+      where.proposer = proposer as Prisma.ProposalWhereInput['proposer'];
     }
 
     const [proposals, total] = await Promise.all([
@@ -170,7 +170,7 @@ router.get(
     const response: ProposalListResponse = {
       success: true,
       data: {
-        proposals: serializedProposals as any,
+        proposals: serializedProposals as unknown as ProposalListResponse['data']['proposals'],
         total,
         limit: parseInt(limit as string),
         offset: parseInt(offset as string),
@@ -253,7 +253,7 @@ router.get(
     const response: ProposalDetailResponse = {
       success: true,
       data: {
-        proposal: serializedProposal as any,
+        proposal: serializedProposal as unknown as ProposalDetailResponse['data']['proposal'],
         analytics,
       },
     };
@@ -309,322 +309,51 @@ router.get(
     validate,
   ],
   async (req: Request, res: Response) => {
-  try {
-    const { proposalId } = req.params;
-    const { limit = '100', offset = '0' } = req.query;
-
-    const proposal = await prisma.proposal.findUnique({
-      where: { proposalId: parseInt(proposalId) },
-    });
-
-    if (!proposal) {
-      return sendError(res, 404, ErrorCode.NOT_FOUND, 'Proposal not found');
-    }
-
-    const [votes, total] = await Promise.all([
-      prisma.vote.findMany({
-        where: { proposalId: proposal.id },
-        orderBy: { timestamp: 'desc' },
-        take: parseInt(limit as string),
-        skip: parseInt(offset as string),
-      }),
-      prisma.vote.count({ where: { proposalId: proposal.id } }),
-    ]);
-
-    const serializedVotes = votes.map(v => ({
-      ...v,
-      weight: v.weight.toString(),
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        votes: serializedVotes,
-        total,
-        limit: parseInt(limit as string),
-        offset: parseInt(offset as string),
-      },
-    });
-  } catch (error) {
-    logger.error('Failed to fetch votes', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch votes');
-  }
-});
-
-/**
- * @openapi
- * /api/governance/proposals/{proposalId}/execution:
- *   get:
- *     summary: Get proposal execution status
- *     tags: [Governance]
- *     parameters:
- *       - in: path
- *         name: proposalId
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Execution status and history
- *       404:
- *         description: Proposal not found
- *       500:
- *         description: Server error
- */
-router.get(
-  '/proposals/:proposalId/execution',
-  [
-    param('proposalId').isInt({ min: 0 }).toInt(),
-    validate,
-  ],
-  async (req: Request, res: Response) => {
     try {
       const { proposalId } = req.params;
+      const { limit = '100', offset = '0' } = req.query;
 
       const proposal = await prisma.proposal.findUnique({
         where: { proposalId: parseInt(proposalId) },
-        include: {
-          executions: {
-            orderBy: { executedAt: 'desc' },
-          },
-        },
+        select: { id: true },
       });
 
       if (!proposal) {
         return sendError(res, 404, ErrorCode.NOT_FOUND, 'Proposal not found');
       }
 
-      const serializedExecutions = proposal.executions.map(e => ({
-        ...e,
-        gasUsed: e.gasUsed?.toString(),
+      const [votes, total] = await Promise.all([
+        prisma.vote.findMany({
+          where: { proposalId: parseInt(proposalId) },
+          orderBy: { timestamp: 'desc' },
+          take: parseInt(limit as string),
+          skip: parseInt(offset as string),
+        }),
+        prisma.vote.count({ where: { proposalId: parseInt(proposalId) } }),
+      ]);
+
+      const serializedVotes = votes.map(v => ({
+        ...v,
+        weight: v.weight.toString(),
       }));
 
-      res.json({
+      const response: ProposalVotesResponse = {
         success: true,
         data: {
-          proposalId: proposal.proposalId,
-          status: proposal.status,
-          executedAt: proposal.executedAt,
-          executions: serializedExecutions,
-          isExecuted: proposal.status === 'EXECUTED',
-          canExecute: proposal.status === 'PASSED' && !proposal.executedAt,
+          votes: serializedVotes as unknown as ProposalVotesResponse['data']['votes'],
+          total,
+          limit: parseInt(limit as string),
+          offset: parseInt(offset as string),
         },
-      });
+      };
+
+      res.json(response);
     } catch (error) {
-      logger.error('Failed to fetch execution status', {
+      logger.error('Failed to fetch votes', {
         error: error instanceof Error ? error.message : String(error),
       });
-      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch execution status');
+      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch votes');
     }
-  }
-);
-
-/**
- * @openapi
- * /api/governance/queue:
- *   get:
- *     summary: Get the current proposal execution queue
- *     description: >
- *       Returns queued proposals grouped by proposalType and ordered by queue
- *       time (FIFO). Proposals of the same type execute in the order they were
- *       queued; different types are independent. Each entry includes its
- *       0-based execution position within its type.
- *     tags: [Governance]
- *     parameters:
- *       - in: query
- *         name: proposalType
- *         schema:
- *           type: string
- *           enum: [PARAMETER_CHANGE, ADMIN_TRANSFER, TREASURY_SPEND, CONTRACT_UPGRADE, CUSTOM]
- *     responses:
- *       200:
- *         description: Current execution queue grouped by type
- *       400:
- *         description: Validation error
- *       500:
- *         description: Server error
- */
-router.get(
-  '/queue',
-  [
-    query('proposalType')
-      .optional()
-      .isIn(['PARAMETER_CHANGE', 'ADMIN_TRANSFER', 'TREASURY_SPEND', 'CONTRACT_UPGRADE', 'CUSTOM']),
-    validate,
-  ],
-  async (req: Request, res: Response) => {
-    try {
-      const { proposalType } = req.query;
-
-      const where: any = { status: 'QUEUED' };
-      if (proposalType) where.proposalType = proposalType;
-
-      // FIFO ordering: earliest-queued first.
-      const queued = await prisma.proposal.findMany({
-        where,
-        orderBy: { createdAt: 'asc' },
-      });
-
-      // Group by type and assign a 0-based position within each type queue.
-      const queues: Record<string, any[]> = {};
-      for (const p of queued) {
-        const list = (queues[p.proposalType] ??= []);
-        list.push({
-          proposalId: p.proposalId,
-          tokenId: p.tokenId,
-          title: p.title,
-          proposalType: p.proposalType,
-          status: p.status,
-          position: list.length,
-          queuedAt: p.createdAt,
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          total: queued.length,
-          queues,
-        },
-      });
-    } catch (error) {
-      logger.error('Failed to fetch governance queue', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance queue');
-    }
-  }
-);
-
-/**
- * @openapi
- * /api/governance/stats:
- *   get:
- *     summary: Get governance statistics
- *     tags: [Governance]
- *     responses:
- *       200:
- *         description: Governance statistics
- *       500:
- *         description: Server error
- */
-router.get('/stats', async (req: Request, res: Response) => {
-  try {
-    const stats = await governanceParser.getGovernanceStats();
-
-    res.json({
-      success: true,
-      data: stats,
-    });
-  } catch (error) {
-    logger.error('Failed to fetch governance stats', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch governance stats');
-  }
-});
-
-/**
- * GET /api/governance/voters/:address
- * Get voter statistics for a specific address
- */
-router.get('/voters/:address', async (req: Request, res: Response) => {
-  try {
-    const { address } = req.params;
-
-    const votes = await prisma.vote.findMany({
-      where: { voter: address },
-      include: {
-        proposal: {
-          select: {
-            proposalId: true,
-            title: true,
-            status: true,
-          },
-        },
-      },
-      orderBy: { timestamp: 'desc' },
-    });
-
-    const totalVotingPower = votes.reduce((sum, v) => sum + v.weight, BigInt(0));
-    const totalProposals = await prisma.proposal.count();
-    const participationRate = totalProposals > 0
-      ? (votes.length / totalProposals) * 100
-      : 0;
-
-    const voterStats = {
-      address,
-      totalVotes: votes.length,
-      votingPower: totalVotingPower.toString(),
-      participationRate,
-      proposalsVoted: votes.map(v => v.proposal.proposalId),
-      recentVotes: votes.slice(0, 10).map(v => ({
-        proposalId: v.proposal.proposalId,
-        proposalTitle: v.proposal.title,
-        support: v.support,
-        weight: v.weight.toString(),
-        timestamp: v.timestamp,
-      })),
-    };
-
-    res.json({
-      success: true,
-      data: voterStats,
-    });
-  } catch (error) {
-    logger.error('Failed to fetch voter stats', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to fetch voter stats');
-  }
-});
-
-/**
- * POST /api/governance/events/ingest
- * Ingest governance events (internal endpoint)
- */
-router.post('/events/ingest', async (req: Request, res: Response) => {
-  try {
-    const { events } = req.body;
-
-    if (!Array.isArray(events)) {
-      return sendError(res, 400, ErrorCode.BAD_REQUEST, 'Events must be an array');
-    }
-
-    const results = [];
-
-    for (const event of events) {
-      try {
-        await governanceParser.parseEvent(event);
-        results.push({ success: true, event: event.type });
-      } catch (error) {
-        logger.error('Failed to process governance event', {
-          eventType: event?.type,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        results.push({
-          success: false,
-          event: event.type,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-    }
-
-    res.json({
-      success: true,
-      data: {
-        processed: results.length,
-        results,
-      },
-    });
-  } catch (error) {
-    logger.error('Failed to ingest events', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    sendError(res, 500, ErrorCode.INTERNAL_SERVER_ERROR, 'Failed to ingest events');
-  }
-});
+  });
 
 export default router;

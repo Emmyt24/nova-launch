@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # Setup script for Soroban development environment
+# Uses strict mode: abort on errors, unset variables, and failed pipes.
+set -euo pipefail
 
 echo "Setting up Soroban development environment..."
 
@@ -8,7 +10,8 @@ echo "Setting up Soroban development environment..."
 if ! command -v rustc &> /dev/null; then
     echo "Rust is not installed. Installing..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-    source $HOME/.cargo/env
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
 fi
 
 # Add wasm32 target
@@ -23,10 +26,11 @@ fi
 
 # Configure Stellar testnet
 echo "Configuring Stellar testnet..."
+# Optional: ignore failure if the network is already configured.
 soroban network add \
   --global testnet \
   --rpc-url https://soroban-testnet.stellar.org:443 \
-  --network-passphrase "Test SDF Network ; September 2015"
+  --network-passphrase "Test SDF Network ; September 2015" || true
 
 # Generate identity for testing (if not exists)
 if ! soroban keys show admin &> /dev/null; then

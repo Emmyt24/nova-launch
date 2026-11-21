@@ -6,10 +6,9 @@
 //! - Execution preconditions: proposals can only execute after timelock and with proper state
 //! - Terminal state permanence: executed/cancelled proposals cannot be modified
 
-// TODO: Fix property tests - need to wrap all timelock calls in as_contract context
-// Temporarily disabled to unblock other tests
+// All timelock entry points are invoked inside `env.as_contract(...)` so that the
+// contract's own storage/auth context is active during property runs.
 
-/*
 use super::*;
 use crate::timelock;
 use crate::types::{VoteChoice, ActionType};
@@ -89,15 +88,17 @@ mod property_tests {
         ) {
             let test_env = TestEnv::with_timelock(1000);
             
-            let proposal_id = timelock::create_proposal(
-                &test_env.env,
-                &test_env.admin,
-                ActionType::FeeChange,
-                test_payload(&test_env.env, &[1, 2, 3]),
-                test_env.env.ledger().timestamp() + 1000,
-                test_env.env.ledger().timestamp() + 10000,
-                test_env.env.ledger().timestamp() + 20000,
-            ).unwrap();
+            let proposal_id = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::create_proposal(
+                    &test_env.env,
+                    &test_env.admin,
+                    ActionType::FeeChange,
+                    test_payload(&test_env.env, &[1, 2, 3]),
+                    test_env.env.ledger().timestamp() + 1000,
+                    test_env.env.ledger().timestamp() + 10000,
+                    test_env.env.ledger().timestamp() + 20000,
+                )
+            }).unwrap();
             
             test_env.env.ledger().set_timestamp(test_env.env.ledger().timestamp() + 1100);
             
@@ -113,11 +114,15 @@ mod property_tests {
                     _ => VoteChoice::Abstain,
                 };
                 
-                let result = timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice)
+                });
                 prop_assert!(result.is_ok());
             }
             
-            let (first_for, first_against, first_abstain) = timelock::get_vote_counts(&test_env.env, proposal_id).unwrap();
+            let (first_for, first_against, first_abstain) = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::get_vote_counts(&test_env.env, proposal_id)
+            }).unwrap();
             
             for i in 0..voters.len().min(second_votes.len() as u32) {
                 let voter = voters.get(i).unwrap();
@@ -127,11 +132,15 @@ mod property_tests {
                     _ => VoteChoice::Abstain,
                 };
                 
-                let result = timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice)
+                });
                 prop_assert!(result.is_err());
             }
             
-            let (final_for, final_against, final_abstain) = timelock::get_vote_counts(&test_env.env, proposal_id).unwrap();
+            let (final_for, final_against, final_abstain) = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::get_vote_counts(&test_env.env, proposal_id)
+            }).unwrap();
             prop_assert_eq!(first_for, final_for);
             prop_assert_eq!(first_against, final_against);
             prop_assert_eq!(first_abstain, final_abstain);
@@ -148,37 +157,47 @@ mod property_tests {
             let end_time = start_time + 10000;
             let eta = end_time + 7200; // 2 hours — within [MIN=3600, MAX=2592000]
             
-            let proposal_id = timelock::create_proposal(
-                &test_env.env,
-                &test_env.admin,
-                ActionType::FeeChange,
-                test_payload(&test_env.env, &[1, 2, 3]),
-                start_time,
-                end_time,
-                eta,
-            ).unwrap();
+            let proposal_id = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::create_proposal(
+                    &test_env.env,
+                    &test_env.admin,
+                    ActionType::FeeChange,
+                    test_payload(&test_env.env, &[1, 2, 3]),
+                    start_time,
+                    end_time,
+                    eta,
+                )
+            }).unwrap();
             
             if num_votes > 0 {
                 test_env.env.ledger().set_timestamp(start_time + 100);
                 
                 for _ in 0..num_votes {
                     let voter = Address::generate(&test_env.env);
-                    let _ = timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For);
+                    let _ = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                        timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For)
+                    });
                 }
             }
             
             test_env.env.ledger().set_timestamp(start_time + time_advance);
             
             let current_time = test_env.env.ledger().timestamp();
-            let _proposal = timelock::get_proposal(&test_env.env, proposal_id).unwrap();
+            let _proposal = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::get_proposal(&test_env.env, proposal_id)
+            }).unwrap();
             
             if current_time < start_time {
                 let test_voter = Address::generate(&test_env.env);
-                let result = timelock::vote_proposal(&test_env.env, &test_voter, proposal_id, VoteChoice::For);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &test_voter, proposal_id, VoteChoice::For)
+                });
                 prop_assert!(result.is_err());
             } else if current_time >= end_time {
                 let test_voter = Address::generate(&test_env.env);
-                let result = timelock::vote_proposal(&test_env.env, &test_voter, proposal_id, VoteChoice::For);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &test_voter, proposal_id, VoteChoice::For)
+                });
                 prop_assert!(result.is_err());
             }
         }
@@ -194,34 +213,44 @@ mod property_tests {
             let end_time = start_time + 5000;
             let eta = end_time + 3600; // exactly MIN_TIMELOCK_DELAY
             
-            let proposal_id = timelock::create_proposal(
-                &test_env.env,
-                &test_env.admin,
-                ActionType::FeeChange,
-                test_payload(&test_env.env, &[1, 2, 3]),
-                start_time,
-                end_time,
-                eta,
-            ).unwrap();
+            let proposal_id = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::create_proposal(
+                    &test_env.env,
+                    &test_env.admin,
+                    ActionType::FeeChange,
+                    test_payload(&test_env.env, &[1, 2, 3]),
+                    start_time,
+                    end_time,
+                    eta,
+                )
+            }).unwrap();
             
             test_env.env.ledger().set_timestamp(start_time + 100);
             
             for _ in 0..initial_votes {
                 let voter = Address::generate(&test_env.env);
-                let _ = timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For);
+                let _ = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For)
+                });
             }
             
-            let (votes_before, _, _) = timelock::get_vote_counts(&test_env.env, proposal_id).unwrap();
+            let (votes_before, _, _) = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::get_vote_counts(&test_env.env, proposal_id)
+            }).unwrap();
             
             test_env.env.ledger().set_timestamp(end_time + 100);
             
             for _ in 0..post_execution_votes {
                 let voter = Address::generate(&test_env.env);
-                let result = timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &voter, proposal_id, VoteChoice::For)
+                });
                 prop_assert!(result.is_err());
             }
             
-            let (votes_after, _, _) = timelock::get_vote_counts(&test_env.env, proposal_id).unwrap();
+            let (votes_after, _, _) = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::get_vote_counts(&test_env.env, proposal_id)
+            }).unwrap();
             prop_assert_eq!(votes_before, votes_after);
         }
 
@@ -233,15 +262,17 @@ mod property_tests {
             
             let start_time = test_env.env.ledger().timestamp() + 1000;
             
-            let proposal_id = timelock::create_proposal(
-                &test_env.env,
-                &test_env.admin,
-                ActionType::FeeChange,
-                test_payload(&test_env.env, &[1, 2, 3]),
-                start_time,
-                start_time + 50000,
-                start_time + 60000,
-            ).unwrap();
+            let proposal_id = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                timelock::create_proposal(
+                    &test_env.env,
+                    &test_env.admin,
+                    ActionType::FeeChange,
+                    test_payload(&test_env.env, &[1, 2, 3]),
+                    start_time,
+                    start_time + 50000,
+                    start_time + 60000,
+                )
+            }).unwrap();
             
             let mut expected_for = 0i128;
             let mut expected_against = 0i128;
@@ -266,10 +297,14 @@ mod property_tests {
                     },
                 };
                 
-                let result = timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice);
+                let result = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                    timelock::vote_proposal(&test_env.env, &voter, proposal_id, choice)
+                });
                 
                 if result.is_ok() {
-                    let (votes_for, votes_against, votes_abstain) = timelock::get_vote_counts(&test_env.env, proposal_id).unwrap();
+                    let (votes_for, votes_against, votes_abstain) = test_env.env.as_contract(&test_env.env.current_contract_address(), || {
+                        timelock::get_vote_counts(&test_env.env, proposal_id)
+                    }).unwrap();
                     let total = votes_for + votes_against + votes_abstain;
                     let expected_total = expected_for + expected_against + expected_abstain;
                     
@@ -279,4 +314,3 @@ mod property_tests {
         }
     }
 }
-*/

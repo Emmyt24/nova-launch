@@ -1,65 +1,54 @@
-import Redis from "ioredis";
+import Redis from 'ioredis';
+
+const LOCAL_REDIS_URL = 'redis://localhost:6379';
+
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
 
 /**
- * Shared Redis client helper.
+ * Resolve the Redis connection URL.
  *
- * Extracted from `middleware/rateLimiter.ts` so other modules (e.g. the
- * leaderboard sorted-set cache) can reuse the exact same client-creation
- * and lazy-singleton conventions instead of re-inventing connection
- * handling. The rate limiter re-exports `createRedisClient` from here for
- * backwards compatibility.
+ * In production, an explicit REDIS_URL or REDIS_HOST must be configured;
+ * silently falling back to localhost hides misconfiguration (rate limiting
+ * and nonces would misbehave). In development/test the local default is kept.
  */
+function resolveRedisUrl(): string {
+  const url = process.env.REDIS_URL;
+  if (url) {
+    return url;
+  }
 
-/**
- * Creates a Redis client from environment variables.
- * Falls back to localhost:6379 if REDIS_URL is not set.
- */
-export function createRedisClient(): Redis {
-  const url = process.env.REDIS_URL || "redis://localhost:6379";
-  const client = new Redis(url, {
-    // Fail fast on connection errors rather than blocking requests
-    enableOfflineQueue: false,
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-  });
-  client.on("error", (err) => {
-    // Log but don't crash — fallback logic handles unavailability
-    console.error("[Redis] connection error:", err.message);
-  });
+  const host = process.env.REDIS_HOST;
+  if (host) {
+    const port = process.env.REDIS_PORT ?? '6379';
+    return `redis://${host}:${port}`;
+  }
+
+  if (isProduction()) {
+    throw new Error(
+      'Redis is not configured: set REDIS_URL or REDIS_HOST in production. ' +
+        'Refusing to fall back to localhost.',
+    );
+  }
+
+  return LOCAL_REDIS_URL;
+}
+
+let client: Redis | null = null;
+
+export function getRedisClient(): Redis {
+  if (!client) {
+    client = new Redis(resolveRedisUrl());
+  }
   return client;
 }
 
-/** Lazily-initialised shared Redis client (one per process). */
-let _redis: Redis | null = null;
-
-/**
- * Returns the shared, lazily-initialised Redis client instance.
- *
- * Callers should always handle connection failures (e.g. via try/catch
- * around the command itself) — this helper does not guarantee the client
- * is connected, only that a single instance is reused across modules.
- */
-export function getRedis(): Redis {
-  if (!_redis) _redis = createRedisClient();
-  return _redis;
-}
-
-/** Gracefully closes the shared Redis client, if one was created. */
-export async function closeRedis(): Promise<void> {
-  const client = _redis;
-  _redis = null;
-  if (!client) return;
-  try {
-    await client.quit();
-  } catch {
-    client.disconnect();
+export function closeRedisClient(): Promise<void> {
+  if (!client) {
+    return Promise.resolve();
   }
-}
-
-/**
- * Test-only helper to reset the shared client singleton so tests can swap
- * in a mock or re-create the client with different env vars.
- */
-export function __resetRedisForTests(): void {
-  _redis = null;
+  const current = client;
+  client = null;
+  return current.quit().then(() => undefined);
 }

@@ -18,6 +18,8 @@ jobs:
   gas-threshold-regression:
     name: Gas Threshold Regression Guard
     runs-on: ubuntu-latest
+    # Bound runner usage: fail fast instead of holding the runner for the 6-hour default.
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7

@@ -40,19 +40,43 @@ export class NonceService implements OnModuleDestroy {
   private cleanupInterval: NodeJS.Timeout;
 
   constructor(redisClient?: Redis) {
-    this.redis =
-      redisClient ??
-      new Redis({
-        host: process.env.REDIS_HOST ?? "localhost",
-        port: Number(process.env.REDIS_PORT ?? 6379),
-        password: process.env.REDIS_PASSWORD,
-        lazyConnect: true,
-      });
+    this.redis = redisClient ?? NonceService.createRedisClient(this.logger);
 
     // Safety-net cleanup: scan for any nonce keys whose TTL has already fired
     // but whose entries were somehow not evicted (e.g., Redis maxmemory policy
     // set to noeviction). In normal operation Redis TTL handles eviction.
     this.cleanupInterval = setInterval(() => this.cleanupUsedNonces(), 60_000);
+  }
+
+  /**
+   * Builds the implicit Redis client from environment configuration.
+   *
+   * The `localhost:6379` fallback is only safe for development/test. In
+   * production a missing REDIS_HOST/REDIS_URL is a misconfiguration that would
+   * silently break nonce issuance, so we throw instead of guessing an endpoint.
+   * No connection details or secrets are logged.
+   */
+  private static createRedisClient(logger: Logger): Redis {
+    const host = process.env.REDIS_HOST;
+    const url = process.env.REDIS_URL;
+
+    if (!host && !url) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          "Redis is not configured: set REDIS_URL or REDIS_HOST in production"
+        );
+      }
+      logger.warn(
+        "REDIS_URL/REDIS_HOST not set; falling back to localhost:6379 (non-production only)"
+      );
+    }
+
+    return new Redis({
+      host: host ?? "localhost",
+      port: Number(process.env.REDIS_PORT ?? 6379),
+      password: process.env.REDIS_PASSWORD,
+      lazyConnect: true,
+    });
   }
 
   /**

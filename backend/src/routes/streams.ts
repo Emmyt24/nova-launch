@@ -97,6 +97,10 @@ router.get("/:streamId/metadata", async (req: Request, res: Response) => {
  * Security (#1901): Caller identity is derived from JWT, not the request body.
  * This prevents unauthorized updates via plaintext address impersonation.
  *
+ * Security (#2379): On an authorization failure the client receives a fixed
+ * generic message ("Authentication required"); the underlying auth error is
+ * logged server-side only, never echoed back to the caller.
+ *
  * Validation (#2209): the body is checked and sanitized by
  * `validateStreamMetadata` (allowed fields, size and per-field limits).
  * Failures return 400 `VALIDATION_ERROR` (413 `PAYLOAD_TOO_LARGE` for an
@@ -148,9 +152,18 @@ router.put(
       res.json(successResponse(serialize(metadata)));
     } catch (error) {
       if (error instanceof StreamMetadataAuthError) {
-        return res
-          .status(403)
-          .json(errorResponse({ code: "UNAUTHORIZED", message: error.message }));
+        // Do not echo the raw auth error to the client; log it server-side.
+        logger.error("Stream metadata authorization failed", {
+          route: "PUT /api/streams/:streamId/metadata",
+          streamId: streamId.toString(),
+          error: errorMessage(error),
+        });
+        return res.status(403).json(
+          errorResponse({
+            code: "UNAUTHORIZED",
+            message: "Authentication required",
+          })
+        );
       }
       logger.error("Failed to update stream metadata", {
         route: "PUT /api/streams/:streamId/metadata",

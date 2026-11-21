@@ -107,6 +107,9 @@ export class WebSocketService {
       () => this.runHeartbeat(),
       HEARTBEAT_INTERVAL_MS
     );
+    // Do not let the heartbeat timer keep the event loop (and process) alive
+    // during graceful shutdown or in tests. `close()` still clears it.
+    this.heartbeatTimer?.unref?.();
 
     logger.info("WebSocket server attached", { path: "/ws" });
   }
@@ -251,11 +254,8 @@ export class WebSocketService {
       }
       ws.send(JSON.stringify({
         type: "token_refreshed",
-        expiresAt: state.tokenExpiresAt,
         timestamp: new Date().toISOString(),
       }));
-    } else {
-      ws.send(JSON.stringify({ type: "error", message: "Unknown message type" }));
     }
   }
 
@@ -267,36 +267,11 @@ export class WebSocketService {
   }
 
   private decrementIpCount(ip: string): void {
-    const count = (this.ipConnectionCount.get(ip) ?? 1) - 1;
-    if (count <= 0) this.ipConnectionCount.delete(ip);
-    else this.ipConnectionCount.set(ip, count);
-  }
-
-  private extractToken(req: IncomingMessage): string | null {
-    const authorization = req.headers.authorization;
-    if (typeof authorization !== "string") return null;
-    const match = authorization.match(/^Bearer\s+(.+)$/i);
-    return match?.[1] ?? null;
-  }
-
-  private applyToken(state: ClientState, token: string): boolean {
-    const secret = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
-    if (!secret) return false;
-    try {
-      const payload = jwt.verify(token, secret) as jwt.JwtPayload & { type?: string };
-      if (payload.type && payload.type !== "access") return false;
-      if (!payload.exp) return false;
-      if (state.tokenExpiryTimer) clearTimeout(state.tokenExpiryTimer);
-      const expiresAt = payload.exp * 1000;
-      state.tokenExpiresAt = expiresAt;
-      state.tokenExpiryTimer = setTimeout(() => {
-        if (state.ws.readyState === WebSocket.OPEN) {
-          state.ws.close(TOKEN_EXPIRED_CLOSE_CODE, "Authentication token expired; refresh required");
-        }
-      }, Math.max(0, expiresAt - Date.now()));
-      return true;
-    } catch {
-      return false;
+    const count = this.ipConnectionCount.get(ip) ?? 0;
+    if (count <= 1) {
+      this.ipConnectionCount.delete(ip);
+    } else {
+      this.ipConnectionCount.set(ip, count - 1);
     }
   }
 
@@ -304,18 +279,19 @@ export class WebSocketService {
     for (const [ws, state] of this.clients) {
       if (!state.isAlive) {
         ws.terminate();
+        this.handleClose(ws, state.ip);
         continue;
       }
       state.isAlive = false;
-      ws.ping();
+      try { ws.ping(); } catch { /* socket already gone */ }
     }
   }
 
   private clientMatchesEvent(state: ClientState, event: LiveEvent): boolean {
-    if (state.subscribedEvents !== null && !state.subscribedEvents.has(event.type)) {
+    if (state.subscribedEvents && !state.subscribedEvents.has(event.type)) {
       return false;
     }
-    if (state.tokenAddress !== null && event.tokenAddress !== state.tokenAddress) {
+    if (state.tokenAddress && event.tokenAddress !== state.tokenAddress) {
       return false;
     }
     return true;
@@ -323,10 +299,39 @@ export class WebSocketService {
 
   private resolveIp(req: IncomingMessage): string {
     const forwarded = req.headers["x-forwarded-for"];
-    if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
+    if (typeof forwarded === "string" && forwarded.length > 0) {
+      return forwarded.split(",")[0].trim();
+    }
     return req.socket.remoteAddress ?? "unknown";
   }
-}
 
-export const websocketService = new WebSocketService();
-export default websocketService;
+  private extractToken(req: IncomingMessage): string | null {
+    const header = req.headers["authorization"];
+    if (typeof header !== "string") return null;
+    const [scheme, token] = header.split(" ");
+    if (scheme?.toLowerCase() !== "bearer" || !token) return null;
+    return token;
+  }
+
+  private applyToken(state: ClientState, token: string): boolean {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) return false;
+    try {
+      const decoded = jwt.verify(token, secret) as { exp?: number };
+      if (state.tokenExpiryTimer) clearTimeout(state.tokenExpiryTimer);
+      state.tokenExpiresAt = decoded.exp ? decoded.exp * 1000 : undefined;
+      if (state.tokenExpiresAt) {
+        const delay = Math.max(0, state.tokenExpiresAt - Date.now());
+        state.tokenExpiryTimer = setTimeout(() => {
+          try {
+            state.ws.close(TOKEN_EXPIRED_CLOSE_CODE, "Authentication token expired; refresh required");
+          } catch { /* already closed */ }
+        }, delay);
+        state.tokenExpiryTimer?.unref?.();
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}

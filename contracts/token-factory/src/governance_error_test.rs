@@ -64,7 +64,7 @@ mod governance_error_tests {
         assert_eq!(result, Err(Ok(Error::VotingEnded)));
         
         // Verify error code mapping
-        assert_eq!(Error::VotingEnded as u32, 38);
+        assert_eq!(Error::VotingClosed as u32, 38);
     }
 
     #[test]

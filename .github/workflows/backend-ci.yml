@@ -21,6 +21,8 @@ jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    # Bound runner usage: a hung step must not hold a runner for the 6h default.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -82,6 +84,8 @@ jobs:
   load-test:
     name: k6 CI Load Test
     runs-on: ubuntu-latest
+    # Generous but finite: covers install + backend boot + steady-state load run.
+    timeout-minutes: 30
 
     services:
       postgres:

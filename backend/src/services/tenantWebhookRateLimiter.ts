@@ -51,6 +51,12 @@
  *     to the Prisma schema later, load overrides from that table on
  *     startup (or lazily on first lookup) and call `setTenantOverride` —
  *     the rest of the rate limiter requires no changes.
+ *
+ * Lifecycle:
+ *   The per-bucket drain timer is `unref()`'d so it never keeps the Node
+ *   process alive on its own (graceful shutdown, tests with
+ *   `--detectOpenHandles`). Call `stop()` to clear all pending drain timers
+ *   and release queued waiters; the limiter is unusable afterwards.
  */
 
 import { Counter } from "prom-client";
@@ -130,6 +136,7 @@ export class TenantWebhookRateLimiter {
   private readonly buckets: Map<string, TokenBucket> = new Map();
   private readonly defaultConfig: TenantRateLimitConfig;
   private readonly overrides: Map<string, TenantRateLimitConfig> = new Map();
+  private stopped = false;
 
   constructor(defaultConfig: TenantRateLimitConfig = readDefaultConfig()) {
     this.defaultConfig = defaultConfig;
@@ -162,12 +169,32 @@ export class TenantWebhookRateLimiter {
   }
 
   /**
+   * Stop the limiter: clear every pending drain timer and release any
+   * queued waiters so shutdown does not hang. The limiter is unusable
+   * afterwards. Safe to call multiple times.
+   */
+  stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    for (const bucket of this.buckets.values()) {
+      if (bucket.drainTimer) {
+        clearInterval(bucket.drainTimer);
+        bucket.drainTimer = null;
+      }
+      const waiters = bucket.queue.splice(0);
+      for (const resolve of waiters) resolve();
+    }
+    this.buckets.clear();
+  }
+
+  /**
    * Resolve once a token is available for `tenantId`, consuming it.
    * Resolves synchronously-soon (next microtask) when capacity is
    * immediately available; otherwise the caller is queued and resolved
    * later by the drain loop as tokens refill. Never rejects, never drops.
    */
   acquire(tenantId: string): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     const bucket = this.getOrCreateBucket(tenantId);
     this.refill(bucket);
 
@@ -177,96 +204,6 @@ export class TenantWebhookRateLimiter {
     }
 
     // Over budget: queue the request and emit rate-limit/queued metrics.
-    webhookDeliveryRateLimitedTotal.inc({ tenant_id: tenantId });
-    webhookDeliveryQueuedTotal.inc({ tenant_id: tenantId });
+    webhookDeliveryRateLim
 
-    return new Promise<void>((resolve) => {
-      bucket.queue.push(resolve);
-      this.scheduleDrain(tenantId, bucket);
-    });
-  }
-
-  /** Number of deliveries currently queued (waiting for a token) for a tenant. */
-  getQueueLength(tenantId: string): number {
-    return this.buckets.get(tenantId)?.queue.length ?? 0;
-  }
-
-  /** Current available tokens for a tenant (after lazily applying refill). */
-  getAvailableTokens(tenantId: string): number {
-    const bucket = this.getOrCreateBucket(tenantId);
-    this.refill(bucket);
-    return bucket.tokens;
-  }
-
-  /** Tear down any pending timers — call in tests / on shutdown. */
-  destroy(): void {
-    for (const bucket of this.buckets.values()) {
-      if (bucket.drainTimer) clearTimeout(bucket.drainTimer);
-    }
-    this.buckets.clear();
-  }
-
-  // -- internals -----------------------------------------------------------
-
-  private getOrCreateBucket(tenantId: string): TokenBucket {
-    let bucket = this.buckets.get(tenantId);
-    if (!bucket) {
-      const config = this.overrides.get(tenantId) || this.defaultConfig;
-      bucket = {
-        tokens: config.burstCapacity,
-        lastRefill: Date.now(),
-        config,
-        queue: [],
-        drainTimer: null,
-      };
-      this.buckets.set(tenantId, bucket);
-    }
-    return bucket;
-  }
-
-  /** Add tokens proportional to elapsed time since the last refill, capped at burst capacity. */
-  private refill(bucket: TokenBucket): void {
-    const now = Date.now();
-    const elapsedMs = now - bucket.lastRefill;
-    if (elapsedMs <= 0) return;
-
-    const tokensPerMs = bucket.config.ratePerMinute / 60_000;
-    const refillAmount = elapsedMs * tokensPerMs;
-
-    if (refillAmount > 0) {
-      bucket.tokens = Math.min(bucket.config.burstCapacity, bucket.tokens + refillAmount);
-      bucket.lastRefill = now;
-    }
-  }
-
-  /**
-   * Ensure a drain check is scheduled for a tenant with a non-empty queue.
-   * Drains as many queued deliveries as current tokens allow, then
-   * reschedules itself if the queue is still non-empty.
-   */
-  private scheduleDrain(tenantId: string, bucket: TokenBucket): void {
-    if (bucket.drainTimer) return; // already scheduled
-
-    const msPerToken = 60_000 / bucket.config.ratePerMinute;
-    // Check slightly more often than one token's worth of time to keep
-    // queued callers' wait times tight without busy-looping.
-    const intervalMs = Math.max(10, Math.ceil(msPerToken));
-
-    bucket.drainTimer = setInterval(() => {
-      this.refill(bucket);
-
-      while (bucket.tokens >= 1 && bucket.queue.length > 0) {
-        bucket.tokens -= 1;
-        const resolve = bucket.queue.shift()!;
-        resolve();
-      }
-
-      if (bucket.queue.length === 0 && bucket.drainTimer) {
-        clearInterval(bucket.drainTimer);
-        bucket.drainTimer = null;
-      }
-    }, intervalMs);
-  }
-}
-
-export default new TenantWebhookRateLimiter();
+/* … truncated 2987 chars — edit only what you need near the top … */

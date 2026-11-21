@@ -64,11 +64,14 @@ export const useWallet = (options: UseWalletOptions = {}) => {
     const [networkMismatchWarning, setNetworkMismatchWarning] = useState<string | null>(null);
     const isInitializedRef = useRef(false);
     const prevNetworkRef = useRef(externalNetwork);
+    // Capture the network at mount time so the init effect can run exactly once
+    // without depending on (and re-running for) later `externalNetwork` changes.
+    const initialNetworkRef = useRef(externalNetwork);
 
     // Initialise the kit once on mount
     useEffect(() => {
-        initWalletKit(externalNetwork);
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        initWalletKit(initialNetworkRef.current);
+    }, []);
 
     const disconnect = useCallback(async () => {
         try {

@@ -79,6 +79,11 @@ export interface BatchDeployResult {
 export interface StellarDeployResult {
   /** The newly minted Stellar G-address for this token. */
   address: string;
+  /**
+   * Authoritative on-chain transaction hash returned by the submission
+   * response. `null` when the network response did not include a hash.
+   */
+  txHash?: string | null;
 }
 
 /**
@@ -230,6 +235,11 @@ export async function batchDeployTokens(
       // Fire-and-forget: event failures must not roll back a successful batch.
       // Emit events matching the GraphQL schema expectation (tokenAddress, creatorAddress, etc.)
       // to ensure subscription filters (like tenant scoping by creatorAddress) work correctly.
+      // The tx hash is taken from the on-chain submission response captured in
+      // phase 1; it is `null` when the network response did not include one.
+      const txHash =
+        stellarResults.find((r) => r.address === token.address)?.txHash ?? null;
+
       eventBus
         .publish("token.deployed", {
           tokenAddress: token.address,
@@ -247,21 +257,23 @@ export async function batchDeployTokens(
         );
     }
 
-    const succeeded: DeployedToken[] = (createdTokens as Array<{
-      id: string;
-      address: string;
-      creator: string;
-      name: string;
-      symbol: string;
-      decimals: number;
-      totalSupply: bigint;
-      initialSupply: bigint;
-      totalBurned: bigint;
-      burnCount: number;
-      metadataUri: string | null;
-      createdAt: Date;
-      updatedAt: Date;
-    }>).map((token) => ({
+    const succeeded: DeployedToken[] = (
+      createdTokens as Array<{
+        id: string;
+        address: string;
+        creator: string;
+        name: string;
+        symbol: string;
+        decimals: number;
+        totalSupply: bigint;
+        initialSupply: bigint;
+        totalBurned: bigint;
+        burnCount: number;
+        metadataUri: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }>
+    ).map((token) => ({
       id: token.id,
       address: token.address,
       creator: token.creator,
@@ -279,11 +291,14 @@ export async function batchDeployTokens(
 
     return { succeeded, failed: [] };
   } catch (err) {
-    // Prisma transaction rolled back automatically on throw.
-    const dbError = err instanceof Error ? err.message : "Database transaction failed";
+    // DB transaction failed — nothing was persisted.
     return {
       succeeded: [],
-      failed: inputs.map((input) => ({ input, error: dbError })),
+      failed: inputs.map((input) => ({
+        input,
+        error:
+          err instanceof Error ? err.message : "Database transaction failed",
+      })),
     };
   }
 }

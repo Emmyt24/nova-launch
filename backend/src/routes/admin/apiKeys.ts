@@ -87,6 +87,10 @@ router.post("/:id/rotate", authenticateAdmin, async (req: AuthRequest, res: Resp
       })
     );
   } catch (error) {
+    // Only forward the message for known validation errors (RangeError).
+    // Any other error type is logged server-side and surfaced generically so
+    // that unexpected error details (which could include key material) never
+    // reach the client.
     if (error instanceof RangeError) {
       return sendError(res, 400, ErrorCode.VALIDATION_ERROR, error.message);
     }

@@ -438,6 +438,13 @@ nova-launch/
 ├── scripts/                      # Utility scripts
 │   └── setup-soroban.sh         # Soroban setup script
 │
+├── event-schemas/                # Versioned producer-consumer event contracts
+│   └── README.md                 # Event schema onboarding and compatibility checks
+├── load-tests/                   # k6 load-test scenarios and SLO scripts
+│   └── README.md                 # Load-test onboarding and interpretation
+├── gateway/                      # API gateway service
+│   └── README.md                 # Gateway setup and Compose usage
+│
 ├── .kiro/                        # Kiro specs (excluded from git)
 │   └── specs/
 │       └── stellar-token-deployer/
@@ -1412,3 +1419,6 @@ A: Both Stellar testnet (for testing) and mainnet (for production).
 
 <!-- handsoff-issue-2059 -->
 - #2059: Document Why Trigger Recurring Period Doesn't Re-Require the Original Creator's Authorization
+
+<!-- handsoff-issue-2392 -->
+- #2392: Convert Opaque Host Panic Into Deterministic Error Propagation Within Hash-Chain State Conversion

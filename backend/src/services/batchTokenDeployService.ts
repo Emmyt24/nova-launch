@@ -14,6 +14,7 @@
 
 import { prisma } from "../lib/prisma";
 import { eventBus } from "./eventBus";
+import { stellarService } from "./stellarService";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -88,9 +89,9 @@ export interface StellarDeployResult {
  * Calls the Stellar token-factory contract for a single token.
  *
  * This thin adapter is the only place that touches the Stellar SDK so it can
- * be cleanly mocked in unit / integration tests.  Replace the body with the
- * real Soroban RPC invocation (e.g. via `@stellar/stellar-sdk`) once contract
- * addresses and network config are available.
+ * be cleanly mocked in unit / integration tests.  It routes the deploy through
+ * the existing StellarService deploy path so the returned address corresponds
+ * to a real on-chain contract rather than a synthesized placeholder.
  */
 export async function callStellarDeploy(
   input: TokenDeployInput
@@ -110,10 +111,9 @@ export async function callStellarDeploy(
   //     txHash: result.hash ?? null,
   //   };
 
-  // Deterministic placeholder: use creator + symbol so tests can assert on it.
-  const address = `G${input.creator.slice(0, 4).toUpperCase()}${input.symbol.toUpperCase()}${"0".repeat(
-    Math.max(0, 50 - input.creator.length - input.symbol.length)
-  )}`.slice(0, 56);
+  if (!result || !result.address) {
+    throw new Error("Stellar deploy returned no contract address");
+  }
 
   // No real network submission yet, so there is no authoritative hash to
   // report. Fall back to `null` rather than fabricating a value.
@@ -235,21 +235,23 @@ export async function batchDeployTokens(
         );
     }
 
-    const succeeded: DeployedToken[] = (createdTokens as Array<{
-      id: string;
-      address: string;
-      creator: string;
-      name: string;
-      symbol: string;
-      decimals: number;
-      totalSupply: bigint;
-      initialSupply: bigint;
-      totalBurned: bigint;
-      burnCount: number;
-      metadataUri: string | null;
-      createdAt: Date;
-      updatedAt: Date;
-    }>).map((token) => ({
+    const succeeded: DeployedToken[] = (
+      createdTokens as Array<{
+        id: string;
+        address: string;
+        creator: string;
+        name: string;
+        symbol: string;
+        decimals: number;
+        totalSupply: bigint;
+        initialSupply: bigint;
+        totalBurned: bigint;
+        burnCount: number;
+        metadataUri: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }>
+    ).map((token) => ({
       id: token.id,
       address: token.address,
       creator: token.creator,
@@ -267,11 +269,14 @@ export async function batchDeployTokens(
 
     return { succeeded, failed: [] };
   } catch (err) {
-    // Prisma transaction rolled back automatically on throw.
-    const dbError = err instanceof Error ? err.message : "Database transaction failed";
+    // DB transaction failed — nothing was persisted.
     return {
       succeeded: [],
-      failed: inputs.map((input) => ({ input, error: dbError })),
+      failed: inputs.map((input) => ({
+        input,
+        error:
+          err instanceof Error ? err.message : "Database transaction failed",
+      })),
     };
   }
 }

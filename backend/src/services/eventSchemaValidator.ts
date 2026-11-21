@@ -49,7 +49,28 @@
  * a schema" case at CI time instead of relying on this documentation. Not
  * implemented here.
  *
- * ## Versioned fee-change events (#2243)
+ * ## Versioned fee-change 
+
+import { z, ZodSchema } from "zod";
+
+/**
+ * Validate an arbitrary payload against a Zod schema.
+ *
+ * This helper is intended for request‑level validation (e.g., query
+ * parameters, route params, or request bodies) where the existing event
+ * schema validator only deals with event‑bus payloads. It returns the
+ * parsed data on success or throws an Error containing a JSON‑stringified
+ * description of the validation issues.
+ */
+export function validateSchema<T>(data: unknown, schema: ZodSchema<T>): T {
+  const result = schema.safeParse(data);
+  if (!result.success) {
+    const errors = result.error.format();
+    throw new Error(`Schema validation failed: ${JSON.stringify(errors)}`);
+  }
+  return result.data;
+}
+events (#2243)
  *
  * Fee-parameter change events carry both the previous and the new value so
  * audit trails are complete. To keep wire compatibility, the payload is

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { searchTokensSchema } from "../app/api/tokens/search/schema";
 import { performance } from "perf_hooks";
 import axios from "axios";
 import { prisma } from "../lib/prisma";
@@ -29,6 +30,24 @@ const router = Router();
 
 // Enforce tenant context on every token request — cross-tenant reads are rejected.
 router.use(tenantMiddleware({ required: true }));
+
+// Schema-level validation for query parameters on specific routes
+const queryValidators: Record<string, any> = {
+  "/search": searchTokensSchema,
+};
+
+router.use((req: Request, res: Response, next) => {
+  const validator = queryValidators[req.path];
+  if (validator) {
+    const result = validator.safeParse(req.query);
+    if (!result.success) {
+      return errorResponse(res, ErrorCode.INVALID_INPUT, result.error);
+    }
+    // Overwrite query with parsed (typed) values
+    req.query = result.data as any;
+  }
+  next();
+});
 
 // Replays of an `Idempotency-Key` return the original deployment response instead
 // of creating duplicate records. Keys are namespaced per tenant.

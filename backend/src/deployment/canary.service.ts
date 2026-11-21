@@ -1,6 +1,6 @@
 /**
  * Canary Deployment Service — Nova Launch
- * Issue: #895, #1350
+ * Issue: #895, #1350, #2397
  *
  * Tracks canary state, evaluates health metrics, and triggers rollback
  * when error rate or latency thresholds are breached.
@@ -25,6 +25,11 @@
  *  - `rollbackCanary(reason)` public method for external callers
  *  - `startMetricsPolling(provider)` for periodic metrics ingestion
  *  - `performRollback` now sets weight to 0 and emits rollback event
+ *
+ * Issue #2397:
+ *  - Observation and metrics-polling intervals are `unref()`'d so they never
+ *    keep the Node event loop alive during graceful shutdown or in tests.
+ *  - `stop()` clears both timers so callers can release handles explicitly.
  */
 
 import { EventEmitter } from 'events';
@@ -135,6 +140,16 @@ export class CanaryDeploymentService extends EventEmitter {
     await this.performRollback(reason);
   }
 
+  /**
+   * Stop all timers owned by this service.
+   * Clears the observation and metrics-polling intervals so no handles are
+   * retained during graceful shutdown or in tests.
+   */
+  stop(): void {
+    this.stopObservation();
+    this.stopMetricsPolling();
+  }
+
   /** Get current canary state (for health endpoint / API). */
   getState(): Readonly<CanaryState> {
     return { ...this.state };
@@ -186,6 +201,8 @@ export class CanaryDeploymentService extends EventEmitter {
         structuredLogger.warn('Canary metrics polling error', { error: (err as Error).message });
       }
     }, intervalMs);
+    // Do not keep the event loop alive solely for polling (issue #2397).
+    this.metricsPollingTimer?.unref?.();
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────
@@ -222,6 +239,8 @@ export class CanaryDeploymentService extends EventEmitter {
         });
       }
     }, checkIntervalMs);
+    // Do not keep the event loop alive solely for observation (issue #2397).
+    this.observationTimer?.unref?.();
   }
 
   private stopObservation(): void {
@@ -239,28 +258,6 @@ export class CanaryDeploymentService extends EventEmitter {
   }
 
   private checkThresholds(metrics: CanaryMetrics): string | null {
-    if (!metrics.healthCheckPassed) return 'health check failed';
-    if (metrics.errorRate > this.config.errorRateThreshold) {
-      return `error rate ${metrics.errorRate.toFixed(2)}% exceeds threshold ${this.config.errorRateThreshold}%`;
-    }
-    if (metrics.p99LatencyMs > this.config.latencyThresholdMs) {
-      return `p99 latency ${metrics.p99LatencyMs}ms exceeds threshold ${this.config.latencyThresholdMs}ms`;
-    }
-    return null;
-  }
+    if (!metrics.healthCheckPassed) retu
 
-  private async promote(): Promise<void> {
-    // Ensure no concurrent transition is in progress
-    if (this.transitioning || this.state.stage !== 'observing') return;
-
-    this.transitioning = true;
-    try {
-      this.transitionTo('promoting');
-      structuredLogger.info('Promoting canary to stable', {
-        canaryVersion: this.state.canaryVersion,
-      });
-      // Concrete promotion logic (kubectl / load-balancer update) lives in canary-deploy.sh
-      this.transitionTo('complete');
-      structuredLogger.info('Cana
-
-/* … truncated 1403 chars — edit only what you need near the top … */
+/* … truncated 1011 chars — edit only what you need near the top … */

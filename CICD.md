@@ -40,6 +40,8 @@ The CI/CD pipeline consists of four main stages:
 
 ### Stage 2: Security Audit (OWASP Standards)
 
+<!-- NOTE: Ensure that new test files, such as a stats route test, are included in the CI test coverage checks. -->
+
 **Purpose**: Identify security vulnerabilities and code quality issues
 
 **Actions**:
@@ -47,6 +49,7 @@ The CI/CD pipeline consists of four main stages:
 - Static analysis checks:
   - Detect `unsafe` code blocks
   - Scan for hardcoded secrets/passwords
+  - Verify e2e documentation: ensure e2e/README.md exists and describes test execution
   - Identify `panic!` usage (should use `Result<T, Error>`)
 
 **Failure Conditions**:

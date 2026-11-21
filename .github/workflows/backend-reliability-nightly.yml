@@ -22,6 +22,9 @@ jobs:
   reliability-tests:
     name: Backup, pagination, rate-limit, and schema contracts
     runs-on: ubuntu-latest
+    # Bound runner usage: a hung step would otherwise hold the runner for the
+    # 6-hour GitHub default. 60 minutes is ~2x the typical runtime.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: backend

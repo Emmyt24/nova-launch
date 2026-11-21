@@ -36,7 +36,7 @@ export function GovernancePage({ wallet }: GovernancePageProps) {
     checkGovernancePower(wallet).then(setHasGovernancePower).catch(() => {
       setHasGovernancePower(false);
     });
-  }, [wallet.connected, wallet.address]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wallet, wallet.connected, wallet.address, checkGovernancePower]);
 
   if (showCreateForm) {
     return (

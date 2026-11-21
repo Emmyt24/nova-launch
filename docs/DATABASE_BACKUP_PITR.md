@@ -50,7 +50,9 @@ docker compose exec db-backup backup-db.sh base
 | `DATABASE_URL`         | (required)                 | PostgreSQL connection string                     |
 | `BACKUP_STORAGE_PATH`  | `/var/backups/nova/pitr`   | Local directory for base backups and WAL archive |
 | `BACKUP_RETENTION_DAYS`| `7`                        | Days to keep base backups before pruning         |
-| `BACKUP_S3_BUCKET`     | _(empty)_                  | S3 bucket for offsite copies (optional)          |
+| `BACKUP_S3_BUCKET`     | _(empty)_                  | S3 bucket for offsite copie
+
+<!-- NOTE: The platform statistics router (routes/stats.ts) currently lacks a corresponding test file (stats.test.ts). Consider adding tests to improve coverage. -->s (optional)          |
 | `BACKUP_ENCRYPTION_KEY`| _(empty)_                  | GPG key ID for at-rest encryption (optional)     |
 | `PGDATA`               | `/var/lib/postgresql/data` | PostgreSQL data directory                        |
 

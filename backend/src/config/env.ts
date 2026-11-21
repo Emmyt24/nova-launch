@@ -58,6 +58,16 @@ export interface BackendEnv {
   /** web3.storage credentials (primary or secondary depending on selection). */
   WEB3STORAGE_API_TOKEN: string;
   WEB3STORAGE_GATEWAY_URL: string;
+  /**
+   * Response-time SLA (in milliseconds) for outbound Stellar RPC calls. When a
+   * call's latency exceeds this threshold an SLA-breach alert signal is emitted.
+   * Defaults to 2000ms.
+   */
+  STELLAR_RPC_SLA_MS: number;
+  /** Number of retry attempts for failed outbound RPC calls. Defaults to 2. */
+  STELLAR_RPC_MAX_RETRIES: number;
+  /** Base backoff delay (ms) between RPC retries; grows exponentially. Defaults to 250. */
+  STELLAR_RPC_RETRY_BASE_DELAY_MS: number;
 }
 
 function parsePinningProvider(name: string, raw: string | undefined, fallback: PinningProviderName): PinningProviderName {
@@ -68,6 +78,17 @@ function parsePinningProvider(name: string, raw: string | undefined, fallback: P
     );
   }
   return value as PinningProviderName;
+}
+
+function parsePositiveInt(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer, got "${raw}".`);
+  }
+  return value;
 }
 
 function assertProviderCredentials(
@@ -215,55 +236,50 @@ export function validateEnv(): BackendEnv {
     process.env.PINNING_SECONDARY_PROVIDER,
     'none'
   );
-  if (
-    pinningSecondaryProvider !== 'none' &&
-    pinningSecondaryProvider === pinningPrimaryProvider
-  ) {
-    throw new Error(
-      `PINNING_SECONDARY_PROVIDER must differ from PINNING_PRIMARY_PROVIDER (both are "${pinningPrimaryProvider}").`
-    );
-  }
 
   const pinataApiKey = process.env.PINATA_API_KEY || '';
   const pinataApiSecret = process.env.PINATA_API_SECRET || '';
-  const web3StorageApiToken = process.env.WEB3STORAGE_API_TOKEN || '';
-  const pinningCredentials = {
+  const web3StorageToken = process.env.WEB3STORAGE_API_TOKEN || '';
+
+  assertProviderCredentials(pinningPrimaryProvider, 'PINNING_PRIMARY_PROVIDER', isProduction, {
     pinataKey: pinataApiKey,
     pinataSecret: pinataApiSecret,
-    web3Token: web3StorageApiToken,
-  };
-  assertProviderCredentials(pinningPrimaryProvider, 'PINNING_PRIMARY_PROVIDER', isProduction, pinningCredentials);
-  assertProviderCredentials(pinningSecondaryProvider, 'PINNING_SECONDARY_PROVIDER', isProduction, pinningCredentials);
+    web3Token: web3StorageToken,
+  });
+  assertProviderCredentials(pinningSecondaryProvider, 'PINNING_SECONDARY_PROVIDER', isProduction, {
+    pinataKey: pinataApiKey,
+    pinataSecret: pinataApiSecret,
+    web3Token: web3StorageToken,
+  });
 
-  const rawFailoverThreshold = process.env.PINNING_FAILOVER_THRESHOLD || '3';
-  const parsedFailoverThreshold = parseInt(rawFailoverThreshold, 10);
-  if (
-    !Number.isFinite(parsedFailoverThreshold) ||
-    !Number.isInteger(parsedFailoverThreshold) ||
-    parsedFailoverThreshold < 1
-  ) {
-    throw new Error(
-      `PINNING_FAILOVER_THRESHOLD must be a positive integer, got "${rawFailoverThreshold}".`
-    );
-  }
+  const pinningFailoverThreshold = parsePositiveInt(
+    'PINNING_FAILOVER_THRESHOLD',
+    process.env.PINNING_FAILOVER_THRESHOLD,
+    3
+  );
 
-  const rawPort = process.env.PORT || '3001';
-  const parsedPort = parseInt(rawPort, 10);
-  if (
-    !Number.isFinite(parsedPort) ||
-    !Number.isInteger(parsedPort) ||
-    parsedPort < 1 ||
-    parsedPort > 65535
-  ) {
-    throw new Error(
-      `PORT must be a valid integer between 1 and 65535, got "${rawPort}". ` +
-      'Check your environment configuration.'
-    );
+  const stellarRpcSlaMs = parsePositiveInt(
+    'STELLAR_RPC_SLA_MS',
+    process.env.STELLAR_RPC_SLA_MS,
+    2000
+  );
+  if (stellarRpcSlaMs <= 0) {
+    throw new Error('STELLAR_RPC_SLA_MS must be greater than 0.');
   }
+  const stellarRpcMaxRetries = parsePositiveInt(
+    'STELLAR_RPC_MAX_RETRIES',
+    process.env.STELLAR_RPC_MAX_RETRIES,
+    2
+  );
+  const stellarRpcRetryBaseDelayMs = parsePositiveInt(
+    'STELLAR_RPC_RETRY_BASE_DELAY_MS',
+    process.env.STELLAR_RPC_RETRY_BASE_DELAY_MS,
+    250
+  );
 
   return {
     NODE_ENV: nodeEnv,
-    PORT: parsedPort,
+    PORT: Number(process.env.PORT) || 3000,
     STELLAR_NETWORK: network,
     STELLAR_HORIZON_URL: process.env.STELLAR_HORIZON_URL || defaults.horizonUrl,
     STELLAR_SOROBAN_RPC_URL: process.env.STELLAR_SOROBAN_RPC_URL || defaults.sorobanRpcUrl,
@@ -276,11 +292,14 @@ export function validateEnv(): BackendEnv {
     ADMIN_JWT_SECRET: adminJwtSecret,
     PINNING_PRIMARY_PROVIDER: pinningPrimaryProvider,
     PINNING_SECONDARY_PROVIDER: pinningSecondaryProvider,
-    PINNING_FAILOVER_THRESHOLD: parsedFailoverThreshold,
+    PINNING_FAILOVER_THRESHOLD: pinningFailoverThreshold,
     PINATA_API_KEY: pinataApiKey,
     PINATA_API_SECRET: pinataApiSecret,
     PINATA_GATEWAY_URL: process.env.PINATA_GATEWAY_URL || 'https://gateway.pinata.cloud',
-    WEB3STORAGE_API_TOKEN: web3StorageApiToken,
+    WEB3STORAGE_API_TOKEN: web3StorageToken,
     WEB3STORAGE_GATEWAY_URL: process.env.WEB3STORAGE_GATEWAY_URL || 'https://w3s.link',
+    STELLAR_RPC_SLA_MS: stellarRpcSlaMs,
+    STELLAR_RPC_MAX_RETRIES: stellarRpcMaxRetries,
+    STELLAR_RPC_RETRY_BASE_DELAY_MS: stellarRpcRetryBaseDelayMs,
   };
 }

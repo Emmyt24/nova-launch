@@ -17,6 +17,9 @@ jobs:
   accounting-properties:
     name: Campaign accounting properties
     runs-on: ubuntu-latest
+    # Bounds runner usage if a property test hangs; scheduled runs use higher
+    # PROPTEST_CASES, so allow roughly 2x typical runtime.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: contracts/token-factory
@@ -47,6 +50,8 @@ jobs:
   stateful-fuzz:
     name: Campaign stateful fuzz
     runs-on: ubuntu-latest
+    # Generous but finite cap for the nightly fuzz run (higher cases/depth).
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: contracts/token-factory

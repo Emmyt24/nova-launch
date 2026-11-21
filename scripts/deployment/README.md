@@ -1,3 +1,7 @@
+# Scripts Automation Toolkit
+
+This folder contains automation scripts for Nova Launch, including deployment utilities.
+
 # Automated Contract Deployment Orchestrator
 
 The Nova Launch deployment orchestrator provides secure, scriptable deployment of Soroban smart contracts with comprehensive verification and error handling.

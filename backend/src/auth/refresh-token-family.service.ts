@@ -16,6 +16,55 @@ import prisma from "../lib/prisma";
 const FAMILY_TTL_DAYS = 30;
 
 // ---------------------------------------------------------------------------
+// Local Prisma surface types
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural view of the refreshToken delegate used by this service.
+ * Declared locally so the service stays type-sound without depending on a
+ * generated Prisma client shape that may not yet include this model.
+ */
+interface RefreshTokenRecord {
+  familyId: string;
+  token: string;
+  expiresAt: Date;
+  used: boolean;
+}
+
+interface RefreshTokenDelegate {
+  create(args: { data: RefreshTokenRecord }): Promise<RefreshTokenRecord>;
+  findUnique(args: {
+    where: { token: string };
+  }): Promise<RefreshTokenRecord | null>;
+  updateMany(args: {
+    where: { token: string; used: boolean };
+    data: { used: boolean };
+  }): Promise<{ count: number }>;
+  deleteMany(args: {
+    where: { familyId?: string; expiresAt?: { lt: Date } };
+  }): Promise<{ count: number }>;
+}
+
+interface RefreshTokenTransactionClient {
+  refreshToken: RefreshTokenDelegate;
+}
+
+interface RefreshTokenPrismaClient extends RefreshTokenTransactionClient {
+  $transaction<T>(
+    fn: (tx: RefreshTokenTransactionClient) => Promise<T>
+  ): Promise<T>;
+}
+
+/**
+ * Narrow the shared Prisma client to the refresh-token surface used here.
+ * This is a structural assertion over the existing client instance; it does
+ * not alter runtime behaviour.
+ */
+function getRefreshTokenClient(): RefreshTokenPrismaClient {
+  return prisma as unknown as RefreshTokenPrismaClient;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -27,8 +76,8 @@ export async function createTokenFamily(
   expiresAt: Date
 ): Promise<{ familyId: string }> {
   const familyId = uuidv4();
-  await (prisma as any).refreshToken.create({
-    data: { familyId, token, expiresAt },
+  await getRefreshTokenClient().refreshToken.create({
+    data: { familyId, token, expiresAt, used: false },
   });
   return { familyId };
 }
@@ -48,7 +97,7 @@ export async function rotateTokenFamily(
   nextToken: string,
   nextExpiresAt: Date
 ): Promise<{ familyId: string }> {
-  return (prisma as any).$transaction(async (tx: any) => {
+  return getRefreshTokenClient().$transaction(async (tx) => {
     // Atomically mark token as used only if it exists and is not yet used.
     // This prevents two concurrent requests from both succeeding.
     const updateResult = await tx.refreshToken.updateMany({
@@ -98,6 +147,7 @@ export async function rotateTokenFamily(
         familyId: record.familyId,
         token: nextToken,
         expiresAt: nextExpiresAt,
+        used: false,
       },
     });
 
@@ -109,7 +159,7 @@ export async function rotateTokenFamily(
  * Invalidate all tokens in a family (e.g., on explicit logout).
  */
 export async function invalidateFamily(familyId: string): Promise<void> {
-  await (prisma as any).refreshToken.deleteMany({ where: { familyId } });
+  await getRefreshTokenClient().refreshToken.deleteMany({ where: { familyId } });
 }
 
 /**
@@ -118,7 +168,7 @@ export async function invalidateFamily(familyId: string): Promise<void> {
  */
 export async function pruneExpiredFamilies(): Promise<{ deleted: number }> {
   const cutoff = new Date(Date.now() - FAMILY_TTL_DAYS * 24 * 60 * 60 * 1000);
-  const result = await (prisma as any).refreshToken.deleteMany({
+  const result = await getRefreshTokenClient().refreshToken.deleteMany({
     where: { expiresAt: { lt: cutoff } },
   });
   return { deleted: result.count };

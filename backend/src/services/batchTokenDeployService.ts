@@ -14,6 +14,7 @@
 
 import { prisma } from "../lib/prisma";
 import { eventBus } from "./eventBus";
+import { config } from "../config";
 import { stellarService } from "./stellarService";
 
 // ---------------------------------------------------------------------------
@@ -86,40 +87,59 @@ export interface StellarDeployResult {
 }
 
 /**
+ * Returns true when the deterministic stub path should be used instead of a
+ * real Soroban RPC invocation.  Controlled by the `USE_STUB_STELLAR_DEPLOY`
+ * flag so unit tests can run without network access.
+ */
+function useStubStellarDeploy(): boolean {
+  return config.USE_STUB_STELLAR_DEPLOY === true;
+}
+
+/**
+ * Builds the deterministic placeholder address used by the stub path.
+ * Kept separate so tests can assert on the exact value.
+ */
+function buildStubAddress(input: TokenDeployInput): string {
+  return `G${input.creator.slice(0, 4).toUpperCase()}${input.symbol.toUpperCase()}${"0".repeat(
+    Math.max(0, 50 - input.creator.length - input.symbol.length)
+  )}`.slice(0, 56);
+}
+
+/**
  * Calls the Stellar token-factory contract for a single token.
  *
  * This thin adapter is the only place that touches the Stellar SDK so it can
- * be cleanly mocked in unit / integration tests.  It routes the deploy through
- * the existing StellarService deploy path so the returned address corresponds
- * to a real on-chain contract rather than a synthesized placeholder.
+ * be cleanly mocked in unit / integration tests.  Configuration values
+ * (`SOROBAN_RPC_URL`, `TOKEN_FACTORY_ADDRESS`) are read through the validated
+ * config module — never via `process.env` or non-null assertions.
+ *
+ * When `USE_STUB_STELLAR_DEPLOY` is enabled the deterministic placeholder
+ * address is returned without any network call, which keeps tests hermetic.
+ *
+ * Note: no secrets, tokens or PII are logged by this function.
  */
 export async function callStellarDeploy(
   input: TokenDeployInput
 ): Promise<StellarDeployResult> {
-  // TODO: replace with real Soroban RPC call once contract addresses are
-  //       finalised.  The generated address below is a placeholder that
-  //       satisfies the Stellar G-address format used in tests.
-  //
-  // Example real implementation:
-  //   const server = new SorobanRpc.Server(process.env.SOROBAN_RPC_URL!);
-  //   const contract = new Contract(process.env.TOKEN_FACTORY_ADDRESS!);
-  //   const result = await server.submitTransaction(
-  //     TransactionBuilder.buildFeeBumpTransaction(...)
-  //   );
-  //   return {
-  //     address: result.contractAddress,
-  //     txHash: result.hash ?? null,
-  //   };
-
-  if (!result || !result.address) {
-    throw new Error("Stellar deploy returned no contract address");
+  if (useStubStellarDeploy()) {
+    return { address: buildStubAddress(input) };
   }
 
-  // No real network submission yet, so there is no authoritative hash to
-  // report. Fall back to `null` rather than fabricating a value.
-  const txHash: string | null = null;
+  // Build and submit the token-factory contract invocation through the
+  // existing Stellar service wrapper.  The wrapper owns the RPC client and
+  // signing details; we only pass the validated config values.
+  const result = await stellarService.invokeTokenFactoryDeploy({
+    rpcUrl: config.SOROBAN_RPC_URL,
+    contractAddress: config.TOKEN_FACTORY_ADDRESS,
+    creator: input.creator,
+    name: input.name,
+    symbol: input.symbol,
+    decimals: input.decimals,
+    initialSupply: input.initialSupply,
+    metadataUri: input.metadataUri,
+  });
 
-  return { address, txHash };
+  return { address: result.contractAddress };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +247,9 @@ export async function batchDeployTokens(
           name: token.name,
           symbol: token.symbol,
           totalSupply: token.totalSupply.toString(),
-          txHash,
+          // TODO: capture the actual on-chain txHash once the Stellar service
+          //       wrapper surfaces it from the submitted invocation.
+          txHash: `batch-deploy-${token.id}`,
           timestamp: token.createdAt.toISOString(),
         })
         .catch((err) =>

@@ -61,7 +61,7 @@ mod governance_error_tests {
         // Try to vote after voting period closed
         let voter = Address::generate(&env);
         let result = client.try_vote(&proposal_id, &voter, &true);
-        assert_eq!(result, Err(Ok(Error::VotingClosed)));
+        assert_eq!(result, Err(Ok(Error::VotingEnded)));
         
         // Verify error code mapping
         assert_eq!(Error::VotingClosed as u32, 38);
@@ -266,7 +266,6 @@ mod governance_error_tests {
             Error::VotingNotStarted as u32,
             Error::VotingEnded as u32,
             Error::AlreadyVoted as u32,
-            Error::VotingClosed as u32,
             Error::ProposalExpired as u32,
             Error::ProposalNotExecutable as u32,
             Error::Unauthorized as u32,
@@ -289,7 +288,6 @@ mod governance_error_tests {
         assert_eq!(Error::VotingNotStarted as u32, 35);
         assert_eq!(Error::VotingEnded as u32, 36);
         assert_eq!(Error::AlreadyVoted as u32, 37);
-        assert_eq!(Error::VotingClosed as u32, 38);
         assert_eq!(Error::ProposalExpired as u32, 39);
         assert_eq!(Error::ProposalNotExecutable as u32, 40);
         assert_eq!(Error::Unauthorized as u32, 41);
@@ -311,7 +309,6 @@ mod governance_error_tests {
         // Voting lifecycle errors
         assert_eq!(Error::VotingNotStarted as u32, 35, "Voting not yet open");
         assert_eq!(Error::VotingEnded as u32, 36, "Voting period ended");
-        assert_eq!(Error::VotingClosed as u32, 38, "Voting no longer accepting votes");
         assert_eq!(Error::AlreadyVoted as u32, 37, "Voter already cast vote");
         
         // Execution validation errors

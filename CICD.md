@@ -47,6 +47,7 @@ The CI/CD pipeline consists of four main stages:
 - Static analysis checks:
   - Detect `unsafe` code blocks
   - Scan for hardcoded secrets/passwords
+  - Verify e2e documentation: ensure e2e/README.md exists and describes test execution
   - Identify `panic!` usage (should use `Result<T, Error>`)
 
 **Failure Conditions**:

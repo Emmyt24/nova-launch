@@ -42,7 +42,7 @@
     "@opentelemetry/auto-instrumentations-node": "^0.82.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
     "@opentelemetry/sdk-node": "^0.300.0",
-    "@pinata/sdk": "^2.1.0",
+    "@pinata/sdk": "^3.0.2",
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^5.22.0",
     "@stellar/stellar-sdk": "^17.1.0",

@@ -158,6 +158,19 @@ services:
     networks:
       - monitoring
     pid: host
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:9100/metrics",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   # --------------------------------------------------------------------------
   # cAdvisor — container metrics
@@ -179,6 +192,19 @@ services:
       - "8080:8080"
     networks:
       - monitoring
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/healthz",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
   prometheus_data:

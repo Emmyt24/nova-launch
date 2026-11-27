@@ -597,6 +597,44 @@ mod batch_scheduler_gas_consistency {
         THRESHOLD_CREATE_TOKEN, THRESHOLD_GET_TOKEN_INFO, THRESHOLD_PAUSE_TOKEN,
     };
 
+    #[test]
+    fn batch_scheduler_rejects_invalid_chunk_before_writing_any_item() {
+        use super::{execute_reveal_chunk, storage, Error, TokenCreationParams};
+        use soroban_sdk::{testutils::Address as _, vec, Address, Env, String};
+
+        let env = Env::default();
+        let contract_id = env.register_contract(None, crate::TokenFactory);
+        let creator = Address::generate(&env);
+        let valid = TokenCreationParams {
+            name: String::from_str(&env, "Token"),
+            symbol: String::from_str(&env, "TOK"),
+            decimals: 7,
+            initial_supply: 100,
+            max_supply: None,
+            metadata_uri: None,
+            clawback_enabled: false,
+            freeze_enabled: false,
+        };
+        let invalid = TokenCreationParams {
+            decimals: 19,
+            ..valid.clone()
+        };
+
+        env.as_contract(&contract_id, || {
+            storage::set_base_fee(&env, 1);
+            storage::set_metadata_fee(&env, 1);
+            let start = storage::get_token_count(&env);
+            let chunk = vec![&env, valid, invalid];
+            assert!(matches!(
+                execute_reveal_chunk(&env, &creator, &chunk, 2),
+                Err(Error::InvalidTokenParams)
+            ));
+            assert_eq!(storage::get_token_count(&env), start);
+            assert!(storage::get_token_info(&env, start).is_none());
+            assert_eq!(storage::get_balance(&env, start, &creator), 0);
+        });
+    }
+
     /// REVEAL_ITEM_GAS_ESTIMATE must equal THRESHOLD_CREATE_TOKEN.
     ///
     /// A batch-reveal item performs exactly one `create_token_internal` call,

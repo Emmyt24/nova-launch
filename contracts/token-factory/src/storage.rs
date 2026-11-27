@@ -2870,6 +2870,23 @@ mod storage_getter_uninit_tests {
         (env, contract_id)
     }
 
+    #[test]
+    fn storage_proposal_count_rejects_overflow_without_changing_count() {
+        let (env, contract_id) = bare_env();
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::ProposalCount, &(u32::MAX - 1));
+            assert_eq!(increment_proposal_count(&env), u32::MAX);
+
+            let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                increment_proposal_count(&env)
+            }));
+            assert!(overflow.is_err(), "increment beyond u32::MAX must panic");
+            assert_eq!(get_proposal_count(&env), u32::MAX);
+        });
+    }
+
     /// `get_admin` returns `None` before `initialize()` — no panic.
     #[test]
     fn test_get_admin_before_init_is_none() {

@@ -109,6 +109,12 @@ services:
     environment:
       - LOGSTASH_HOST=logstash
     command: filebeat -e -strict.perms=false
+    healthcheck:
+      test: ["CMD-SHELL", "filebeat test output || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # ── HashiCorp Vault ──────────────────────────────────────────────────────────
   vault:
